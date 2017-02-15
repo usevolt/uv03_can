@@ -15,6 +15,11 @@ public:
     explicit CanTerminal(QWidget *parent = 0);
     ~CanTerminal();
 
+private slots:
+    void on_devNew_clicked();
+
+    void on_devDel_clicked();
+
 private:
     Ui::can_terminal *ui;
 };

@@ -22,13 +22,21 @@ DEFINES += QT_DEPRECATED_WARNINGS
 # You can also select to disable deprecated APIs only up to a certain version of Qt.
 #DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000    # disables all the APIs deprecated before Qt 6.0.0
 
+CONFIG += c++11
+LIBS += -pthread -lcanlib
 
 SOURCES += main.cpp\
         mainwindow.cpp \
-    canterminal.cpp
+    canterminal.cpp \
+    candev.cpp \
+    opendialog.cpp
 
 HEADERS  += mainwindow.h \
-    canterminal.h
+    canterminal.h \
+    candev.h \
+    opendialog.h \
+    qdebugstream.h
 
 FORMS    += mainwindow.ui \
-    can_terminal.ui
+    can_terminal.ui \
+    opendialog.ui
