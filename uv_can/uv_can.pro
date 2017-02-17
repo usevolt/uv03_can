@@ -29,14 +29,17 @@ SOURCES += main.cpp\
         mainwindow.cpp \
     canterminal.cpp \
     candev.cpp \
-    opendialog.cpp
+    opendialog.cpp \
+    loadbindialog.cpp
 
 HEADERS  += mainwindow.h \
     canterminal.h \
     candev.h \
     opendialog.h \
-    qdebugstream.h
+    qdebugstream.h \
+    loadbindialog.h
 
 FORMS    += mainwindow.ui \
     can_terminal.ui \
-    opendialog.ui
+    opendialog.ui \
+    loadbindialog.ui

@@ -6,6 +6,9 @@
 #include <qdebug.h>
 
 
+#define UV_PREFIX (0x1556 << 16)
+#define UV_PREFIX_MASK (0xFFFF << 16)
+#define RX_BUFFER_MAX_LEN   0x1000
 
 void rx() {
     CanDev::instance()->_rxTask();
@@ -32,15 +35,32 @@ void CanDev::_rxTask()
         char msg[8];
         canStatus stat = canReadWait(this->rxHandle, &id, &msg, &dlc, &flag, &time, 1000);
 
-        if (stat != canOK && stat != canERR_NOMSG) {
-            qDebug() << "Error in rx thread. Kvaser status: " << stat;
-        }
-
         if (this->terminate) {
+            qDebug() << "Putting off rx CAN handle";
             canBusOff(this->rxHandle);
+            qDebug() << "Closing rx CAN handle";
             canClose(this->rxHandle);
             return;
         }
+
+        if (stat != canOK && stat != canERR_NOMSG) {
+            qDebug() << "Error in rx thread. Kvaser status: " << stat;
+        }
+        else if (stat == canOK) {
+            CanMsg_st mesg;
+            mesg.time = QTime::currentTime().toString("hh:mm:ss:zzz").toStdString();
+            mesg.dataLen = dlc;
+            mesg.id = id;
+            mesg.type = (flag & canMSG_EXT) ? CAN_EXT : CAN_STD;
+            memcpy(mesg.data, msg, dlc);
+            this->mutex.lock();
+            this->rxBuffer.push_back(mesg);
+            if (this->rxBuffer.size() > RX_BUFFER_MAX_LEN) {
+                this->rxBuffer.pop_front();
+            }
+            this->mutex.unlock();
+        }
+
     }
 }
 
@@ -132,6 +152,76 @@ void CanDev::open(unsigned int baudrate, canDeviceDescriptor devName)
     std::cout << "Connected" << std::endl;
 }
 
+void CanDev::send(unsigned int id, CanDev::canMsgType_e type, unsigned int dataLen, void *data)
+{
+    std::cout << "Sending id: " << id << ", type: " << type << ", Len: " << dataLen << ", data: ";
+    for (unsigned int i = 0; i < dataLen; i++) {
+        char str[20];
+        sprintf(str, "%02x", ((unsigned char*)data)[i]);
+        std::cout << str;
+        if (i != dataLen - 1) {
+            std::cout << ", ";
+        }
+    }
+    std::cout << std::endl;
+
+    if (this->connected) {
+        canStatus stat = canWrite(this->txHandle, id, data, dataLen, (type == CAN_EXT) ? canMSG_EXT : canMSG_STD);
+        if (stat != canOK) {
+            std::cout << "CAN send Kvaser error: " << stat << std::endl;
+        }
+    }
+}
+
+bool CanDev::sendSync(unsigned int id, CanDev::canMsgType_e type, unsigned int dataLen, void *data, unsigned int timeout_ms)
+{
+    std::cout << "Sync sending id: " << id << ", type: " << type << ", Len: " << dataLen << ", data: ";
+    for (unsigned int i = 0; i < dataLen; i++) {
+        char str[20];
+        sprintf(str, "%02x", ((unsigned char*)data)[i]);
+        std::cout << str;
+        if (i != dataLen - 1) {
+            std::cout << ", ";
+        }
+    }
+    std::cout << std::endl;
+
+    if (this->connected) {
+        canStatus stat = canWrite(this->txHandle, id, data, dataLen, (type == CAN_EXT) ? canMSG_EXT : canMSG_STD);
+        if (stat != canOK) {
+            std::cout << "CAN send Kvaser error: " << stat << std::endl;
+        }
+        stat = canWriteSync(this->txHandle, timeout_ms);
+        return (stat == canOK);
+    }
+    else {
+        return false;
+    }
+}
+
+void CanDev::clearReceiveBuffer()
+{
+    this->mutex.lock();
+    this->rxBuffer.clear();
+    this->mutex.unlock();
+}
+
+unsigned int CanDev::uvTerminalID(unsigned int nodeID)
+{
+    return UV_PREFIX + nodeID;
+}
+
+bool CanDev::isUvTerminalMsg(unsigned int msgID, unsigned int *nodeID)
+{
+    if ((msgID & UV_PREFIX_MASK) == UV_PREFIX) {
+        if (nodeID) {
+            *nodeID = msgID & ~UV_PREFIX_MASK;
+        }
+        return true;
+    }
+    return false;
+}
+
 
 CanDev::~CanDev()
 {
@@ -139,13 +229,38 @@ CanDev::~CanDev()
         std::cout << "Disconnecting from the CAN adapter..." << std::endl;
 
         this->terminate = true;
+        qDebug() << "Joining rx thread";
         this->rxThread->join();
+        qDebug() << "Destroying rx tread";
         delete this->rxThread;
 
+        std::cout << "Putting CAN bus off" << std::endl;
+
         canBusOff(this->txHandle);
+
+        usleep(100000);
+        std::cout << "Closing connection to CAN adapter" << std::endl;
         canClose(this->txHandle);
         std::cout << "Disconnected" << std::endl;
     }
+}
+
+
+bool CanDev::getConnected() const
+{
+    return connected;
+}
+
+bool CanDev::receive(CanDev::CanMsg_st& msg)
+{
+    if (!this->rxBuffer.size()) {
+        return false;
+    }
+    this->mutex.lock();
+    msg = this->rxBuffer.front();
+    this->rxBuffer.pop_front();
+    this->mutex.unlock();
+    return true;
 }
 
 

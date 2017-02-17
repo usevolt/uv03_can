@@ -7,13 +7,30 @@
 #include <string>
 #include <canlib.h>
 #include <canstat.h>
+#include <deque>
+#include <QTime>
 
 
 typedef unsigned int canDeviceDescriptor;
 
+
+
 class CanDev
 {
 public:
+
+    enum canMsgType_e {
+        CAN_STD,
+        CAN_EXT
+    };
+
+    struct CanMsg_st {
+        std::string time;
+        unsigned int id;
+        unsigned int dataLen;
+        unsigned char data[8];
+        canMsgType_e type;
+    };
 
     struct canDev_st {
         std::string name;
@@ -24,22 +41,39 @@ public:
 
     void open(unsigned int baudrate, canDeviceDescriptor devName);
 
+    void send(unsigned int id, canMsgType_e type, unsigned int dataLen, void *data);
+
+    bool sendSync(unsigned int id, canMsgType_e type, unsigned int dataLen, void *data, unsigned int timeout_ms);
+
+    void clearReceiveBuffer();
+
+    /// @brief: Constructs and returns the CAN msg ID which can be used to communicate with
+    /// usevolt terminal interface
+    unsigned int uvTerminalID(unsigned int nodeID);
+
+    bool isUvTerminalMsg(unsigned int msgID, unsigned int *nodeID);
+
     /// @brief: Should only be called from rx thread
     void _rxTask();
 
     std::vector<canDev_st> getDevices();
+
+    bool getConnected() const;
+
+    bool receive(CanMsg_st &msg);
 
 private:
     CanDev();
     ~CanDev();
     bool connected;
     bool terminate;
+    std::deque<CanMsg_st> rxBuffer;
+
     std::thread *rxThread;
     std::mutex mutex;
 
     unsigned int channel;
     unsigned int baudrate;
-
 
     CanHandle rxHandle;
 
