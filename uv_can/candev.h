@@ -24,6 +24,11 @@ public:
         CAN_EXT
     };
 
+    enum uvTerminalProtocol {
+        UV_SDO,
+        UV_EXT
+    };
+
     struct CanMsg_st {
         std::string time;
         unsigned int id;
@@ -45,13 +50,17 @@ public:
 
     bool sendSync(unsigned int id, canMsgType_e type, unsigned int dataLen, void *data, unsigned int timeout_ms);
 
+    void sendUvTerminal(std::string str, unsigned int nodeID);
+
     void clearReceiveBuffer();
 
     /// @brief: Constructs and returns the CAN msg ID which can be used to communicate with
     /// usevolt terminal interface
-    unsigned int uvTerminalID(unsigned int nodeID);
+    unsigned int uvTerminalID(CanMsg_st &msg, unsigned int nodeID);
 
-    bool isUvTerminalMsg(unsigned int msgID, unsigned int *nodeID);
+    bool isUvTerminalMsg(CanMsg_st &msg, int nodeID, std::string *dest = nullptr);
+
+    unsigned int getUvTerminalNodeID(CanMsg_st &msg);
 
     /// @brief: Should only be called from rx thread
     void _rxTask();
@@ -62,11 +71,17 @@ public:
 
     bool receive(CanMsg_st &msg);
 
+
+
+    uvTerminalProtocol getUvProtocol() const;
+    void setUvProtocol(const uvTerminalProtocol &value);
+
 private:
     CanDev();
     ~CanDev();
     bool connected;
     bool terminate;
+    uvTerminalProtocol uvProtocol;
     std::deque<CanMsg_st> rxBuffer;
 
     std::thread *rxThread;

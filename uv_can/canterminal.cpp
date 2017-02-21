@@ -30,8 +30,8 @@ CanTerminal::~CanTerminal()
 void CanTerminal::canReceive(CanDev::CanMsg_st &msg)
 {
     unsigned int nodeID;
-    if (getActiveDev() != -1 && msg.id == CanDev::instance()->uvTerminalID(getActiveDev())) {
-        std::string str((char*) msg.data, msg.dataLen);
+    std::string str;
+    if (getActiveDev() != -1 && CanDev::instance()->isUvTerminalMsg(msg, getActiveDev(), &str)) {
         ui->terminal->insertPlainText(QString::fromStdString(str));
         while (ui->terminal->toPlainText().size() > this->terminalMaxLen) {
             QTextCursor c = ui->terminal->textCursor();
@@ -40,7 +40,8 @@ void CanTerminal::canReceive(CanDev::CanMsg_st &msg)
         }
         ui->terminal->moveCursor(QTextCursor::End, QTextCursor::MoveAnchor);
     }
-    else if (CanDev::instance()->isUvTerminalMsg(msg.id, &nodeID)) {
+    else if (CanDev::instance()->isUvTerminalMsg(msg, -1)) {
+        nodeID = CanDev::instance()->getUvTerminalNodeID(msg);
         bool match = false;
         for (int i = 0; i < ui->devs->rowCount(); i++) {
             if (strtol(ui->devs->item(i, 0)->text().toStdString().c_str(), NULL, 0) == nodeID) {
@@ -113,26 +114,7 @@ void CanTerminal::on_terminal_send_clicked()
     ui->terminal_cmd->clear();
     std::cout << "Sending '" << str << "' to " << dev << std::endl;
 
-    int count = 0;
-    char data[8];
-    for (unsigned int i = 0; i < str.size(); i++) {
-        if (count < 8) {
-            data[count++] = str[i];
-        }
-        if (count == 8) {
-            CanDev::instance()->send(CanDev::instance()->uvTerminalID(getActiveDev()),
-                                     CanDev::CAN_EXT, count, data);
-            count = 0;
-        }
-    }
-    if (count > 6) {
-        CanDev::instance()->send(CanDev::instance()->uvTerminalID(getActiveDev()),
-                                 CanDev::CAN_EXT, count, data);
-        count = 0;
-    }
-    data[count++] = '\n';
-    CanDev::instance()->send(CanDev::instance()->uvTerminalID(getActiveDev()),
-                             CanDev::CAN_EXT, count, data);
+    CanDev::instance()->sendUvTerminal(str, dev);
 
 }
 
@@ -214,4 +196,21 @@ void CanTerminal::on_canSend_clicked()
     }
     msg.dataLen = dlc;
     CanDev::instance()->send(msg.id, msg.type, msg.dataLen, msg.data);
+}
+
+void CanTerminal::on_sdoProt_toggled(bool checked)
+{
+    if (checked) {
+        CanDev::instance()->setUvProtocol(CanDev::UV_SDO);
+    }
+    else {
+        CanDev::instance()->setUvProtocol(CanDev::UV_EXT);
+    }
+}
+
+void CanTerminal::on_canClear_clicked()
+{
+    while (ui->can_table->rowCount()) {
+        ui->can_table->removeRow(0);
+    }
 }

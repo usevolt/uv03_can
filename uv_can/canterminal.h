@@ -31,6 +31,10 @@ private slots:
 
     void on_canSend_clicked();
 
+    void on_sdoProt_toggled(bool checked);
+
+    void on_canClear_clicked();
+
 private:
     Ui::can_terminal *ui;
 

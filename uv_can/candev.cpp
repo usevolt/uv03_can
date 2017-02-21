@@ -6,8 +6,9 @@
 #include <qdebug.h>
 
 
-#define UV_PREFIX (0x1556 << 16)
-#define UV_PREFIX_MASK (0xFFFF << 16)
+#define UV_PREFIX 0x580
+#define UV_TX_PREFIX 0x600
+#define UV_EXT_PREFIX 0x15560000
 #define RX_BUFFER_MAX_LEN   0x1000
 
 void rx() {
@@ -89,7 +90,7 @@ std::vector<CanDev::canDev_st> CanDev::getDevices()
 
 
 CanDev::CanDev():
-    connected(false), terminate(false), rxThread(nullptr), mutex()
+    connected(false), terminate(false), uvProtocol(UV_SDO), rxThread(nullptr), mutex()
 {
     std::cout << "Initializing CAN dev" << std::endl;
 
@@ -199,6 +200,51 @@ bool CanDev::sendSync(unsigned int id, CanDev::canMsgType_e type, unsigned int d
     }
 }
 
+void CanDev::sendUvTerminal(std::__cxx11::string str, unsigned int nodeID)
+{
+    if (uvProtocol == UV_SDO) {
+        int count = 0;
+        CanDev::CanMsg_st msg;
+        msg.id = UV_TX_PREFIX + nodeID;
+        msg.type = CAN_STD;
+        msg.dataLen = 8;
+        msg.data[0] = 0x22;
+        msg.data[1] = 0xFF;
+        msg.data[2] = 0x5F;
+        msg.data[3] = 0;
+
+        for (unsigned int i = 0; i < str.size(); i++) {
+            if (count < 4) {
+                msg.data[4 + count++] = str[i];
+            }
+            if (count == 4) {
+                CanDev::instance()->send(msg.id, msg.type, 4 + count, msg.data);
+                count = 0;
+            }
+        }
+        msg.data[4 + count++] = '\n';
+        CanDev::instance()->sendSync(msg.id, msg.type, 4 + count, msg.data, 10000);
+    }
+    else if (uvProtocol == UV_EXT) {
+        int count = 0;
+        CanDev::CanMsg_st msg;
+        msg.id = UV_EXT_PREFIX + nodeID;
+        msg.type = CAN_EXT;
+
+        for (unsigned int i = 0; i < str.size(); i++) {
+            if (count < 8) {
+                msg.data[count++] = str[i];
+            }
+            if (count == 8) {
+                CanDev::instance()->sendSync(msg.id, msg.type, count, msg.data, 10000);
+                count = 0;
+            }
+        }
+        msg.data[count++] = '\n';
+        CanDev::instance()->sendSync(msg.id, msg.type, count, msg.data, 10000);
+    }
+}
+
 void CanDev::clearReceiveBuffer()
 {
     this->mutex.lock();
@@ -206,20 +252,49 @@ void CanDev::clearReceiveBuffer()
     this->mutex.unlock();
 }
 
-unsigned int CanDev::uvTerminalID(unsigned int nodeID)
+bool CanDev::isUvTerminalMsg(CanMsg_st &msg, int nodeID, std::string *dest)
 {
-    return UV_PREFIX + nodeID;
-}
-
-bool CanDev::isUvTerminalMsg(unsigned int msgID, unsigned int *nodeID)
-{
-    if ((msgID & UV_PREFIX_MASK) == UV_PREFIX) {
-        if (nodeID) {
-            *nodeID = msgID & ~UV_PREFIX_MASK;
+    if (uvProtocol == UV_SDO) {
+        if (msg.type == CAN_STD) {
+            if ((nodeID >= 0 && msg.id == (unsigned int) UV_PREFIX + nodeID) ||
+                    (nodeID < 0 && msg.id >= 0x580 && msg.id <= 0x580 + 0xFF)) {
+                if (msg.dataLen > 4 &&
+                        msg.type == CAN_STD &&
+                        msg.data[0] == 0x42 &&
+                        msg.data[1] == 0xFF &&
+                        msg.data[2] == 0x5F &&
+                        msg.data[3] == 0) {
+                    if (dest) {
+                        *dest = std::string((char*) &msg.data[4], msg.dataLen - 4);
+                    }
+                    return true;
+                }
+            }
         }
-        return true;
+    }
+    else if (uvProtocol == UV_EXT) {
+        if (msg.type == CAN_EXT) {
+            if ((nodeID >= 0 && msg.id == (unsigned int) 0x15560000 + nodeID) ||
+                    (nodeID < 0 && (msg.id & 0xFFFF0000) == 0x15560000)) {
+                if (dest) {
+                    *dest = std::string((char*) msg.data, msg.dataLen);
+                }
+                return true;
+            }
+        }
     }
     return false;
+}
+
+unsigned int CanDev::getUvTerminalNodeID(CanMsg_st &msg)
+{
+    if (uvProtocol == UV_SDO) {
+        return msg.id & 0x7F;
+    }
+    else if (uvProtocol == UV_EXT) {
+        return msg.id & 0xFFFF;
+    }
+    return 0;
 }
 
 
@@ -243,6 +318,16 @@ CanDev::~CanDev()
         canClose(this->txHandle);
         std::cout << "Disconnected" << std::endl;
     }
+}
+
+CanDev::uvTerminalProtocol CanDev::getUvProtocol() const
+{
+    return uvProtocol;
+}
+
+void CanDev::setUvProtocol(const uvTerminalProtocol &value)
+{
+    uvProtocol = value;
 }
 
 

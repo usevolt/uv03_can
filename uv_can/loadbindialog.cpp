@@ -84,13 +84,10 @@ void LoadBinDialog::on_flash_clicked()
         this->dataCount = this->data.size();
         this->dataIndex = 0;
         log("Flashing...");
-        // first try to reset the device
-        char c[] = "\nreset\n";
         log("Waiting for target response...");
         this->localEcho = false;
-        CanDev::instance()->send(CanDev::instance()->uvTerminalID(this->nodeId), CanDev::CAN_EXT,
-                                 sizeof(c), c);
-        CanDev::instance()->clearReceiveBuffer();
+        CanDev::instance()->sendUvTerminal("\nreset\n", this->nodeId);
+//        CanDev::instance()->clearReceiveBuffer();
         this->state = STATE_CONNECTING;
         this->timerId = this->startTimer(1);
     }
@@ -106,8 +103,8 @@ void LoadBinDialog::timerEvent(QTimerEvent *e)
     }
     CanDev::CanMsg_st msg;
     while (CanDev::instance()->receive(msg)) {
-        unsigned int nodeID;
-        if (CanDev::instance()->isUvTerminalMsg(msg.id, &nodeID) && nodeID == this->nodeId) {
+
+        if ((msg.id & 0xFFFF0000) == 0x15560000 && (msg.id & 0xFFFF) == this->nodeId) {
 
             // local echo filters the first accepted message out.
             // This has to be done because Kvaser adapter receives transmitted messages
@@ -130,7 +127,7 @@ void LoadBinDialog::timerEvent(QTimerEvent *e)
                     msg.data[6] = 0;
                     msg.data[7] = 0;
                     this->localEcho = true;
-                    CanDev::instance()->send(CanDev::instance()->uvTerminalID(this->nodeId),
+                    CanDev::instance()->send(0x15560000 + this->nodeId,
                                              CanDev::CAN_EXT, msg.dataLen, msg.data);
                     this->lastMsg = msg;
                     this->state = STATE_CONNECTED;
@@ -247,7 +244,7 @@ bool LoadBinDialog::sendPacket(uint8_t *data, unsigned int packetLen, uint16_t *
 {
     CanDev::CanMsg_st msg;
     msg.dataLen = 8U;
-    msg.id = CanDev::instance()->uvTerminalID(this->nodeId);
+    msg.id = 0x15560000 + this->nodeId;
     msg.type = CanDev::CAN_EXT;
     int count = 0;
     int canCount = 0;

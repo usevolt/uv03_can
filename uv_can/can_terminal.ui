@@ -110,7 +110,7 @@
          </widget>
         </widget>
        </item>
-       <item row="1" column="2">
+       <item row="2" column="2">
         <widget class="QPushButton" name="terminal_clear">
          <property name="focusPolicy">
           <enum>Qt::TabFocus</enum>
@@ -120,16 +120,39 @@
          </property>
         </widget>
        </item>
-       <item row="1" column="0">
+       <item row="2" column="0">
         <widget class="QLineEdit" name="terminal_cmd"/>
        </item>
-       <item row="1" column="1">
+       <item row="2" column="1">
         <widget class="QPushButton" name="terminal_send">
          <property name="focusPolicy">
           <enum>Qt::TabFocus</enum>
          </property>
          <property name="text">
           <string>Send</string>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="2">
+        <widget class="QRadioButton" name="extProt">
+         <property name="toolTip">
+          <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Uses the older UV terminal protocol with extended message frames. The device terminal communication is made by sending an extended message with an ID of 0x15560000 + node_ID.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+         </property>
+         <property name="text">
+          <string>Extended protocol</string>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="1">
+        <widget class="QRadioButton" name="sdoProt">
+         <property name="toolTip">
+          <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Uses the newer CANopen SDO-based UV terminal protocol for communicating with the devices. Commands are sent to devices as SDO write requests to index 0x5FFF and subindex 0. The device responds as a SDO write response from the same subindex.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+         </property>
+         <property name="text">
+          <string>SDO protocol</string>
+         </property>
+         <property name="checked">
+          <bool>true</bool>
          </property>
         </widget>
        </item>
@@ -148,16 +171,6 @@
       <layout class="QGridLayout" name="gridLayout_2">
        <item row="2" column="0">
         <layout class="QGridLayout" name="gridLayout_3">
-         <item row="1" column="5">
-          <widget class="QPushButton" name="canSend">
-           <property name="focusPolicy">
-            <enum>Qt::TabFocus</enum>
-           </property>
-           <property name="text">
-            <string>Send</string>
-           </property>
-          </widget>
-         </item>
          <item row="1" column="1">
           <widget class="QLineEdit" name="canData">
            <property name="sizePolicy">
@@ -179,10 +192,24 @@
            </property>
           </widget>
          </item>
-         <item row="1" column="3">
-          <widget class="QRadioButton" name="canEXT">
+         <item row="0" column="1">
+          <widget class="QLabel" name="label_2">
            <property name="text">
-            <string>EXT</string>
+            <string>Data (hexadecimal)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="0">
+          <widget class="QLabel" name="label">
+           <property name="text">
+            <string>ID</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="2" colspan="2">
+          <widget class="QLabel" name="label_3">
+           <property name="text">
+            <string>Message type</string>
            </property>
           </widget>
          </item>
@@ -196,17 +223,10 @@
            </property>
           </widget>
          </item>
-         <item row="0" column="1">
-          <widget class="QLabel" name="label_2">
+         <item row="1" column="3">
+          <widget class="QRadioButton" name="canEXT">
            <property name="text">
-            <string>Data (hexadecimal)</string>
-           </property>
-          </widget>
-         </item>
-         <item row="0" column="0">
-          <widget class="QLabel" name="label">
-           <property name="text">
-            <string>ID</string>
+            <string>EXT</string>
            </property>
           </widget>
          </item>
@@ -223,10 +243,13 @@
            </property>
           </widget>
          </item>
-         <item row="0" column="2" colspan="2">
-          <widget class="QLabel" name="label_3">
+         <item row="1" column="5">
+          <widget class="QPushButton" name="canSend">
+           <property name="focusPolicy">
+            <enum>Qt::TabFocus</enum>
+           </property>
            <property name="text">
-            <string>Message type</string>
+            <string>Send</string>
            </property>
           </widget>
          </item>
@@ -242,6 +265,13 @@
             </size>
            </property>
           </spacer>
+         </item>
+         <item row="1" column="6">
+          <widget class="QPushButton" name="canClear">
+           <property name="text">
+            <string>Clear</string>
+           </property>
+          </widget>
          </item>
         </layout>
        </item>
@@ -311,18 +341,34 @@
  <resources/>
  <connections>
   <connection>
+   <sender>terminal_cmd</sender>
+   <signal>returnPressed()</signal>
+   <receiver>terminal_send</receiver>
+   <slot>click()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>317</x>
+     <y>619</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>370</x>
+     <y>619</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
    <sender>terminal_clear</sender>
    <signal>clicked()</signal>
    <receiver>terminal_cmd</receiver>
    <slot>clear()</slot>
    <hints>
     <hint type="sourcelabel">
-     <x>616</x>
-     <y>618</y>
+     <x>478</x>
+     <y>622</y>
     </hint>
     <hint type="destinationlabel">
-     <x>455</x>
-     <y>617</y>
+     <x>170</x>
+     <y>621</y>
     </hint>
    </hints>
   </connection>
@@ -333,28 +379,12 @@
    <slot>clear()</slot>
    <hints>
     <hint type="sourcelabel">
-     <x>609</x>
-     <y>611</y>
+     <x>501</x>
+     <y>615</y>
     </hint>
     <hint type="destinationlabel">
-     <x>353</x>
-     <y>527</y>
-    </hint>
-   </hints>
-  </connection>
-  <connection>
-   <sender>terminal_cmd</sender>
-   <signal>returnPressed()</signal>
-   <receiver>terminal_send</receiver>
-   <slot>click()</slot>
-   <hints>
-    <hint type="sourcelabel">
-     <x>452</x>
-     <y>614</y>
-    </hint>
-    <hint type="destinationlabel">
-     <x>529</x>
-     <y>620</y>
+     <x>237</x>
+     <y>533</y>
     </hint>
    </hints>
   </connection>
