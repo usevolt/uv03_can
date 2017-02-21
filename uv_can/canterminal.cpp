@@ -8,6 +8,8 @@
 #include <qscrollbar.h>
 #include <string.h>
 
+const int CanTerminal::terminalMaxLen = 10000;
+
 CanTerminal::CanTerminal(QWidget *parent) :
     QWidget(parent),
     ui(new Ui::can_terminal)
@@ -31,6 +33,11 @@ void CanTerminal::canReceive(CanDev::CanMsg_st &msg)
     if (getActiveDev() != -1 && msg.id == CanDev::instance()->uvTerminalID(getActiveDev())) {
         std::string str((char*) msg.data, msg.dataLen);
         ui->terminal->insertPlainText(QString::fromStdString(str));
+        while (ui->terminal->toPlainText().size() > this->terminalMaxLen) {
+            QTextCursor c = ui->terminal->textCursor();
+            c.movePosition(QTextCursor::Start);
+            c.deleteChar();
+        }
         ui->terminal->moveCursor(QTextCursor::End, QTextCursor::MoveAnchor);
     }
     else if (CanDev::instance()->isUvTerminalMsg(msg.id, &nodeID)) {

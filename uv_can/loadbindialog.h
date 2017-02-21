@@ -36,6 +36,7 @@ private:
 
     static std::string path;
     static unsigned int deviceID;
+    static const int terminalMaxLen;
 
     state_e state;
 

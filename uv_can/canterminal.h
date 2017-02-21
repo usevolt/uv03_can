@@ -37,6 +37,8 @@ private:
     int getActiveDev();
 
     void canTableInsert(CanDev::CanMsg_st &msg);
+
+    static const int terminalMaxLen;
 };
 
 #endif // CAN_TERMINAL_H

@@ -175,16 +175,16 @@ void CanDev::send(unsigned int id, CanDev::canMsgType_e type, unsigned int dataL
 
 bool CanDev::sendSync(unsigned int id, CanDev::canMsgType_e type, unsigned int dataLen, void *data, unsigned int timeout_ms)
 {
-    std::cout << "Sync sending id: " << id << ", type: " << type << ", Len: " << dataLen << ", data: ";
-    for (unsigned int i = 0; i < dataLen; i++) {
-        char str[20];
-        sprintf(str, "%02x", ((unsigned char*)data)[i]);
-        std::cout << str;
-        if (i != dataLen - 1) {
-            std::cout << ", ";
-        }
-    }
-    std::cout << std::endl;
+//    std::cout << "Sync sending id: " << id << ", type: " << type << ", Len: " << dataLen << ", data: ";
+//    for (unsigned int i = 0; i < dataLen; i++) {
+//        char str[20];
+//        sprintf(str, "%02x", ((unsigned char*)data)[i]);
+//        std::cout << str;
+//        if (i != dataLen - 1) {
+//            std::cout << ", ";
+//        }
+//    }
+//    std::cout << std::endl;
 
     if (this->connected) {
         canStatus stat = canWrite(this->txHandle, id, data, dataLen, (type == CAN_EXT) ? canMSG_EXT : canMSG_STD);

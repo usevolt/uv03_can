@@ -5,6 +5,7 @@
 
 
 const int MainWindow::stepMs = 10;
+const int MainWindow::terminalMaxLen = 10000;
 
 MainWindow::MainWindow(QWidget *parent) :
     QMainWindow(parent),
@@ -51,4 +52,15 @@ void MainWindow::on_actionLoad_bin_triggered()
     LoadBinDialog d;
     d.exec();
     this->timerId = this->startTimer(this->stepMs);
+}
+
+void MainWindow::on_terminal_textChanged()
+{
+    QString str = ui->terminal->toPlainText();
+    if (str.size() > this->terminalMaxLen) {
+        QTextCursor c = ui->terminal->textCursor();
+        c.setPosition(QTextCursor::Start);
+        c.setPosition(QTextCursor::Start + str.size() - this->terminalMaxLen, QTextCursor::KeepAnchor);
+        c.removeSelectedText();
+    }
 }

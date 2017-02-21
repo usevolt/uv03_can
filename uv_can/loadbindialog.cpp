@@ -14,6 +14,8 @@
 #define PACKET_LEN 0x100U
 
 
+
+const int LoadBinDialog::terminalMaxLen = 1000U;
 std::string LoadBinDialog::path = QDir::homePath().toStdString();
 unsigned int LoadBinDialog::deviceID = 0;
 
@@ -25,6 +27,7 @@ LoadBinDialog::LoadBinDialog(QWidget *parent) :
     ui->setupUi(this);
     ui->path->setText(QString::fromStdString(this->path));
     ui->nodeid->setValue(this->deviceID);
+    ui->flash->setFocus();
 }
 
 LoadBinDialog::~LoadBinDialog()
@@ -193,6 +196,9 @@ void LoadBinDialog::timerEvent(QTimerEvent *e)
                     this->killTimer(this->timerId);
                     this->state = STATE_NONE;
                     ui->progress->setValue(100);
+                    if (ui->close->isChecked()) {
+                        this->close();
+                    }
                     return;
                 }
 

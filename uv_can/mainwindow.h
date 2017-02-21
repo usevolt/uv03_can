@@ -23,6 +23,8 @@ private slots:
 
     void on_actionLoad_bin_triggered();
 
+    void on_terminal_textChanged();
+
 private:
     Ui::MainWindow *ui;
 
@@ -31,6 +33,7 @@ private:
     Q_DebugStream *terminalStream;
 
     static const int stepMs;
+    static const int terminalMaxLen;
 
     int timerId;
 };
