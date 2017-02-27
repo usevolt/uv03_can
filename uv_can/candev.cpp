@@ -223,7 +223,7 @@ void CanDev::sendUvTerminal(std::__cxx11::string str, unsigned int nodeID)
             }
         }
         msg.data[4 + count++] = '\n';
-        CanDev::instance()->sendSync(msg.id, msg.type, 4 + count, msg.data, 10000);
+        CanDev::instance()->send(msg.id, msg.type, 4 + count, msg.data);
     }
     else if (uvProtocol == UV_EXT) {
         int count = 0;
@@ -236,12 +236,12 @@ void CanDev::sendUvTerminal(std::__cxx11::string str, unsigned int nodeID)
                 msg.data[count++] = str[i];
             }
             if (count == 8) {
-                CanDev::instance()->sendSync(msg.id, msg.type, count, msg.data, 10000);
+                CanDev::instance()->send(msg.id, msg.type, count, msg.data);
                 count = 0;
             }
         }
         msg.data[count++] = '\n';
-        CanDev::instance()->sendSync(msg.id, msg.type, count, msg.data, 10000);
+        CanDev::instance()->send(msg.id, msg.type, count, msg.data);
     }
 }
 

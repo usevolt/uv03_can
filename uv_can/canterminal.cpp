@@ -33,11 +33,11 @@ void CanTerminal::canReceive(CanDev::CanMsg_st &msg)
     std::string str;
     if (getActiveDev() != -1 && CanDev::instance()->isUvTerminalMsg(msg, getActiveDev(), &str)) {
         ui->terminal->insertPlainText(QString::fromStdString(str));
-        while (ui->terminal->toPlainText().size() > this->terminalMaxLen) {
-            QTextCursor c = ui->terminal->textCursor();
-            c.movePosition(QTextCursor::Start);
-            c.deleteChar();
-        }
+//        while (ui->terminal->toPlainText().size() > this->terminalMaxLen) {
+//            QTextCursor c = ui->terminal->textCursor();
+//            c.setPosition(1);
+//            c.deleteChar();
+//        }
         ui->terminal->moveCursor(QTextCursor::End, QTextCursor::MoveAnchor);
     }
     else if (CanDev::instance()->isUvTerminalMsg(msg, -1)) {

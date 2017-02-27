@@ -29,9 +29,10 @@ private:
 
     enum state_e {
         STATE_NONE,
-        STATE_CONNECTING,
-        STATE_CONNECTED,
-        STATE_DOWNLOADING
+        STATE_DEV_INIT,
+        STATE_BLOCK_INIT,
+        STATE_BLOCK_DOWNLOAD,
+        STATE_BLOCK_END
     };
 
     static std::string path;
@@ -55,6 +56,9 @@ private:
     uint16_t crc;
 
     void log(std::string str);
+
+    /// @brief: Sends the next block of data
+    bool sendBlock(CanDev::CanMsg_st *rx_msg);
 
     uint16_t calcCRC(uint8_t *data, int dataLen);
 

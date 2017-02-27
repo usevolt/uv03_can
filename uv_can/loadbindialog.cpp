@@ -11,8 +11,8 @@
 #include <algorithm>
 
 
-#define PACKET_LEN 0x100U
 
+#define BLOCK_SIZE  256
 
 
 const int LoadBinDialog::terminalMaxLen = 1000U;
@@ -72,9 +72,9 @@ void LoadBinDialog::on_flash_clicked()
         CanDev::instance()->open(d.getBaudrate(), d.getDev());
     }
 
-    ui->flash->setEnabled(false);
-    ui->browse->setEnabled(false);
-    ui->path->setEnabled(false);
+//    ui->flash->setEnabled(false);
+//    ui->browse->setEnabled(false);
+//    ui->path->setEnabled(false);
 
     this->nodeId = ui->nodeid->value();
 
@@ -88,7 +88,7 @@ void LoadBinDialog::on_flash_clicked()
         this->localEcho = false;
         CanDev::instance()->sendUvTerminal("\nreset\n", this->nodeId);
 //        CanDev::instance()->clearReceiveBuffer();
-        this->state = STATE_CONNECTING;
+        this->state = STATE_DEV_INIT;
         this->timerId = this->startTimer(1);
     }
     else {
@@ -104,114 +104,155 @@ void LoadBinDialog::timerEvent(QTimerEvent *e)
     CanDev::CanMsg_st msg;
     while (CanDev::instance()->receive(msg)) {
 
-        if ((msg.id & 0xFFFF0000) == 0x15560000 && (msg.id & 0xFFFF) == this->nodeId) {
 
-            // local echo filters the first accepted message out.
-            // This has to be done because Kvaser adapter receives transmitted messages
-            // by default.
-            if (this->localEcho) {
-                this->localEcho = false;
-                continue;
+        if (this->state == STATE_DEV_INIT && msg.id == 0x700 + this->nodeId && msg.data[0] == 0x0) {
+            this->dataIndex = 0;
+            CanDev::instance()->clearReceiveBuffer();
+            this->state = STATE_BLOCK_INIT;
+        }
+
+
+
+        if (!sendBlock(&msg)) {
+            if (this->dataIndex >= BLOCK_SIZE) {
+                this->dataIndex -= BLOCK_SIZE;
             }
-
-            if (this->state == STATE_CONNECTING) {
-                if (msg.data[0] == 'C') {
-
-                    // note: Works only on little-endian architectures
-                    std::cout << "Downloading " << this->dataCount << " bytes" << std::endl;
-
-                    msg.data[0] = 'C';
-                    msg.dataLen = 8;
-                    *((uint32_t*) &msg.data[1]) = this->dataCount;
-                    msg.data[5] = 0;
-                    msg.data[6] = 0;
-                    msg.data[7] = 0;
-                    this->localEcho = true;
-                    CanDev::instance()->send(0x15560000 + this->nodeId,
-                                             CanDev::CAN_EXT, msg.dataLen, msg.data);
-                    this->lastMsg = msg;
-                    this->state = STATE_CONNECTED;
-                }
-            }
-            else if (this->state == STATE_CONNECTED) {
-                if (!compareMessages(&msg, &this->lastMsg)) {
-                    log("\n*****\nDownloaded data mismatch when connecting. "
-                        "Flashing failed.\nReset the device and try again.\n*****");
-                    this->state = STATE_NONE;
-                    this->killTimer(this->timerId);
-                    return;
-                }
-                log("Target connected. Flashing...");
-                if(!sendPacket(&((uint8_t*)(this->data.data()))[this->dataIndex],
-                        std::min(this->dataCount - this->dataIndex, PACKET_LEN), &this->crc)) {
-                    log("\n*****\nError when receiving the first packet\n*****");
-                    this->killTimer(this->timerId);
-                    this->state = STATE_NONE;
-                    return;
-                }
-                this->dataIndex += std::min(this->dataCount - this->dataIndex, PACKET_LEN);
-
-                CanDev::instance()->clearReceiveBuffer();
-                this->localEcho = false;
-                this->state = STATE_DOWNLOADING;
-            }
-            else if (this->state == STATE_DOWNLOADING) {
-
-                // compare crc
-                std::ostringstream oss;
-                oss << "Comparing received crc " << std::hex << *((uint16_t*) msg.data)
-                    << " to calculated crc " << this->crc;
-                log(oss.str());
-                if (this->crc != *((uint16_t*) msg.data)) {
-                    std::ostringstream os;
-                    os << "\n*****\nCRC doesn't match on data " << std::hex << this->dataIndex << "\n*****";
-                    log(os.str());
-                    this->killTimer(this->timerId);
-                    this->state = STATE_NONE;
-                    return;
-                }
-                log("OK");
-
-                if (!sendPacket(&((uint8_t*)(this->data.data()))[this->dataIndex],
-                        std::min(this->dataCount - this->dataIndex, PACKET_LEN), &this->crc)) {
-                    std::ostringstream os;
-                    os << "\n*****\nError when sending packet. Data index: " << this->dataIndex
-                       << ", packet length: " << PACKET_LEN << "\n*****";
-                    log(os.str());
-                    this->killTimer(this->timerId);
-                    this->state = STATE_NONE;
-                    return;
-                }
-                this->dataIndex += std::min(this->dataCount - this->dataIndex, PACKET_LEN);
-
-                CanDev::instance()->clearReceiveBuffer();
-                this->localEcho = false;
-
-
-                if (this->dataIndex == this->dataCount) {
-                    log("Download successful");
-                    this->killTimer(this->timerId);
-                    this->state = STATE_NONE;
-                    ui->progress->setValue(100);
-                    if (ui->close->isChecked()) {
-                        this->close();
-                    }
-                    return;
-                }
-
-                ui->progress->setValue(this->dataIndex * 100 / this->dataCount);
-                ui->flash->setEnabled(true);
-                ui->browse->setEnabled(true);
-                ui->path->setEnabled(true);
+            // first packet failed, end the transfer
+            if (this->dataIndex == 0) {
+                log("*****************************\n"
+                    "Flashing ended because the first block transfer failed\n"
+                    "*****************************\n");
+                this->state = STATE_DEV_INIT;
+                killTimer(this->timerId);
             }
         }
+
+//        ui->progress->setValue(this->dataIndex * 100 / this->dataCount);
+//        ui->flash->setEnabled(true);
+//        ui->browse->setEnabled(true);
+//        ui->path->setEnabled(true);
     }
+    if (!sendBlock(&msg)) {
+        if (this->dataIndex >= BLOCK_SIZE) {
+            this->dataIndex -= BLOCK_SIZE;
+        }
+        // first packet failed, end the transfer
+        if (this->dataIndex == 0) {
+            log("*****************************\n"
+                "Flashing ended because the first block transfer failed\n"
+                "*****************************\n");
+            this->state = STATE_DEV_INIT;
+            killTimer(this->timerId);
+        }
+    }
+
+    // data transfer is finnished, restart the node
+    if (this->dataIndex == this->dataCount) {
+        msg.data[0] = 0x81;
+        msg.data[1] = this->nodeId;
+        CanDev::instance()->send(0, CanDev::CAN_STD, 2, msg.data);
+        this->state = STATE_NONE;
+        killTimer(this->timerId);
+        std::stringstream ss;
+        ss << "********************\nFlashed '" <<
+              this->dataCount << "' bytes succesfully\n********************";
+        log(ss.str());
+        ui->progress->setValue(100);
+        if (ui->close->isChecked()) {
+            this->close();
+        }
+        return;
+    }
+    ui->progress->setValue(this->dataIndex * 100 / this->dataCount);
 }
 
 void LoadBinDialog::log(std::__cxx11::string str)
 {
     ui->terminal->insertPlainText(QString::fromStdString(str) + "\n");
     ui->terminal->moveCursor(QTextCursor::End, QTextCursor::MoveAnchor);
+}
+
+bool LoadBinDialog::sendBlock(CanDev::CanMsg_st *rx_msg)
+{
+
+    if (this->state == STATE_BLOCK_INIT) {
+        // send a SDO write block request to index 0x1F50
+        rx_msg->data[0] = 0x62;
+        rx_msg->data[1] = 0x50;
+        rx_msg->data[2] = 0x1F;
+        rx_msg->data[3] = 1;
+        memset(&rx_msg->data[4], 0, 4);
+        CanDev::instance()->send(0x600 + this->nodeId, CanDev::CAN_STD, 8, rx_msg->data);
+        this->localEcho = true;
+        this->state = STATE_BLOCK_DOWNLOAD;
+        return true;
+    }
+    else if (this->state == STATE_BLOCK_DOWNLOAD) {
+        if (rx_msg && rx_msg->id == 0x580 + this->nodeId && rx_msg->data[0] == 0xA4) {
+            int msgCount = 0;
+            int dataByte = 1;
+            int startIndex = this->dataIndex;
+            for (int i = 0; i < BLOCK_SIZE; i++) {
+                if (this->dataIndex == this->dataCount) {
+                    break;
+                }
+                rx_msg->data[dataByte++] = this->data.data()[this->dataIndex++];
+                if (dataByte == 8) {
+                    if (this->dataIndex == this->dataCount || i == BLOCK_SIZE - 1) {
+                        rx_msg->data[0] = (1 << 7) + msgCount++;
+                    }
+                    else {
+                        rx_msg->data[0] = msgCount++;
+                    }
+                    dataByte = 1;
+                    CanDev::instance()->sendSync(0x600 + this->nodeId, CanDev::CAN_STD, 8, rx_msg->data, 5000);
+                }
+            }
+            if (dataByte != 1) {
+                rx_msg->data[0] = (1 << 7) + msgCount;
+                CanDev::instance()->sendSync(0x600 + this->nodeId, CanDev::CAN_STD, 8, rx_msg->data, 5000);
+            }
+
+            // send end block message
+            rx_msg->data[0] = 0xC1 + ((7 - (dataByte - 1)) << 2);
+            uint16_t crc = calcCRC((uint8_t*) &this->data.data()[startIndex], this->dataIndex - startIndex);
+            rx_msg->data[1] = (uint8_t) crc;
+            rx_msg->data[2] = (crc >> 8);
+            memset(&rx_msg->data[3], 0, 5);
+            CanDev::instance()->send(0x600 + this->nodeId, CanDev::CAN_STD, 8, rx_msg->data);
+            CanDev::instance()->clearReceiveBuffer();
+            this->localEcho = true;
+            std::stringstream ss;
+            ss << "Block sent with CRC 0x" << std::hex << crc;
+            log(ss.str());
+
+            this->state = STATE_BLOCK_END;
+
+        }
+        return true;
+    }
+    else if (this->state == STATE_BLOCK_END) {
+        if (this->localEcho) {
+            this->localEcho = false;
+            return true;
+        }
+        if (rx_msg && rx_msg->id == 0x580 + this->nodeId && rx_msg->data[0] == 0x80) {
+            // crc didn't match
+            std::stringstream ss;
+            ss << "*********************\nDevice aborted the block "
+                  " in CRC check\n*********************";
+            log(ss.str());
+            this->state = STATE_BLOCK_INIT;
+            return false;
+        }
+        else if (rx_msg && rx_msg->id == 0x580 + this->nodeId && rx_msg->data[0] == 0xA1) {
+            // crc did match, proceed
+            this->state = STATE_BLOCK_INIT;
+            return true;
+        }
+    }
+
+    return true;
 }
 
 uint16_t LoadBinDialog::calcCRC(uint8_t *data, int dataLen)
