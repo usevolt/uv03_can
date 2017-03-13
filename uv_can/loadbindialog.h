@@ -55,6 +55,8 @@ private:
     QByteArray data;
     uint16_t crc;
 
+    int sendingDelay;
+
     void log(std::string str);
 
     /// @brief: Sends the next block of data

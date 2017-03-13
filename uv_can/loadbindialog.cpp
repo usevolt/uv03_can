@@ -13,6 +13,7 @@
 
 
 #define BLOCK_SIZE  256
+#define SENDING_DELAY_MS    3000
 
 
 const int LoadBinDialog::terminalMaxLen = 1000U;
@@ -77,6 +78,7 @@ void LoadBinDialog::on_flash_clicked()
 //    ui->path->setEnabled(false);
 
     this->nodeId = ui->nodeid->value();
+    this->sendingDelay = SENDING_DELAY_MS;
 
     QFile file(QString::fromStdString(this->path));
     if (file.open(QIODevice::ReadOnly)) {
@@ -87,6 +89,8 @@ void LoadBinDialog::on_flash_clicked()
         log("Waiting for target response...");
         this->localEcho = false;
         CanDev::instance()->sendUvTerminal("\nreset\n", this->nodeId);
+        uint8_t d[2] = { 129, (uint8_t) this->nodeId };
+        CanDev::instance()->send(0x0, CanDev::CAN_STD, 2, d);
 //        CanDev::instance()->clearReceiveBuffer();
         this->state = STATE_DEV_INIT;
         this->timerId = this->startTimer(1);
@@ -102,8 +106,18 @@ void LoadBinDialog::timerEvent(QTimerEvent *e)
 
     }
     CanDev::CanMsg_st msg;
+
+    if (this->sendingDelay > 0) {
+        this->sendingDelay -= 1;
+    }
+    else {
+        log("No response, restarting the download");
+        on_flash_clicked();
+    }
+
     while (CanDev::instance()->receive(msg)) {
 
+        this->sendingDelay = SENDING_DELAY_MS;
 
         if (this->state == STATE_DEV_INIT && msg.id == 0x700 + this->nodeId && msg.data[0] == 0x0) {
             this->dataIndex = 0;
