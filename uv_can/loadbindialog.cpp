@@ -13,7 +13,7 @@
 
 
 #define BLOCK_SIZE  256
-#define SENDING_DELAY_MS    3000
+#define SENDING_DELAY_MS    1000
 
 
 const int LoadBinDialog::terminalMaxLen = 1000U;
@@ -23,7 +23,8 @@ unsigned int LoadBinDialog::deviceID = 0;
 LoadBinDialog::LoadBinDialog(QWidget *parent) :
     QDialog(parent),
     state(STATE_NONE),
-    ui(new Ui::LoadBinDialog)
+    ui(new Ui::LoadBinDialog),
+    timerId(-1)
 {
     ui->setupUi(this);
     ui->path->setText(QString::fromStdString(this->path));
@@ -63,6 +64,10 @@ void LoadBinDialog::on_browse_clicked()
 
 void LoadBinDialog::on_flash_clicked()
 {
+    if (this->timerId != -1) {
+        this->killTimer(this->timerId);
+    }
+
     if (!CanDev::instance()->getConnected()) {
         OpenDialog d;
         int ret = d.exec();
@@ -72,10 +77,6 @@ void LoadBinDialog::on_flash_clicked()
         }
         CanDev::instance()->open(d.getBaudrate(), d.getDev());
     }
-
-//    ui->flash->setEnabled(false);
-//    ui->browse->setEnabled(false);
-//    ui->path->setEnabled(false);
 
     this->nodeId = ui->nodeid->value();
     this->sendingDelay = SENDING_DELAY_MS;
@@ -88,10 +89,9 @@ void LoadBinDialog::on_flash_clicked()
         log("Flashing...");
         log("Waiting for target response...");
         this->localEcho = false;
-        CanDev::instance()->sendUvTerminal("\nreset\n", this->nodeId);
+//        CanDev::instance()->sendUvTerminal("\nreset\n", this->nodeId);
         uint8_t d[2] = { 129, (uint8_t) this->nodeId };
         CanDev::instance()->send(0x0, CanDev::CAN_STD, 2, d);
-//        CanDev::instance()->clearReceiveBuffer();
         this->state = STATE_DEV_INIT;
         this->timerId = this->startTimer(1);
     }
@@ -108,18 +108,21 @@ void LoadBinDialog::timerEvent(QTimerEvent *e)
     CanDev::CanMsg_st msg;
 
     if (this->sendingDelay > 0) {
-        this->sendingDelay -= 1;
+        this->sendingDelay--;
     }
     else {
         log("No response, restarting the download");
+        killTimer(this->timerId);
         on_flash_clicked();
     }
 
     while (CanDev::instance()->receive(msg)) {
 
-        this->sendingDelay = SENDING_DELAY_MS;
+        if (msg.id == 0x700 + this->nodeId || msg.id == 0x580 + this->nodeId) {
+            this->sendingDelay = SENDING_DELAY_MS;
+        }
 
-        if (this->state == STATE_DEV_INIT && msg.id == 0x700 + this->nodeId && msg.data[0] == 0x0) {
+        if (msg.id == 0x700 + this->nodeId && msg.data[0] == 0x0) {
             this->dataIndex = 0;
             CanDev::instance()->clearReceiveBuffer();
             this->state = STATE_BLOCK_INIT;
@@ -146,7 +149,7 @@ void LoadBinDialog::timerEvent(QTimerEvent *e)
 //        ui->browse->setEnabled(true);
 //        ui->path->setEnabled(true);
     }
-    if (!sendBlock(&msg)) {
+    if (!sendBlock(NULL)) {
         if (this->dataIndex >= BLOCK_SIZE) {
             this->dataIndex -= BLOCK_SIZE;
         }
@@ -188,15 +191,19 @@ void LoadBinDialog::log(std::__cxx11::string str)
 
 bool LoadBinDialog::sendBlock(CanDev::CanMsg_st *rx_msg)
 {
+    CanDev::CanMsg_st tx_msg;
+    if (rx_msg && ui->rx_log->isChecked()) {
+        std::cout << "rx msg id: " << std::hex << rx_msg->id << std::endl;
+    }
 
     if (this->state == STATE_BLOCK_INIT) {
         // send a SDO write block request to index 0x1F50
-        rx_msg->data[0] = 0x62;
-        rx_msg->data[1] = 0x50;
-        rx_msg->data[2] = 0x1F;
-        rx_msg->data[3] = 1;
-        memset(&rx_msg->data[4], 0, 4);
-        CanDev::instance()->send(0x600 + this->nodeId, CanDev::CAN_STD, 8, rx_msg->data);
+        tx_msg.data[0] = 0x62;
+        tx_msg.data[1] = 0x50;
+        tx_msg.data[2] = 0x1F;
+        tx_msg.data[3] = 1;
+        memset(&tx_msg.data[4], 0, 4);
+        CanDev::instance()->send(0x600 + this->nodeId, CanDev::CAN_STD, 8, tx_msg.data);
         this->localEcho = true;
         this->state = STATE_BLOCK_DOWNLOAD;
         return true;
@@ -219,12 +226,12 @@ bool LoadBinDialog::sendBlock(CanDev::CanMsg_st *rx_msg)
                         rx_msg->data[0] = msgCount++;
                     }
                     dataByte = 1;
-                    CanDev::instance()->sendSync(0x600 + this->nodeId, CanDev::CAN_STD, 8, rx_msg->data, 5000);
+                    CanDev::instance()->sendSync(0x600 + this->nodeId, CanDev::CAN_STD, 8, rx_msg->data, 1000);
                 }
             }
             if (dataByte != 1) {
                 rx_msg->data[0] = (1 << 7) + msgCount;
-                CanDev::instance()->sendSync(0x600 + this->nodeId, CanDev::CAN_STD, 8, rx_msg->data, 5000);
+                CanDev::instance()->sendSync(0x600 + this->nodeId, CanDev::CAN_STD, 8, rx_msg->data, 1000);
             }
 
             // send end block message
