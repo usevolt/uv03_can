@@ -226,12 +226,12 @@ bool LoadBinDialog::sendBlock(CanDev::CanMsg_st *rx_msg)
                         rx_msg->data[0] = msgCount++;
                     }
                     dataByte = 1;
-                    CanDev::instance()->sendSync(0x600 + this->nodeId, CanDev::CAN_STD, 8, rx_msg->data, 1000);
+                    CanDev::instance()->send(0x600 + this->nodeId, CanDev::CAN_STD, 8, rx_msg->data);
                 }
             }
             if (dataByte != 1) {
                 rx_msg->data[0] = (1 << 7) + msgCount;
-                CanDev::instance()->sendSync(0x600 + this->nodeId, CanDev::CAN_STD, 8, rx_msg->data, 1000);
+                CanDev::instance()->send(0x600 + this->nodeId, CanDev::CAN_STD, 8, rx_msg->data);
             }
 
             // send end block message

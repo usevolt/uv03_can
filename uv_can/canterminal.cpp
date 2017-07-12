@@ -33,6 +33,21 @@ void CanTerminal::canReceive(CanDev::CanMsg_st &msg)
     std::string str;
     if (getActiveDev() != -1 && CanDev::instance()->isUvTerminalMsg(msg, getActiveDev(), &str)) {
         ui->terminal->insertPlainText(QString::fromStdString(str));
+        // terminal clearing
+        bool clear = false;
+        if (str[0] == 'c' &&
+                ui->terminal->toPlainText()[ui->terminal->toPlainText().size() - 1] == '\033') {
+            clear = true;
+        }
+        for (unsigned int i = 1; i < str.size(); i++) {
+            if (str[i] == 'c' && str[i - 1] == '\033') {
+                clear = true;
+                break;
+            }
+        }
+        if (clear) {
+            ui->terminal->clear();
+        }
 //        while (ui->terminal->toPlainText().size() > this->terminalMaxLen) {
 //            QTextCursor c = ui->terminal->textCursor();
 //            c.setPosition(1);
@@ -93,6 +108,7 @@ void CanTerminal::on_devDel_clicked()
 
 void CanTerminal::on_terminal_send_clicked()
 {
+
     if (!CanDev::instance()->getConnected()) {
         std::cout << "Connect to CAN adapter first" << std::endl;
         OpenDialog d;
