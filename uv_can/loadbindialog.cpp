@@ -210,7 +210,10 @@ bool LoadBinDialog::sendBlock(CanDev::CanMsg_st *rx_msg)
     }
     else if (this->state == STATE_BLOCK_DOWNLOAD) {
         if (rx_msg && rx_msg->id == 0x580 + this->nodeId && rx_msg->data[0] == 0xA4) {
-            int msgCount = 0;
+            // NOTE: Difference to fully compliant CANopen: message count starts from 1,
+            // making it possible to send 1 frame long bulk transfers. Otherwise
+            // the first and last message would be read as SDO Abort message (1st byte 0x80).
+            int msgCount = 1;
             int dataByte = 1;
             int startIndex = this->dataIndex;
             for (int i = 0; i < BLOCK_SIZE; i++) {
