@@ -217,6 +217,9 @@ bool LoadBinDialog::sendBlock(CanDev::CanMsg_st *rx_msg)
                 if (this->dataIndex == this->dataCount) {
                     break;
                 }
+                if (dataByte == 8) {
+                    dataByte = 1;
+                }
                 rx_msg->data[dataByte++] = this->data.data()[this->dataIndex++];
                 if (dataByte == 8) {
                     if (this->dataIndex == this->dataCount || i == BLOCK_SIZE - 1) {
@@ -225,18 +228,18 @@ bool LoadBinDialog::sendBlock(CanDev::CanMsg_st *rx_msg)
                     else {
                         rx_msg->data[0] = msgCount++;
                     }
-                    dataByte = 1;
                     CanDev::instance()->send(0x600 + this->nodeId, CanDev::CAN_STD, 8, rx_msg->data);
                 }
             }
-            if (dataByte != 1) {
+            if (dataByte != 8) {
                 rx_msg->data[0] = (1 << 7) + msgCount;
                 CanDev::instance()->send(0x600 + this->nodeId, CanDev::CAN_STD, 8, rx_msg->data);
             }
 
             // send end block message
             rx_msg->data[0] = 0xC1 + ((7 - (dataByte - 1)) << 2);
-            uint16_t crc = calcCRC((uint8_t*) &this->data.data()[startIndex], this->dataIndex - startIndex);
+            uint16_t crc_len = this->dataIndex - startIndex;
+            uint16_t crc = calcCRC((uint8_t*) &this->data.data()[startIndex], crc_len);
             rx_msg->data[1] = (uint8_t) crc;
             rx_msg->data[2] = (crc >> 8);
             memset(&rx_msg->data[3], 0, 5);
@@ -244,8 +247,12 @@ bool LoadBinDialog::sendBlock(CanDev::CanMsg_st *rx_msg)
             CanDev::instance()->clearReceiveBuffer();
             this->localEcho = true;
             std::stringstream ss;
-            ss << "Block sent with CRC 0x" << std::hex << crc;
+            ss << "Block sent with CRC 0x" << std::hex << crc << ", len: " << std::dec << crc_len << ", data index so far: 0x" << std::hex << this->dataIndex;
             log(ss.str());
+            if (crc_len == 28) {
+                volatile int p = 0;
+                if (p) ;
+            }
 
             this->state = STATE_BLOCK_END;
 
