@@ -21,15 +21,42 @@
 
 
 #include <uv_memory.h>
+#include <uv_rtos.h>
+#include <uv_utilities.h>
 
+
+
+#define TASKS_LEN	5
+typedef struct {
+	uv_mutex_st mutex;
+	void (*step)(void*);
+} task_st;
 
 struct _dev_st {
-	uv_data_start_t data_start;
 
+	/// @brief: Selects the CAN hardware to be used
+	const char *can_dev;
+	/// @brief: CAN-bus baudrate
+	unsigned int baudrate;
+
+	/// @brief: CANopen Node ID of the selected device
+	uint8_t nodeid;
+
+	/// @brief: operating tasks of the application. Commands can
+	/// register their tasks via *add_task* function.
+	/// The commands get execution order each in turn.
+	task_st task_buffer[TASKS_LEN];
+	uv_vector_st tasks;
+
+	uv_data_start_t data_start;
 
 	uv_data_end_t data_end;
 };
 
 extern struct _dev_st dev;
+
+
+/// @brief: Registers a task
+void add_task(void (*step_callback)(void*));
 
 #endif /* MAIN_H_ */

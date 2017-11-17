@@ -16,19 +16,16 @@
 */
 
 
-#include "help.h"
-#include "commands.h"
-#include <stdio.h>
+#ifndef LOAD_H_
+#define LOAD_H_
 
 
-bool cmd_help(const char *arg) {
-	printf( "*****************************\n"
-			"Usevolt CAN command line tool\n"
-			"*****************************\n"
-			"\n\nCommands:\n");
-	for (int i = 0; i < commands_count(); i++) {
-		printf("--%s: %s\n\n", commands[i].cmd, commands[i].str);
-	}
+#include <uv_utilities.h>
 
-	return true;
-}
+
+/// @brief: Loads firmware with the name of **arg** to device selected
+/// previously with command *nodeid*.
+bool cmd_load(const char *arg);
+
+
+#endif /* LOAD_H_ */

@@ -114,12 +114,12 @@
 
 
 
-#define CONFIG_CAN							1
-#define CONFIG_CAN0							0
-#define CONFIG_CAN1							0
-#define CONFIG_SOCKETCAN					1
-#define CONFIG_CAN_LOG						0
-#define CONFIG_CAN_ERROR_LOG				0
+#define CONFIG_CAN									1
+#define CONFIG_CAN0									1
+#define CONFIG_CAN0_BAUDRATE						250000
+#define CONFIG_CAN1									0
+#define CONFIG_CAN_LOG								0
+#define CONFIG_CAN_ERROR_LOG						0
 
 
 #define CONFIG_CANOPEN								0

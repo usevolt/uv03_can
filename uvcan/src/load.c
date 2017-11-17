@@ -16,19 +16,34 @@
 */
 
 
-#include "help.h"
-#include "commands.h"
-#include <stdio.h>
+
+#include <uv_rtos.h>
+#include "load.h"
+#include "main.h"
+
+#define this (&dev)
 
 
-bool cmd_help(const char *arg) {
-	printf( "*****************************\n"
-			"Usevolt CAN command line tool\n"
-			"*****************************\n"
-			"\n\nCommands:\n");
-	for (int i = 0; i < commands_count(); i++) {
-		printf("--%s: %s\n\n", commands[i].cmd, commands[i].str);
+void load_step(void *dev);
+
+
+
+bool cmd_load(const char *arg) {
+	bool ret = true;
+
+	printf("Firmware %s selected\n", arg, this->nodeid);
+	add_task(load_step);
+
+	return ret;
+}
+
+
+void load_step(void *dev) {
+	while (true) {
+
+		printf("loading firmware...\n");
+
+		uv_rtos_task_delay(1000);
+		break;
 	}
-
-	return true;
 }
