@@ -14,4 +14,4 @@ release/hal/uv_hal/src/uv_output.o: hal/uv_hal/src/uv_output.c \
  hal/uv_hal/inc/canopen/canopen_sdo.h \
  hal/uv_hal/inc/canopen/canopen_sdo_server.h \
  hal/uv_hal/inc/canopen/canopen_emcy.h \
- hal/uv_hal/inc/canopen/canopen_obj_dict.h
+ hal/uv_hal/inc/canopen/canopen_obj_dict.h hal/uv_hal/inc/uv_canopen.h

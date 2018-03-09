@@ -21,6 +21,9 @@
 #include "main.h"
 #include "help.h"
 #include "load.h"
+#include "listen.h"
+#include <uv_can.h>
+#include <string.h>
 
 #define this (&dev)
 
@@ -41,12 +44,14 @@ commands_st commands[] = {
 				.str = "Selects the CAN-USB hardware for communication. Defaults to can0.",
 				.callback = &cmd_can
 		},
-		{
-				.cmd = "baud",
-				.str = "Sets the baudrate for the CAN-bus. Refer to CiA specification for valid values. "
-						"Defaults to 250 kbaud.",
-				.callback = &cmd_baud
-		},
+// note: Baudrate setting not available. uvcan depends on SocketCAN and user should open the connection
+// beforehand with ip link set CHANNEL type can bitrate BAUDRATE and ip link set dev CHANNEL up.
+//		{
+//				.cmd = "baud",
+//				.str = "Sets the baudrate for the CAN-bus. Refer to CiA specification for valid values. "
+//						"Defaults to 250 kbaud.",
+//				.callback = &cmd_baud
+//		},
 		{
 				.cmd = "node",
 				.str = "Selecs the CANopen Node via Node ID. This should be called prior to commands which "
@@ -58,6 +63,11 @@ commands_st commands[] = {
 				.str = "Loads firmware to UV device. "
 						"The device node id should be selected with 'node' option prior to this command.",
 				.callback = &cmd_load
+		},
+		{
+				.cmd = "listen",
+				.str = "Listens the CAN bus for x seconds, listing all messages received.",
+				.callback = &cmd_listen
 		}
 };
 
@@ -69,8 +79,7 @@ unsigned int commands_count(void) {
 
 bool cmd_can(const char *arg) {
 	printf("selecting '%s' as CAN dev\n", arg);
-	this->can_dev = arg;
-
+	strcpy(this->can_channel, arg);
 	return true;
 }
 
@@ -83,6 +92,7 @@ bool cmd_baud(const char *arg) {
 		unsigned int baudrate = strtol(arg, NULL, 0);
 		printf("Setting CAN baudrate: %u\n", baudrate);
 		this->baudrate = baudrate;
+		uv_can_set_baudrate(this->can_channel, baudrate);
 		ret = true;
 	}
 
@@ -103,4 +113,5 @@ bool cmd_node(const char *arg) {
 
 	return ret;
 }
+
 

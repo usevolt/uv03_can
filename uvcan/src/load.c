@@ -17,7 +17,8 @@
 
 
 
-#include <uv_rtos.h>
+#include <stdio.h>
+#include <string.h>
 #include "load.h"
 #include "main.h"
 
@@ -27,23 +28,129 @@
 void load_step(void *dev);
 
 
+#define BLOCK_SIZE	256
+#define RESPONSE_DELAY_MS	1000
+#define BOOTLOADER_INDEX	0x1F50
+#define BOOTLOADER_SUBINDEX	1
 
 bool cmd_load(const char *arg) {
 	bool ret = true;
 
-	printf("Firmware %s selected\n", arg, this->nodeid);
-	add_task(load_step);
+	if (!arg) {
+		printf("ERROR: Give firmware as a file path to binary file.\n");
+	}
+	else {
+		printf("Firmware %s selected\n", arg, this->nodeid);
+		strcpy(this->cmd_load.firmware, arg);
+		this->cmd_load.response = false;
+		uv_delay_init(&this->cmd_load.delay, RESPONSE_DELAY_MS);
+		add_task(load_step);
+	}
 
 	return ret;
 }
 
+static void can_callb(void * ptr, uv_can_msg_st *msg) {
+	if ((msg->id == CANOPEN_HEARTBEAT_ID + this->nodeid) &&
+			(msg->type == CAN_STD) &&
+			(msg->data_length == 1) &&
+			(msg->data_8bit[0] == CANOPEN_BOOT_UP)) {
+		// canopen boot up message recieved, node found.
+		this->cmd_load.response = true;
 
-void load_step(void *dev) {
-	while (true) {
+		// disable CAN callback, it's not needed anymore.
+		uv_canopen_set_can_callback(NULL);
+	}
+}
 
-		printf("loading firmware...\n");
+void load_step(void *ptr) {
+	FILE *fptr = fopen(this->cmd_load.firmware, "rb");
 
-		uv_rtos_task_delay(1000);
-		break;
+	if (fptr == NULL) {
+		// failed to open the file, exit this task
+		printf("Failed to open firmware file %s.\n", this->cmd_load.firmware);
+	}
+	else {
+		int32_t size;
+		fseek(fptr, 0, SEEK_END);
+		size = ftell(fptr);
+		rewind(fptr);
+
+		printf("Opened file %s. Size: %i bytes.\n", this->cmd_load.firmware, size);
+		printf("Resetting node 0x%x\n", this->nodeid);
+
+		// set canopen callback function
+		uv_canopen_set_can_callback(&can_callb);
+
+		uv_canopen_nmt_master_reset_node(this->nodeid);
+
+		printf("Reset OK. Now downloading...\n");
+
+		// wait for a response to NMT reset command
+		while (true) {
+			uint16_t step_ms = 20;
+			if (this->cmd_load.response) {
+				this->cmd_load.response = false;
+				break;
+			}
+			else {
+				if (uv_delay(&this->cmd_load.delay, step_ms)) {
+					printf("Couldn't reset node. No response to NMT Reset Node.\n");
+					break;
+				}
+			}
+			uv_rtos_task_delay(step_ms);
+		}
+		bool success = false;
+		if (!this->cmd_load.response) {
+			uint8_t data[BLOCK_SIZE];
+			int32_t data_length;
+			int32_t index = 0;
+			uint32_t block = 0;
+			success = true;
+			while (index < size) {
+				block++;
+				if (index + BLOCK_SIZE <= size) {
+					data_length = BLOCK_SIZE;
+				}
+				else {
+					data_length = size - index;
+				}
+				size_t ret = fread(data, data_length, 1, fptr);
+
+				if (!ret) {
+					printf("ERROR: Reading file failed at byte %u / %u. "
+							"Firmware download executed.\n", index, size);
+					break;
+				}
+				else {
+					if (uv_canopen_sdo_block_write(this->nodeid, BOOTLOADER_INDEX, BOOTLOADER_SUBINDEX,
+							data_length, data) != ERR_NONE) {
+						printf("Error while downloading block %u. Trying again...\n", block);
+						// try again ONCE
+						if (uv_canopen_sdo_block_write(this->nodeid, BOOTLOADER_INDEX, BOOTLOADER_SUBINDEX,
+								data_length, data) != ERR_NONE) {
+							printf("Second error while downloading block %u. Ending the transfer.\n", block);
+							success = false;
+							break;
+						}
+						else {
+							printf("Block %u downloaded\n", block);
+						}
+					}
+					else {
+						printf("Block %u downloaded, %u / %u bytes\n", block, index + data_length, size);
+					}
+				}
+				index += data_length;
+			}
+		}
+
+		fclose(fptr);
+		if (success) {
+			printf("Loading done. Resetting device... OK!\n");
+			uv_canopen_nmt_master_reset_node(this->nodeid);
+			printf("Binary file closed.\n");
+		}
 	}
 }

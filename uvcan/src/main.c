@@ -17,16 +17,34 @@
 #include "help.h"
 #include "commands.h"
 
+
 struct _dev_st dev;
 #define this (&dev)
 
 
+
+const canopen_object_st obj_dict[] = {
+
+};
+
+unsigned int obj_dict_len(void) {
+	return (sizeof(obj_dict) / sizeof(canopen_object_st));
+}
+
+
 void init(void *me) {
 	// initialize the default settings
-	this->can_dev = "can0";
 	this->baudrate = 250000;
+	strcpy(this->can_channel, "can0");
+	// if setting the baudrate failed, it means that the CAN dev couldn't be
+	// opened. Exit without hesitation.
+	if (!uv_can_set_baudrate(this->can_channel, this->baudrate)) {
+		exit(-1);
+	}
+	this->nodeid = 0;
 	uv_vector_init(&this->tasks, this->task_buffer, TASKS_LEN, sizeof(task_st));
 }
+
 
 /// @brief: Function which is registered as FreeRTOS task function for each task.
 void task_step(void *ptr) {
@@ -34,15 +52,12 @@ void task_step(void *ptr) {
 
 	// wait until mutex is locked
 	uv_mutex_lock(&task->mutex);
-	printf("task starting\n");
 	// this task has now execution order
 	task->step(&dev);
 	// task finished, unlock mutex
 	uv_mutex_unlock(&task->mutex);
-	printf("task finished\n");
 	vTaskDelete(NULL);
 }
-
 
 
 void add_task(void (*step_callback)(void*)) {
@@ -56,7 +71,6 @@ void add_task(void (*step_callback)(void*)) {
 
 
 void step(void *me) {
-	uv_init(&dev);
 
 	// cycle trough tasks and give each of them execution turn
 	for (int i = 0; i < uv_vector_size(&this->tasks); i++) {
@@ -66,6 +80,7 @@ void step(void *me) {
 		uv_mutex_lock(&((task_st*) uv_vector_at(&this->tasks, i))->mutex);
 	}
 
+	uv_deinit();
 	exit(0);
 }
 
@@ -110,6 +125,9 @@ int main(int argc, char *argv[]) {
 		// register main step task
 		uv_rtos_task_create(&step, "Step", UV_RTOS_MIN_STACK_SIZE, this,
 				UV_RTOS_IDLE_PRIORITY + 1, NULL);
+
+		uv_init(&dev);
+
 		uv_rtos_start_scheduler();
 	}
 

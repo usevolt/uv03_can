@@ -23,6 +23,7 @@
 #include <uv_memory.h>
 #include <uv_rtos.h>
 #include <uv_utilities.h>
+#include <uv_canopen.h>
 
 
 
@@ -32,11 +33,14 @@ typedef struct {
 	void (*step)(void*);
 } task_st;
 
+
+
 struct _dev_st {
 
-	/// @brief: Selects the CAN hardware to be used
-	const char *can_dev;
-	/// @brief: CAN-bus baudrate
+
+	/// @brief CAN netdev name
+	char can_channel[64];
+
 	unsigned int baudrate;
 
 	/// @brief: CANopen Node ID of the selected device
@@ -48,13 +52,28 @@ struct _dev_st {
 	task_st task_buffer[TASKS_LEN];
 	uv_vector_st tasks;
 
+	struct {
+		/// @brief: Path to firmware
+		char firmware[256];
+		uv_delay_st delay;
+		bool response;
+	} cmd_load;
+	struct {
+		uint32_t time;
+	} cmd_listen;
+
 	uv_data_start_t data_start;
 
 	uv_data_end_t data_end;
 };
 
+
 extern struct _dev_st dev;
 
+
+extern const canopen_object_st obj_dict[];
+
+unsigned int obj_dict_len(void);
 
 /// @brief: Registers a task
 void add_task(void (*step_callback)(void*));

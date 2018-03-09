@@ -1,5 +1,18 @@
-release/src/load.o: src/load.c hal/uv_hal/inc/uv_rtos.h \
- inc/uv_hal_config.h hal/uv_hal/inc/uv_errors.h \
+release/src/load.o: src/load.c inc/load.h hal/uv_hal/inc/uv_utilities.h \
+ inc/uv_hal_config.h hal/uv_hal/inc/uv_can.h hal/uv_hal/inc/uv_errors.h \
+ hal/uv_hal/inc/uv_gpio.h inc/main.h hal/uv_hal/inc/uv_memory.h \
+ hal/uv_hal/inc/uv_canopen.h hal/uv_hal/inc/uv_utilities.h \
+ hal/uv_hal/inc/canopen/canopen_common.h \
+ hal/uv_hal/inc/canopen/canopen_heartbeat.h hal/uv_hal/inc/uv_can.h \
+ hal/uv_hal/inc/canopen/canopen_common.h \
+ hal/uv_hal/inc/canopen/canopen_nmt.h \
+ hal/uv_hal/inc/canopen/canopen_pdo.h \
+ hal/uv_hal/inc/canopen/canopen_sdo.h \
+ hal/uv_hal/inc/canopen/canopen_sdo_client.h \
+ hal/uv_hal/inc/canopen/canopen_sdo.h \
+ hal/uv_hal/inc/canopen/canopen_sdo_server.h \
+ hal/uv_hal/inc/canopen/canopen_emcy.h \
+ hal/uv_hal/inc/canopen/canopen_obj_dict.h hal/uv_hal/inc/uv_rtos.h \
  hal/uv_hal/freertos/include/FreeRTOS.h hal/uv_hal/inc/FreeRTOSConfig.h \
  hal/uv_hal/freertos/include/projdefs.h \
  hal/uv_hal/freertos/include/portable.h \
@@ -8,5 +21,4 @@ release/src/load.o: src/load.c hal/uv_hal/inc/uv_rtos.h \
  hal/uv_hal/freertos/include/mpu_wrappers.h \
  hal/uv_hal/freertos/include/task.h hal/uv_hal/freertos/include/list.h \
  hal/uv_hal/freertos/include/semphr.h hal/uv_hal/freertos/include/queue.h \
- inc/load.h hal/uv_hal/inc/uv_utilities.h hal/uv_hal/inc/uv_can.h \
- hal/uv_hal/inc/uv_gpio.h inc/main.h hal/uv_hal/inc/uv_memory.h
+ hal/uv_hal/inc/uv_canopen.h
