@@ -36,6 +36,10 @@ bool cmd_terminal(const char *arg) {
 }
 
 
+static char rx_buffer[1024];
+static uv_ring_buffer_st rx;
+
+
 static void can_callb(void *ptr, uv_can_message_st *msg) {
 	if ((msg->type == CAN_STD) &&
 			(msg->id == (CANOPEN_SDO_RESPONSE_ID + this->nodeid)) &&
@@ -45,7 +49,7 @@ static void can_callb(void *ptr, uv_can_message_st *msg) {
 			(msg->data_8bit[2] == UV_TERMINAL_CAN_INDEX / 256) &&
 			(msg->data_8bit[3] == UV_TERMINAL_CAN_SUBINDEX)) {
 		for (int i = 4; i < msg->data_length; i++) {
-			printf("%c", (char) msg->data_8bit[i]);
+			uv_ring_buffer_push(&rx, &msg->data_8bit[i]);
 		}
 	}
 }
@@ -54,19 +58,25 @@ static void can_callb(void *ptr, uv_can_message_st *msg) {
 static void command_step(void *ptr) {
 	printf("Terminal opened for node ID 0x%x\n", this->nodeid);
 	uv_canopen_set_can_callback(&can_callb);
+	uv_ring_buffer_init(&rx, rx_buffer,
+			sizeof(rx_buffer) / sizeof(rx_buffer[0]), sizeof(rx_buffer[0]));
 
 	while (true) {
 
 		static uint8_t index = 0;
 		static char str[256];
 		char c;
+
+		while (uv_ring_buffer_pop(&rx, &c) == ERR_NONE) {
+			printf("%c", c);
+		}
+
 		int ret = scanf(" %c", &c);
 		if (ret != EOF) {
 			str[index++] = c;
-			while (scanf(" %c", &c) != EOF) {
+			while (scanf("%c", &c) != EOF) {
 				str[index++] = c;
 			}
-			str[index++] = '\n';
 			str[index] = '\0';
 
 			uint8_t len = 0;
