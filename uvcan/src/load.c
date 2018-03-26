@@ -29,7 +29,7 @@ void load_step(void *dev);
 
 
 #define BLOCK_SIZE	256
-#define RESPONSE_DELAY_MS	1000
+#define RESPONSE_DELAY_MS	2000
 #define BOOTLOADER_INDEX	0x1F50
 #define BOOTLOADER_SUBINDEX	1
 
@@ -84,7 +84,6 @@ void load_step(void *ptr) {
 
 		uv_canopen_nmt_master_reset_node(this->nodeid);
 
-		printf("Reset OK. Now downloading...\n");
 
 		// wait for a response to NMT reset command
 		while (true) {
@@ -103,6 +102,9 @@ void load_step(void *ptr) {
 		}
 		bool success = false;
 		if (!this->cmd_load.response) {
+
+			printf("Reset OK. Now downloading...\n");
+
 			uint8_t data[BLOCK_SIZE];
 			int32_t data_length;
 			int32_t index = 0;
@@ -139,7 +141,8 @@ void load_step(void *ptr) {
 						}
 					}
 					else {
-						printf("Block %u downloaded, %u / %u bytes\n", block, index + data_length, size);
+						printf("Block %u downloaded, %u / %u bytes (%u %%)\n", block, index + data_length, size,
+								(index + data_length) * 100 / size);
 					}
 				}
 				index += data_length;

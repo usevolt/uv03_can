@@ -1,10 +1,11 @@
-release/src/commands.o: src/commands.c hal/uv_hal/inc/uv_can.h \
- inc/uv_hal_config.h hal/uv_hal/inc/uv_errors.h hal/uv_hal/inc/uv_gpio.h \
- inc/commands.h hal/uv_hal/inc/uv_utilities.h hal/uv_hal/inc/uv_can.h \
- inc/main.h hal/uv_hal/inc/uv_memory.h hal/uv_hal/inc/uv_canopen.h \
+release/src/terminal.o: src/terminal.c hal/uv_hal/inc/uv_terminal.h \
+ inc/uv_hal_config.h hal/uv_hal/inc/uv_stdout.h \
+ hal/uv_hal/inc/uv_errors.h inc/terminal.h inc/main.h \
+ hal/uv_hal/inc/uv_memory.h hal/uv_hal/inc/uv_canopen.h \
+ hal/uv_hal/inc/uv_can.h hal/uv_hal/inc/uv_gpio.h \
  hal/uv_hal/inc/uv_utilities.h hal/uv_hal/inc/canopen/canopen_common.h \
- hal/uv_hal/inc/canopen/canopen_heartbeat.h \
- hal/uv_hal/inc/canopen/canopen_common.h \
+ hal/uv_hal/inc/uv_utilities.h hal/uv_hal/inc/canopen/canopen_heartbeat.h \
+ hal/uv_hal/inc/uv_can.h hal/uv_hal/inc/canopen/canopen_common.h \
  hal/uv_hal/inc/canopen/canopen_nmt.h \
  hal/uv_hal/inc/canopen/canopen_pdo.h \
  hal/uv_hal/inc/canopen/canopen_sdo.h \
@@ -21,5 +22,4 @@ release/src/commands.o: src/commands.c hal/uv_hal/inc/uv_can.h \
  hal/uv_hal/freertos/include/mpu_wrappers.h \
  hal/uv_hal/freertos/include/task.h hal/uv_hal/freertos/include/list.h \
  hal/uv_hal/freertos/include/semphr.h hal/uv_hal/freertos/include/queue.h \
- hal/uv_hal/inc/uv_canopen.h inc/help.h inc/load.h inc/listen.h \
- inc/terminal.h
+ hal/uv_hal/inc/uv_canopen.h

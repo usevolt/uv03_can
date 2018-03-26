@@ -17,13 +17,14 @@
 
 
 
+#include <uv_can.h>
+#include <string.h>
 #include "commands.h"
 #include "main.h"
 #include "help.h"
 #include "load.h"
 #include "listen.h"
-#include <uv_can.h>
-#include <string.h>
+#include "terminal.h"
 
 #define this (&dev)
 
@@ -31,7 +32,6 @@
 bool cmd_can(const char *arg);
 bool cmd_baud(const char *arg);
 bool cmd_node(const char *arg);
-
 
 commands_st commands[] = {
 		{
@@ -53,9 +53,9 @@ commands_st commands[] = {
 //				.callback = &cmd_baud
 //		},
 		{
-				.cmd = "node",
+				.cmd = "nodeid",
 				.str = "Selecs the CANopen Node via Node ID. This should be called prior to commands which "
-						"Operate on CANopen nodes, such as *load*.",
+						"Operate on CANopen nodes, such as *loadbin*.",
 				.callback = &cmd_node
 		},
 		{
@@ -68,6 +68,11 @@ commands_st commands[] = {
 				.cmd = "listen",
 				.str = "Listens the CAN bus for x seconds, listing all messages received.",
 				.callback = &cmd_listen
+		},
+		{
+				.cmd = "terminal",
+				.str = "Communicates with the device chosen with **nodeid** via Usevolt SDO reply protocol.",
+				.callback = &cmd_terminal
 		}
 };
 
