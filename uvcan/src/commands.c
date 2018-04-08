@@ -37,11 +37,13 @@ commands_st commands[] = {
 		{
 				.cmd = "help",
 				.str = "Displays application info and help.",
+				.args = ARG_NONE,
 				.callback = &cmd_help
 		},
 		{
 				.cmd = "can",
 				.str = "Selects the CAN-USB hardware for communication. Defaults to can0.",
+				.args = ARG_REQUIRE,
 				.callback = &cmd_can
 		},
 // note: Baudrate setting not available. uvcan depends on SocketCAN and user should open the connection
@@ -56,22 +58,26 @@ commands_st commands[] = {
 				.cmd = "nodeid",
 				.str = "Selecs the CANopen Node via Node ID. This should be called prior to commands which "
 						"Operate on CANopen nodes, such as *loadbin*.",
+				.args = ARG_REQUIRE,
 				.callback = &cmd_node
 		},
 		{
 				.cmd = "loadbin",
 				.str = "Loads firmware to UV device. "
 						"The device node id should be selected with 'node' option prior to this command.",
+				.args = ARG_REQUIRE,
 				.callback = &cmd_load
 		},
 		{
 				.cmd = "listen",
 				.str = "Listens the CAN bus for x seconds, listing all messages received.",
+				.args = ARG_NONE,
 				.callback = &cmd_listen
 		},
 		{
 				.cmd = "terminal",
 				.str = "Communicates with the device chosen with **nodeid** via Usevolt SDO reply protocol.",
+				.args = ARG_NONE,
 				.callback = &cmd_terminal
 		}
 };

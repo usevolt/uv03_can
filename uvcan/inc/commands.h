@@ -21,6 +21,14 @@
 
 
 #include <uv_utilities.h>
+#include <getopt.h>
+
+
+typedef enum {
+	ARG_NONE = no_argument,
+	ARG_OPTIONAL = optional_argument,
+	ARG_REQUIRE = required_argument
+} argument_e;
 
 
 /// @brief: Defines the command structure
@@ -30,6 +38,7 @@ typedef struct {
 	const char *cmd;
 	/// @brief: A string introducing the command
 	const char *str;
+	argument_e args;
 	/// @brief: Command callback. Should return true if the command
 	/// execution was succeeded, otherwise false.
 	/// **arg** contains the argument given to the command from the command line.

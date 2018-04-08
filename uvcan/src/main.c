@@ -90,12 +90,26 @@ int main(int argc, char *argv[]) {
 	init(this);
 
 	struct option opts[50];
+	char optstr[256] = "";
 	int i;
 	for (i = 0; i < commands_count(); i++) {
 		opts[i].name = commands[i].cmd;
-		opts[i].has_arg = optional_argument;
+		opts[i].has_arg = commands[i].args;
 		opts[i].flag = 0;
 		opts[i].val = i;
+		char str[2];
+		str[0] = (char) opts[i].val;
+		str[1] = '\0';
+		strcat(optstr, str);
+		if (opts[i].has_arg == ARG_REQUIRE) {
+			strcat(optstr, ":");
+		}
+		else if (opts[i].has_arg == ARG_OPTIONAL) {
+			strcat(optstr, "::");
+		}
+		else {
+
+		}
 	}
 	opts[i + 1].name = NULL;
 	opts[i + 1].has_arg = 0;
