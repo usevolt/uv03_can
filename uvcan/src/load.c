@@ -77,11 +77,11 @@ void load_step(void *ptr) {
 		rewind(fptr);
 
 		printf("Opened file %s. Size: %i bytes.\n", this->cmd_load.firmware, size);
-		printf("Resetting node 0x%x\n", this->nodeid);
 
 		// set canopen callback function
 		uv_canopen_set_can_callback(&can_callb);
 
+		printf("Resetting node 0x%x\n", this->nodeid);
 		uv_canopen_nmt_master_reset_node(this->nodeid);
 
 
