@@ -61,6 +61,9 @@ struct _dev_st {
 	struct {
 		uint32_t time;
 	} cmd_listen;
+	struct {
+		uint16_t id;
+	} cmd_input;
 
 	uv_data_start_t data_start;
 

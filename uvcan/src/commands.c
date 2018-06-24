@@ -25,6 +25,7 @@
 #include "load.h"
 #include "listen.h"
 #include "terminal.h"
+#include "input.h"
 
 #define this (&dev)
 
@@ -79,6 +80,13 @@ commands_st commands[] = {
 				.str = "Communicates with the device chosen with **nodeid** via Usevolt SDO reply protocol.",
 				.args = ARG_NONE,
 				.callback = &cmd_terminal
+		},
+		{
+				.cmd = "input",
+				.str = "Inputs characters typed with the keyboard into the CAN-bus. The used CAN ID should"
+						" be given as an argument.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_input
 		}
 };
 

@@ -65,7 +65,7 @@ FULL_NAME := $(APP_NAME)_$(GIT_VERSION)
 CFLAGS := -D__UV_PROJECT_NAME=$(FULL_NAME) $(INCLUDEDIRS) -D$(CORE) -$(O) -g3 -Wall -fmessage-length=0 -fno-builtin -ffunction-sections -fdata-sections
 
 
-LDFLAGS := -D__UV_APP_VERSION=\"$(GIT_VERSION)\" -static $(LIB_DIRS) $(LIBS) -pthread
+LDFLAGS := -D__UV_APP_VERSION=\"$(GIT_VERSION)\" -static $(LIB_DIRS) $(LIBS)
 
 
 # Get list of object files, with paths
@@ -82,7 +82,7 @@ $(BINARY): $(OBJECTS)
 	@echo ""
 	@echo "Linking target"
 	@echo ""
-	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJECTS) -o "$(BINARY)"
+	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJECTS) -pthread -o "$(BINARY)" -lncurses -ltinfo
 
 $(BUILDDIR)/%.o: %.c
 	@mkdir -p $(@D)
