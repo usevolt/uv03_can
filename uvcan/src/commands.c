@@ -25,7 +25,8 @@
 #include "load.h"
 #include "listen.h"
 #include "terminal.h"
-#include "input.h"
+#include "db.h"
+#include "conf.h"
 
 #define this (&dev)
 
@@ -82,11 +83,17 @@ commands_st commands[] = {
 				.callback = &cmd_terminal
 		},
 		{
-				.cmd = "input",
-				.str = "Inputs characters typed with the keyboard into the CAN-bus. The used CAN ID should"
-						" be given as an argument.",
+				.cmd = "db",
+				.str = "Provides uvcan a CANOpen device database file as an argument.",
 				.args = ARG_REQUIRE,
-				.callback = &cmd_input
+				.callback = &cmd_db
+		},
+		{
+				.cmd = "conf",
+				.str = "CANOpen Configuration tool for UV devices. CAN Database should be provided with"
+						"--db argument prior to this.",
+				.args = ARG_NONE,
+				.callback = &cmd_conf
 		}
 };
 

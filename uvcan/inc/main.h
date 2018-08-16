@@ -24,6 +24,9 @@
 #include <uv_rtos.h>
 #include <uv_utilities.h>
 #include <uv_canopen.h>
+#include "db.h"
+#include "listen.h"
+#include "load.h"
 
 
 
@@ -52,18 +55,10 @@ struct _dev_st {
 	task_st task_buffer[TASKS_LEN];
 	uv_vector_st tasks;
 
-	struct {
-		/// @brief: Path to firmware
-		char firmware[256];
-		uv_delay_st delay;
-		bool response;
-	} cmd_load;
-	struct {
-		uint32_t time;
-	} cmd_listen;
-	struct {
-		uint16_t id;
-	} cmd_input;
+	// ** modules **
+	load_st load;
+	listen_st listen;
+	db_st db;
 
 	uv_data_start_t data_start;
 

@@ -56,7 +56,6 @@ void task_step(void *ptr) {
 	task->step(&dev);
 	// task finished, unlock mutex
 	uv_mutex_unlock(&task->mutex);
-	vTaskDelete(NULL);
 }
 
 
@@ -81,6 +80,8 @@ void step(void *me) {
 	}
 
 	uv_deinit();
+
+	printf("Finished\n");
 	exit(0);
 }
 
@@ -133,7 +134,7 @@ int main(int argc, char *argv[]) {
 	if (!error) {
 		// register an own FreeRTOS task for all application tasks
 		for (int i = 0; i < uv_vector_size(&this->tasks); i++) {
-			uv_rtos_task_create(&task_step, "task", UV_RTOS_MIN_STACK_SIZE * 2,
+			uv_rtos_task_create(&task_step, "task", UV_RTOS_MIN_STACK_SIZE * 5,
 					uv_vector_at(&this->tasks, i), UV_RTOS_IDLE_PRIORITY + 1, NULL);
 		}
 		// register main step task

@@ -21,7 +21,18 @@
 
 
 #include <stdbool.h>
+#include <stdint.h>
 
+
+typedef struct {
+	uint32_t time;
+} listen_st;
+
+
+
+static inline int32_t listen_get_time(listen_st *this) {
+	return this->time;
+}
 
 bool cmd_listen(const char *arg);
 

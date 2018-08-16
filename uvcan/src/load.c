@@ -22,7 +22,7 @@
 #include "load.h"
 #include "main.h"
 
-#define this (&dev)
+#define this (&dev.load)
 
 
 void load_step(void *dev);
@@ -40,10 +40,10 @@ bool cmd_load(const char *arg) {
 		printf("ERROR: Give firmware as a file path to binary file.\n");
 	}
 	else {
-		printf("Firmware %s selected\n", arg, this->nodeid);
-		strcpy(this->cmd_load.firmware, arg);
-		this->cmd_load.response = false;
-		uv_delay_init(&this->cmd_load.delay, RESPONSE_DELAY_MS);
+		printf("Firmware %s selected\n", arg, dev.nodeid);
+		strcpy(this->firmware, arg);
+		this->response = false;
+		uv_delay_init(&this->delay, RESPONSE_DELAY_MS);
 		add_task(load_step);
 	}
 
@@ -51,12 +51,12 @@ bool cmd_load(const char *arg) {
 }
 
 static void can_callb(void * ptr, uv_can_msg_st *msg) {
-	if ((msg->id == CANOPEN_HEARTBEAT_ID + this->nodeid) &&
+	if ((msg->id == CANOPEN_HEARTBEAT_ID + dev.nodeid) &&
 			(msg->type == CAN_STD) &&
 			(msg->data_length == 1) &&
 			(msg->data_8bit[0] == CANOPEN_BOOT_UP)) {
 		// canopen boot up message recieved, node found.
-		this->cmd_load.response = true;
+		this->response = true;
 
 		// disable CAN callback, it's not needed anymore.
 		uv_canopen_set_can_callback(NULL);
@@ -64,11 +64,11 @@ static void can_callb(void * ptr, uv_can_msg_st *msg) {
 }
 
 void load_step(void *ptr) {
-	FILE *fptr = fopen(this->cmd_load.firmware, "rb");
+	FILE *fptr = fopen(this->firmware, "rb");
 
 	if (fptr == NULL) {
 		// failed to open the file, exit this task
-		printf("Failed to open firmware file %s.\n", this->cmd_load.firmware);
+		printf("Failed to open firmware file %s.\n", this->firmware);
 	}
 	else {
 		int32_t size;
@@ -76,24 +76,24 @@ void load_step(void *ptr) {
 		size = ftell(fptr);
 		rewind(fptr);
 
-		printf("Opened file %s. Size: %i bytes.\n", this->cmd_load.firmware, size);
+		printf("Opened file %s. Size: %i bytes.\n", this->firmware, size);
 
 		// set canopen callback function
 		uv_canopen_set_can_callback(&can_callb);
 
-		printf("Resetting node 0x%x\n", this->nodeid);
-		uv_canopen_nmt_master_reset_node(this->nodeid);
+		printf("Resetting node 0x%x\n", dev.nodeid);
+		uv_canopen_nmt_master_reset_node(dev.nodeid);
 
 
 		// wait for a response to NMT reset command
 		while (true) {
 			uint16_t step_ms = 20;
-			if (this->cmd_load.response) {
-				this->cmd_load.response = false;
+			if (this->response) {
+				this->response = false;
 				break;
 			}
 			else {
-				if (uv_delay(&this->cmd_load.delay, step_ms)) {
+				if (uv_delay(&this->delay, step_ms)) {
 					printf("Couldn't reset node. No response to NMT Reset Node.\n");
 					break;
 				}
@@ -101,7 +101,7 @@ void load_step(void *ptr) {
 			uv_rtos_task_delay(step_ms);
 		}
 		bool success = false;
-		if (!this->cmd_load.response) {
+		if (!this->response) {
 
 			printf("Reset OK. Now downloading...\n");
 
@@ -126,11 +126,11 @@ void load_step(void *ptr) {
 					break;
 				}
 				else {
-					if (uv_canopen_sdo_block_write(this->nodeid, BOOTLOADER_INDEX, BOOTLOADER_SUBINDEX,
+					if (uv_canopen_sdo_block_write(dev.nodeid, BOOTLOADER_INDEX, BOOTLOADER_SUBINDEX,
 							data_length, data) != ERR_NONE) {
 						printf("Error while downloading block %u. Trying again...\n", block);
 						// try again ONCE
-						if (uv_canopen_sdo_block_write(this->nodeid, BOOTLOADER_INDEX, BOOTLOADER_SUBINDEX,
+						if (uv_canopen_sdo_block_write(dev.nodeid, BOOTLOADER_INDEX, BOOTLOADER_SUBINDEX,
 								data_length, data) != ERR_NONE) {
 							printf("Second error while downloading block %u. Ending the transfer.\n", block);
 							success = false;
@@ -152,7 +152,7 @@ void load_step(void *ptr) {
 		fclose(fptr);
 		if (success) {
 			printf("Loading done. Resetting device... OK!\n");
-			uv_canopen_nmt_master_reset_node(this->nodeid);
+			uv_canopen_nmt_master_reset_node(dev.nodeid);
 			printf("Binary file closed.\n");
 		}
 	}

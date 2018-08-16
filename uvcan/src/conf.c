@@ -16,58 +16,32 @@
 */
 
 
-#include "input.h"
+
+#include <conf.h>
 #include <stdio.h>
 #include <string.h>
 #include <uv_terminal.h>
-#include <ncurses.h>
 #include "main.h"
+
+
+static void step(void *ptr);
 
 
 #define this (&dev)
 
-static void input_step(void *ptr);
 
+bool cmd_conf(const char *arg) {
+	bool ret = false;
 
-bool cmd_input(const char *arg) {
-	bool ret = true;
+	uv_rtos_add_idle_task(&step);
 
-	uint16_t id = strtol(arg, NULL, 0);
-	if (id >= (1 << 11)) {
-		printf("11-bit identifier only supported\n");
-		ret = false;
-	}
-	else {
-		initscr();
-		timeout(-1);
-
-		this->cmd_input.id = id;
-		printw("Input CAN ID set to 0x%x\n", this->cmd_input.id);
-		add_task(&input_step);
-		ret = true;
-	}
-
+	ret = true;
 
 	return ret;
 }
 
 
 
-static void input_step(void *ptr) {
-	while (true) {
-		uint8_t step_ms = 50;
-
-		char c = (char) getch();
-		if (c != EOF) {
-			uv_can_msg_st msg;
-			msg.type = CAN_STD;
-			msg.id = this->cmd_input.id;
-			msg.data_length = 1;
-			msg.data_8bit[0] = c;
-			uv_can_send(this->can_channel, &msg);
-		}
-
-		uv_rtos_task_delay(step_ms);
-	}
+static void step(void *ptr) {
+	printf("hephep\n");
 }
-

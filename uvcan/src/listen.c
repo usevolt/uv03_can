@@ -23,7 +23,7 @@
 #include "main.h"
 
 
-#define this (&dev)
+#define this (&dev.listen)
 
 
 void listen(void *);
@@ -33,12 +33,12 @@ bool cmd_listen(const char *arg) {
 	bool ret = true;
 
 	if (!arg) {
-		this->cmd_listen.time = 0xFFFFFFFF;
+		this->time = 0xFFFFFFFF;
 	}
 	else {
 		unsigned int value = strtol(arg, NULL, 0);
 		printf("Listening on the CAN bus for %u seconds.\n", value);
-		this->cmd_listen.time = value * 1000;
+		this->time = value * 1000;
 	}
 
 	add_task(&listen);
@@ -85,10 +85,12 @@ void listen(void *ptr) {
 
 		time += step_ms;
 
-		if (time > this->cmd_listen.time) {
+		if (time > this->time) {
 			break;
 		}
 		uv_rtos_task_delay(20);
+
+		printf("1");
 
 	}
 }

@@ -21,8 +21,15 @@
 
 
 #include <uv_utilities.h>
+#include <stdbool.h>
 
 
+
+typedef struct {
+	char firmware[256];
+	uv_delay_st delay;
+	bool response;
+} load_st;
 
 
 /// @brief: Loads firmware with the name of **arg** to device selected

@@ -28,10 +28,7 @@ BINARY := uvcan
 INCLUDEDIRS := 	-I"inc/" \
 				-I"uw_can/" \
 				-I"hal/uv_hal/inc" \
-				-I"hal/uv_hal/inc/canopen" \
-				-I"hal/uv_han/freertos" \
-				-I"hal/uv_hal/freertos/include" \
-				-I"hal/uv_hal/freertos/portable/GCC/Posix"
+				-I"hal/uv_hal/inc/canopen"
 
 #List of directories where to search libraries
 LIB_DIRS := 	
@@ -42,8 +39,6 @@ LIBS :=
 #Source directories
 SOURCEDIRS := src \
 				hal/uv_hal/src \
-				hal/uv_hal/freertos \
-				hal/uv_hal/freertos/portable/GCC/Posix \
 				hal/uv_hal/src_linux \
 				hal/uv_hal/src/canopen
 
