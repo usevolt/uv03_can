@@ -88,9 +88,8 @@ void listen(void *ptr) {
 		if (time > this->time) {
 			break;
 		}
-		uv_rtos_task_delay(20);
+		uv_rtos_task_delay(200);
 
-		printf("1");
 
 	}
 }

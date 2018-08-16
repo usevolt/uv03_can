@@ -26,6 +26,7 @@ BINARY := uvcan
 
 # List of include directories
 INCLUDEDIRS := 	-I"inc/" \
+				-I"inc/ui" \
 				-I"uw_can/" \
 				-I"hal/uv_hal/inc" \
 				-I"hal/uv_hal/inc/canopen"
@@ -38,6 +39,7 @@ LIBS :=
 
 #Source directories
 SOURCEDIRS := src \
+				src/ui \
 				hal/uv_hal/src \
 				hal/uv_hal/src_linux \
 				hal/uv_hal/src/canopen

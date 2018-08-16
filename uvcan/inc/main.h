@@ -27,6 +27,7 @@
 #include "db.h"
 #include "listen.h"
 #include "load.h"
+#include "export.h"
 
 
 
@@ -59,6 +60,7 @@ struct _dev_st {
 	load_st load;
 	listen_st listen;
 	db_st db;
+	export_st export;
 
 	uv_data_start_t data_start;
 

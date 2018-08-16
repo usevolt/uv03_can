@@ -27,7 +27,7 @@
 
 
 
-static void type_to_str(canopen_object_type_e type, char *dest) {
+void type_to_str(canopen_object_type_e type, char *dest) {
 	if (type == CANOPEN_UNSIGNED32) {
 		strcpy(dest, "UNSIGNED32");
 	}
@@ -60,7 +60,7 @@ static void type_to_str(canopen_object_type_e type, char *dest) {
 	}
 }
 
-static void permission_to_str(canopen_permissions_e permissions, char *dest) {
+void permission_to_str(canopen_permissions_e permissions, char *dest) {
 	if (permissions == CANOPEN_RO) {
 		strcpy(dest, "RO");
 	}
@@ -244,30 +244,30 @@ bool cmd_db(const char *arg) {
 	}
 
 	if (ret == true) {
-		printf("PARSED DATA:\n\n");
-
-		printf("Node ID: %u\nObject Dictionary:\n", this->nodeid);
-		for (uint8_t i = 0; i < uv_vector_size(&this->db.objects); i++) {
-			db_obj_st *obj = uv_vector_at(&this->db.objects, i);
-
-			char type[64], perm[64];
-			type_to_str(obj->obj.type, type);
-			permission_to_str(obj->obj.permissions, perm);
-
-			printf("%u: \n"
-					"   name: %s\n"
-					"   index: 0x%x\n"
-					"   subindex: %u\n"
-					"   type: %s\n"
-					"   permissions: %s\n"
-					"   dataptr: %s\n"
-					"   min: %i\n"
-					"   max: %i\n"
-					"   default: %i\n\n",
-					i, obj->name, obj->obj.main_index,
-					obj->obj.sub_index, type, perm,
-					obj->data, obj->min, obj->max, obj->def);
-		}
+//		printf("PARSED DATA:\n\n");
+//
+//		printf("Node ID: %u\nObject Dictionary:\n", this->nodeid);
+//		for (uint8_t i = 0; i < uv_vector_size(&this->db.objects); i++) {
+//			db_obj_st *obj = uv_vector_at(&this->db.objects, i);
+//
+//			char type[64], perm[64];
+//			type_to_str(obj->obj.type, type);
+//			permission_to_str(obj->obj.permissions, perm);
+//
+//			printf("%u: \n"
+//					"   name: %s\n"
+//					"   index: 0x%x\n"
+//					"   subindex: %u\n"
+//					"   type: %s\n"
+//					"   permissions: %s\n"
+//					"   dataptr: %s\n"
+//					"   min: %i\n"
+//					"   max: %i\n"
+//					"   default: %i\n\n",
+//					i, obj->name, obj->obj.main_index,
+//					obj->obj.sub_index, type, perm,
+//					obj->data, obj->min, obj->max, obj->def);
+//		}
 	}
 
 	return ret;

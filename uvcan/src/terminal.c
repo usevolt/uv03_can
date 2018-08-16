@@ -26,11 +26,14 @@
 
 
 static void command_step(void *ptr);
-
+static void command_tx(void *ptr);
 
 bool cmd_terminal(const char *arg) {
 
 	add_task(&command_step);
+
+	uv_rtos_task_create(&command_tx, "tx",
+			UV_RTOS_MIN_STACK_SIZE, NULL, UV_RTOS_IDLE_PRIORITY, NULL);
 
 	return true;
 }
@@ -55,29 +58,13 @@ static void can_callb(void *ptr, uv_can_message_st *msg) {
 }
 
 
-static void command_step(void *ptr) {
-	printf("Terminal opened for node ID 0x%x\n", this->nodeid);
-	uv_canopen_set_can_callback(&can_callb);
-	uv_ring_buffer_init(&rx, rx_buffer,
-			sizeof(rx_buffer) / sizeof(rx_buffer[0]), sizeof(rx_buffer[0]));
-
+static void command_tx(void *ptr) {
 	while (true) {
-
-		static uint8_t index = 0;
-		static char str[256];
-		char c;
-
-		while (uv_ring_buffer_pop(&rx, &c) == ERR_NONE) {
-			printf("%c", c);
-		}
-
-		int ret = scanf(" %c", &c);
+		char str[256];
+		int ret = scanf(" %s", str);
 		if (ret != EOF) {
-			str[index++] = c;
-			while (scanf("%c", &c) != EOF) {
-				str[index++] = c;
-			}
-			str[index] = '\0';
+
+			strcat(str, "\n");
 
 			uint8_t len = 0;
 			uv_can_msg_st msg;
@@ -99,7 +86,25 @@ static void command_step(void *ptr) {
 				msg.data_length = 4 + len;
 				uv_can_send(this->can_channel, &msg);
 			}
-			index = 0;
+		}
+
+		uv_rtos_task_delay(20);
+	}
+}
+
+
+static void command_step(void *ptr) {
+	printf("Terminal opened for node ID 0x%x\n", this->nodeid);
+	uv_canopen_set_can_callback(&can_callb);
+	uv_ring_buffer_init(&rx, rx_buffer,
+			sizeof(rx_buffer) / sizeof(rx_buffer[0]), sizeof(rx_buffer[0]));
+
+	while (true) {
+
+		char c;
+
+		while (uv_ring_buffer_pop(&rx, &c) == ERR_NONE) {
+			printf("%c", c);
 		}
 
 		uv_rtos_task_delay(20);

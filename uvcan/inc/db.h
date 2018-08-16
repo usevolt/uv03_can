@@ -67,5 +67,14 @@ static inline db_obj_st *db_get_obj(db_st *this, uint32_t index) {
 	return ((db_obj_st*) uv_vector_at(&this->objects, index));
 }
 
+static inline uint8_t db_get_nodeid(db_st *this) {
+	return this->node_id;
+}
+
+
+void db_permission_to_str(canopen_permissions_e permissions, char *dest);
+void db_type_to_str(canopen_object_type_e type, char *dest);
+
+
 
 #endif /* DB_H_ */

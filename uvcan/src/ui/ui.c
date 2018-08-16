@@ -17,7 +17,7 @@
 
 
 
-#include <conf.h>
+#include <ui.h>
 #include <stdio.h>
 #include <string.h>
 #include <uv_terminal.h>
@@ -30,7 +30,7 @@ static void step(void *ptr);
 #define this (&dev)
 
 
-bool cmd_conf(const char *arg) {
+bool cmd_ui(const char *arg) {
 	bool ret = false;
 
 	uv_rtos_add_idle_task(&step);

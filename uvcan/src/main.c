@@ -79,6 +79,7 @@ void step(void *me) {
 		uv_mutex_lock(&((task_st*) uv_vector_at(&this->tasks, i))->mutex);
 	}
 
+
 	uv_deinit();
 
 	printf("Finished\n");

@@ -17,6 +17,7 @@
 
 
 
+#include "export.h"
 #include <uv_can.h>
 #include <string.h>
 #include "commands.h"
@@ -26,7 +27,7 @@
 #include "listen.h"
 #include "terminal.h"
 #include "db.h"
-#include "conf.h"
+#include "ui.h"
 
 #define this (&dev)
 
@@ -89,11 +90,16 @@ commands_st commands[] = {
 				.callback = &cmd_db
 		},
 		{
-				.cmd = "conf",
-				.str = "CANOpen Configuration tool for UV devices. CAN Database should be provided with"
-						"--db argument prior to this.",
+				.cmd = "export",
+				.str = "Exports database given with --db to UV embedded header and source files.",
 				.args = ARG_NONE,
-				.callback = &cmd_conf
+				.callback = &cmd_export
+		},
+		{
+				.cmd = "ui",
+				.str = "Opens the GUI configuration tool with this argument.",
+				.args = ARG_NONE,
+				.callback = &cmd_ui
 		}
 };
 

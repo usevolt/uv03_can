@@ -16,46 +16,26 @@
 */
 
 
-#ifndef CONF_H_
-#define CONF_H_
+#ifndef EXPORT_H_
+#define EXPORT_H_
 
 #include <stdbool.h>
 #include <uv_utilities.h>
 #include <uv_canopen.h>
-
-
-#define CONF_OBJ_MAX_COUNT	128
-#define CONF_MAX_FILE_SIZE	65536
-
-/// @brief: A single object structure
-typedef struct {
-	// Descriptive name of the object
-	char name[128];
-	// object structure holding the embeded parameters
-	canopen_object_st obj;
-	// data pointer as a string for embedded system
-	char data[128];
-	// minimum value for integer objects
-	int32_t min;
-	// maximum value for integer objects
-	int32_t max;
-	// default (reset) value
-	int32_t def;
-} conf_obj_st;
-
+#include "db.h"
 
 
 typedef struct {
-	conf_obj_st objects_buffer[CONF_OBJ_MAX_COUNT];
-	uv_vector_st objects;
 
-} conf_st;
+} export_st;
+
+
 
 /// @brief: Database command provides uvcan with CANOpen device database file.
 /// Also works as an initializer.
-bool cmd_conf(const char *arg);
+bool cmd_export(const char *arg);
 
 
 
 
-#endif /* CONF_H_ */
+#endif /* EXPORT_H_ */
