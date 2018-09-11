@@ -61,10 +61,8 @@ static void can_callb(void *ptr, uv_can_message_st *msg) {
 static void command_tx(void *ptr) {
 	while (true) {
 		char str[256];
-		int ret = scanf(" %s", str);
-		if (ret != EOF) {
-
-			strcat(str, "\n");
+		char * ret = fgets(str, sizeof(str), stdin);
+		if (ret != NULL) {
 
 			uint8_t len = 0;
 			uv_can_msg_st msg;

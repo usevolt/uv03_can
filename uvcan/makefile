@@ -44,6 +44,13 @@ SOURCEDIRS := src \
 				hal/uv_hal/src_linux \
 				hal/uv_hal/src/canopen
 
+# Path and name of GResource file for GTK UI
+# Path has to end in /
+GRESOURCE_DIR := src/ui/
+#eName of the GResources xml file. This same name is used for generated .c and .h files
+GRESOURCE_FILE := gresources
+
+
 
 ### END OF APP CONFIG ###
 
@@ -58,11 +65,14 @@ GIT_VERSION := $(shell git describe --abbrev=4 --dirty --always --tags)
 APP_NAME := $(shell basename `git rev-parse --show-toplevel`)
 FULL_NAME := $(APP_NAME)_$(GIT_VERSION)
 
+UIFILES := $(shell find $(GRESOURCE_DIR) -maxdepth 1 -name '*.ui')
+GRESOURCE := $(GRESOURCE_DIR)$(GRESOURCE_FILE).xml
 
-CFLAGS := -D__UV_PROJECT_NAME=$(FULL_NAME) $(INCLUDEDIRS) -D$(CORE) -$(O) -g3 -Wall -fmessage-length=0 -fno-builtin -ffunction-sections -fdata-sections
+
+CFLAGS := $(shell pkg-config --cflags gtk+-3.0) -D__UV_PROJECT_NAME=$(FULL_NAME) $(INCLUDEDIRS) -D$(CORE) -$(O) -g3 -Wall -fmessage-length=0 -fno-builtin -ffunction-sections -fdata-sections
 
 
-LDFLAGS := -D__UV_APP_VERSION=\"$(GIT_VERSION)\" -static $(LIB_DIRS) $(LIBS)
+LDFLAGS := -D__UV_APP_VERSION=\"$(GIT_VERSION)\"
 
 
 # Get list of object files, with paths
@@ -71,19 +81,24 @@ OBJECTS := $(addprefix $(BUILDDIR)/,$(SOURCES:%.c=%.o))
 DEPS := $(OBJECTS:.o=.d)
 
 
-
-all: $(BINARY)
+all: $(GRESOURCE) $(BINARY)
 	$(MAKE) post-build
+
+$(GRESOURCE): $(UIFILES)
+	glib-compile-resources $(GRESOURCE) --generate-header --target $(GRESOURCE_DIR)$(GRESOURCE_FILE).h
+	glib-compile-resources $(GRESOURCE) --generate-source --target $(GRESOURCE_DIR)$(GRESOURCE_FILE).c
+	@touch $(GRESOURCE)
+
+$(BUILDDIR)/%.o: %.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -I$(HEADERDIR) -I$(dir $<) -MMD -MT $@ -c $< -o $@
+
 
 $(BINARY): $(OBJECTS)
 	@echo ""
 	@echo "Linking target"
 	@echo ""
-	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJECTS) -pthread -o "$(BINARY)" -lncurses -ltinfo
-
-$(BUILDDIR)/%.o: %.c
-	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -I$(HEADERDIR) -I$(dir $<) -MMD -MT $@ -c $< -o $@
+	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJECTS) -pthread -o "$(BINARY)" -lncurses -ltinfo $(shell pkg-config --libs gtk+-3.0)
 
 
 post-build:
@@ -94,6 +109,7 @@ post-build:
 clean:
 	@rm -rf $(BUILDDIR)
 	@rm -rf $(BINARY)
+	@touch $(UIFILES)
 
 	
 -include $(DEPS)

@@ -29,12 +29,21 @@ typedef struct {
 	char firmware[256];
 	uv_delay_st delay;
 	bool response;
+	bool wfr;
 } load_st;
+
+
+#define LOADWFR_WAIT_TIME_MS			10000
 
 
 /// @brief: Loads firmware with the name of **arg** to device selected
 /// previously with command *nodeid*.
 bool cmd_load(const char *arg);
 
+
+/// @brief: Loads the firmware by not resetting the node. Instead,
+/// waits for LOADWFT_WAIT_TIME_MS seconds to receive the boot up message from the node.
+/// Can be used when downloading binary to faulty node which is unable to run otherwise
+bool cmd_loadwfr(const char *arg);
 
 #endif /* LOAD_H_ */

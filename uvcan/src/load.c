@@ -43,7 +43,27 @@ bool cmd_load(const char *arg) {
 		printf("Firmware %s selected\n", arg, dev.nodeid);
 		strcpy(this->firmware, arg);
 		this->response = false;
+		this->wfr = false;
 		uv_delay_init(&this->delay, RESPONSE_DELAY_MS);
+		add_task(load_step);
+	}
+
+	return ret;
+}
+
+
+bool cmd_loadwfr(const char *arg) {
+	bool ret = true;
+
+	if (!arg) {
+		printf("ERROR: Give firmware as a file path to binary file.\n");
+	}
+	else {
+		printf("Firmware %s selected\n", arg, dev.nodeid);
+		strcpy(this->firmware, arg);
+		this->response = false;
+		this->wfr = true;
+		uv_delay_init(&this->delay, LOADWFR_WAIT_TIME_MS);
 		add_task(load_step);
 	}
 
@@ -81,15 +101,19 @@ void load_step(void *ptr) {
 		// set canopen callback function
 		uv_canopen_set_can_callback(&can_callb);
 
-		printf("Resetting node 0x%x\n", dev.nodeid);
-		uv_canopen_nmt_master_reset_node(dev.nodeid);
+		if (!this->wfr) {
+			printf("Resetting node 0x%x\n", dev.nodeid);
+			uv_canopen_nmt_master_reset_node(dev.nodeid);
+		}
+		else {
+			printf("Waiting to receive boot up message from node 0x%x...\n", dev.nodeid);
+		}
 
 
 		// wait for a response to NMT reset command
 		while (true) {
-			uint16_t step_ms = 20;
+			uint16_t step_ms = 1;
 			if (this->response) {
-				this->response = false;
 				break;
 			}
 			else {
@@ -101,7 +125,7 @@ void load_step(void *ptr) {
 			uv_rtos_task_delay(step_ms);
 		}
 		bool success = false;
-		if (!this->response) {
+		if (this->response) {
 
 			printf("Reset OK. Now downloading...\n");
 

@@ -82,8 +82,10 @@ void step(void *me) {
 
 	uv_deinit();
 
-	printf("Finished\n");
-	exit(0);
+	if (!uv_rtos_idle_task_set()) {
+		printf("Finished\n");
+		exit(0);
+	}
 }
 
 

@@ -31,7 +31,7 @@
 typedef struct {
 	// Descriptive name of the object
 	char name[128];
-	// object structure holding the embeded parameters
+	// object structure holding the embedded parameters
 	canopen_object_st obj;
 	// data pointer as a string for embedded system
 	char data[128];
@@ -50,7 +50,7 @@ typedef struct {
 	uv_vector_st objects;
 	// node id of the current database
 	uint8_t node_id;
-
+	char filepath[128];
 } db_st;
 
 /// @brief: Database command provides uvcan with CANOpen device database file.
@@ -58,8 +58,15 @@ typedef struct {
 bool cmd_db(const char *arg);
 
 
+bool db_is_loaded(db_st *this);
+
 static inline int32_t db_get_object_count(db_st *this) {
 	return uv_vector_size(&this->objects);
+}
+
+
+static inline char *db_get_file(db_st *this) {
+	return this->filepath;
 }
 
 

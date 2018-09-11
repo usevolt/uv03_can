@@ -25,8 +25,33 @@
 #include "db.h"
 
 
-typedef struct {
+struct _GObject;
+typedef struct _GObject GObject;
 
+struct _GtkWidget;
+typedef struct _GtkWidget GtkWidget;
+
+
+/// @brief: GTK object structure defining a single object dictionary parameter
+typedef struct {
+	GtkWidget *gobject;
+	char main_index_str[16];
+	db_obj_st *obj;
+	GtkWidget *scale;
+	GtkWidget *spin_button;
+} obj_dict_par_st;
+
+
+typedef struct {
+	GtkWidget *window;
+	GObject *can_dev;
+	GObject *can_baudrate;
+	GObject *can_switch;
+	GObject *db;
+
+	GObject *obj_dict;
+	obj_dict_par_st obj_dict_params[128];
+	int8_t selected_par;
 } ui_st;
 
 

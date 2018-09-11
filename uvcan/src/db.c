@@ -26,6 +26,12 @@
 #include "main.h"
 
 
+static bool is_loaded = false;
+
+
+bool db_is_loaded(db_st *this) {
+	return is_loaded;
+}
 
 void type_to_str(canopen_object_type_e type, char *dest) {
 	if (type == CANOPEN_UNSIGNED32) {
@@ -230,6 +236,7 @@ bool cmd_db(const char *arg) {
 			if (fread(data, 1, size, fptr)) {
 				if (parse_json(&this->db, data)) {
 					printf("JSON parsed succesfully.\n");
+					strcpy(dev.db.filepath, arg);
 					ret = true;
 				}
 				else {
@@ -242,6 +249,8 @@ bool cmd_db(const char *arg) {
 
 		}
 	}
+
+	is_loaded = ret;
 
 	if (ret == true) {
 //		printf("PARSED DATA:\n\n");

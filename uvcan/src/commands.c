@@ -72,6 +72,13 @@ commands_st commands[] = {
 				.callback = &cmd_load
 		},
 		{
+				.cmd = "loadbinwfr",
+				.str = "Loads firmware to UV device by waiting for NMT boot up message."
+						"The device node id should be selected with 'node' option prior to this command.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_loadwfr
+		},
+		{
 				.cmd = "listen",
 				.str = "Listens the CAN bus for x seconds, listing all messages received.",
 				.args = ARG_NONE,

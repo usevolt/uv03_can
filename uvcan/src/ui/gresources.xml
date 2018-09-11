@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/org/gtk/uvcan">
+    <file compressed="true">src/ui/mainwindow.ui</file>
+  </gresource>
+</gresources>
