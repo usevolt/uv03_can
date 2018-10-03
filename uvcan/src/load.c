@@ -46,6 +46,7 @@ bool cmd_load(const char *arg) {
 		this->wfr = false;
 		uv_delay_init(&this->delay, RESPONSE_DELAY_MS);
 		add_task(load_step);
+		uv_can_set_up();
 	}
 
 	return ret;
@@ -65,6 +66,7 @@ bool cmd_loadwfr(const char *arg) {
 		this->wfr = true;
 		uv_delay_init(&this->delay, LOADWFR_WAIT_TIME_MS);
 		add_task(load_step);
+		uv_can_set_up();
 	}
 
 	return ret;
@@ -89,6 +91,7 @@ void load_step(void *ptr) {
 	if (fptr == NULL) {
 		// failed to open the file, exit this task
 		printf("Failed to open firmware file %s.\n", this->firmware);
+		fflush(stdout);
 	}
 	else {
 		int32_t size;
@@ -97,16 +100,19 @@ void load_step(void *ptr) {
 		rewind(fptr);
 
 		printf("Opened file %s. Size: %i bytes.\n", this->firmware, size);
+		fflush(stdout);
 
 		// set canopen callback function
 		uv_canopen_set_can_callback(&can_callb);
 
 		if (!this->wfr) {
 			printf("Resetting node 0x%x\n", dev.nodeid);
+			fflush(stdout);
 			uv_canopen_nmt_master_reset_node(dev.nodeid);
 		}
 		else {
 			printf("Waiting to receive boot up message from node 0x%x...\n", dev.nodeid);
+			fflush(stdout);
 		}
 
 
@@ -119,6 +125,7 @@ void load_step(void *ptr) {
 			else {
 				if (uv_delay(&this->delay, step_ms)) {
 					printf("Couldn't reset node. No response to NMT Reset Node.\n");
+					fflush(stdout);
 					break;
 				}
 			}
@@ -128,6 +135,7 @@ void load_step(void *ptr) {
 		if (this->response) {
 
 			printf("Reset OK. Now downloading...\n");
+			fflush(stdout);
 
 			uint8_t data[BLOCK_SIZE];
 			int32_t data_length;
@@ -147,26 +155,31 @@ void load_step(void *ptr) {
 				if (!ret) {
 					printf("ERROR: Reading file failed at byte %u / %u. "
 							"Firmware download executed.\n", index, size);
+					fflush(stdout);
 					break;
 				}
 				else {
 					if (uv_canopen_sdo_block_write(dev.nodeid, BOOTLOADER_INDEX, BOOTLOADER_SUBINDEX,
 							data_length, data) != ERR_NONE) {
 						printf("Error while downloading block %u. Trying again...\n", block);
+						fflush(stdout);
 						// try again ONCE
 						if (uv_canopen_sdo_block_write(dev.nodeid, BOOTLOADER_INDEX, BOOTLOADER_SUBINDEX,
 								data_length, data) != ERR_NONE) {
 							printf("Second error while downloading block %u. Ending the transfer.\n", block);
+							fflush(stdout);
 							success = false;
 							break;
 						}
 						else {
 							printf("Block %u downloaded\n", block);
+							fflush(stdout);
 						}
 					}
 					else {
 						printf("Block %u downloaded, %u / %u bytes (%u %%)\n", block, index + data_length, size,
 								(index + data_length) * 100 / size);
+						fflush(stdout);
 					}
 				}
 				index += data_length;
@@ -176,8 +189,10 @@ void load_step(void *ptr) {
 		fclose(fptr);
 		if (success) {
 			printf("Loading done. Resetting device... OK!\n");
+			fflush(stdout);
 			uv_canopen_nmt_master_reset_node(dev.nodeid);
 			printf("Binary file closed.\n");
+			fflush(stdout);
 		}
 	}
 }

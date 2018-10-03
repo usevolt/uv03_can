@@ -40,6 +40,7 @@ bool cmd_listen(const char *arg) {
 		printf("Listening on the CAN bus for %u seconds.\n", value);
 		this->time = value * 1000;
 	}
+	uv_can_set_up();
 
 	add_task(&listen);
 

@@ -16,15 +16,13 @@
 */
 
 
-#ifndef UI_H_
-#define UI_H_
+#ifndef UI_LOAD_FIRMWARE_H_
+#define UI_LOAD_FIRMWARE_H_
 
-#include <stdbool.h>
+
 #include <uv_utilities.h>
-#include <uv_canopen.h>
-#include "db.h"
-#include "obj_dict.h"
-#include "load_firmware.h"
+
+
 
 
 struct _GObject;
@@ -33,26 +31,20 @@ typedef struct _GObject GObject;
 struct _GtkWidget;
 typedef struct _GtkWidget GtkWidget;
 
+struct _GtkBuilder;
+typedef struct _GtkBuilder GtkBuilder;
 
 
+/// @brief: Flash firmware structure
 typedef struct {
-	GtkWidget *window;
-	GObject *can_dev;
-	GObject *can_baudrate;
-	GObject *can_switch;
-	GObject *db;
-
-	obj_dict_st obj_dict;
-	load_firmware_st load_firmware;
-} ui_st;
+	GtkWidget *filechooser;
+	GtkWidget *firmwarelog;
+	char buffer[1024];
+	FILE *fp;
+} load_firmware_st;
 
 
-
-/// @brief: Database command provides uvcan with CANOpen device database file.
-/// Also works as an initializer.
-bool cmd_ui(const char *arg);
+void load_firmware_init(load_firmware_st *this, GtkBuilder *builder);
 
 
-
-
-#endif /* UI_H_ */
+#endif /* UI_LOAD_FIRMWARE_H_ */

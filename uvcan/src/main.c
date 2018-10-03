@@ -34,13 +34,20 @@ unsigned int obj_dict_len(void) {
 
 void init(void *me) {
 	// initialize the default settings
-	this->baudrate = 250000;
 	strcpy(this->can_channel, "can0");
-	// if setting the baudrate failed, it means that the CAN dev couldn't be
-	// opened. Exit without hesitation.
-	if (!uv_can_set_baudrate(this->can_channel, this->baudrate)) {
-		exit(-1);
+	char cmd[128];
+	// get the net dev baudrate. If dev was not available, baudrate will be 0.
+	sprintf(cmd, "ip -det link show %s | grep bitrate | awk '{print $2}'", this->can_channel);
+	FILE *fp = popen(cmd, "r");
+	if (fgets(cmd, sizeof(cmd), fp)) {
+		this->baudrate = strtol(cmd, NULL, 0);
 	}
+	// if baudrate was not set on the device, initialize it to 0
+	if (this->baudrate == 0) {
+		this->baudrate = 250000;
+	}
+
+	uv_can_set_baudrate(this->can_channel, this->baudrate);
 	this->nodeid = 0;
 	uv_vector_init(&this->tasks, this->task_buffer, TASKS_LEN, sizeof(task_st));
 }

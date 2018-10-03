@@ -27,6 +27,17 @@
 #define DB_OBJ_MAX_COUNT	128
 #define DB_MAX_FILE_SIZE	65536
 
+
+/// @brief: Data structure for each array object's children
+typedef struct {
+	char name[128];
+	int32_t min;
+	int32_t max;
+	int32_t def;
+	// pointer to the next sibling
+	void *next_sibling;
+} db_array_child_st;
+
 /// @brief: A single object structure
 typedef struct {
 	// Descriptive name of the object
@@ -34,13 +45,20 @@ typedef struct {
 	// object structure holding the embedded parameters
 	canopen_object_st obj;
 	// data pointer as a string for embedded system
-	char data[128];
-	// minimum value for integer objects
-	int32_t min;
-	// maximum value for integer objects
-	int32_t max;
-	// default (reset) value
-	int32_t def;
+	char dataptr[128];
+	union {
+		struct {
+			// minimum value for integer objects
+			int32_t min;
+			// maximum value for integer objects
+			int32_t max;
+			// default (reset) value
+			int32_t def;
+		};
+		// array object's children object pointer.
+		// this points to dynamically allocated array of children.
+		db_array_child_st *child_ptr;
+	};
 } db_obj_st;
 
 
@@ -80,8 +98,11 @@ static inline uint8_t db_get_nodeid(db_st *this) {
 
 
 void db_permission_to_str(canopen_permissions_e permissions, char *dest);
+void db_permission_to_longstr(canopen_permissions_e permissions, char *dest);
 void db_type_to_str(canopen_object_type_e type, char *dest);
 
+/// @brief: Deinitializes the database and frees all allocated memory
+void db_deinit(void);
 
 
 #endif /* DB_H_ */

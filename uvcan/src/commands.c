@@ -49,14 +49,13 @@ commands_st commands[] = {
 				.args = ARG_REQUIRE,
 				.callback = &cmd_can
 		},
-// note: Baudrate setting not available. uvcan depends on SocketCAN and user should open the connection
-// beforehand with ip link set CHANNEL type can bitrate BAUDRATE and ip link set dev CHANNEL up.
-//		{
-//				.cmd = "baud",
-//				.str = "Sets the baudrate for the CAN-bus. Refer to CiA specification for valid values. "
-//						"Defaults to 250 kbaud.",
-//				.callback = &cmd_baud
-//		},
+		{
+				.cmd = "baud",
+				.str = "Sets the baudrate for the CAN-bus. Refer to CiA specification for valid values. "
+						"Defaults to 250 kbaud.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_baud
+		},
 		{
 				.cmd = "nodeid",
 				.str = "Selecs the CANopen Node via Node ID. This should be called prior to commands which "

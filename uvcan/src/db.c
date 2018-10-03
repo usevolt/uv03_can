@@ -33,7 +33,7 @@ bool db_is_loaded(db_st *this) {
 	return is_loaded;
 }
 
-void type_to_str(canopen_object_type_e type, char *dest) {
+void db_type_to_str(canopen_object_type_e type, char *dest) {
 	if (type == CANOPEN_UNSIGNED32) {
 		strcpy(dest, "UNSIGNED32");
 	}
@@ -66,7 +66,7 @@ void type_to_str(canopen_object_type_e type, char *dest) {
 	}
 }
 
-void permission_to_str(canopen_permissions_e permissions, char *dest) {
+void db_permission_to_str(canopen_permissions_e permissions, char *dest) {
 	if (permissions == CANOPEN_RO) {
 		strcpy(dest, "RO");
 	}
@@ -80,6 +80,22 @@ void permission_to_str(canopen_permissions_e permissions, char *dest) {
 		strcpy(dest, "UNKNOWN");
 	}
 }
+
+void db_permission_to_longstr(canopen_permissions_e permissions, char *dest) {
+	if (permissions == CANOPEN_RO) {
+		strcpy(dest, "Read only");
+	}
+	else if (permissions == CANOPEN_RW) {
+		strcpy(dest, "Read / Write");
+	}
+	else if (permissions == CANOPEN_WO) {
+		strcpy(dest, "Write only");
+	}
+	else {
+		strcpy(dest, "UNKNOWN");
+	}
+}
+
 
 static canopen_object_type_e str_to_type(char *json_child) {
 	char str[128];
@@ -164,30 +180,74 @@ static bool parse_json(db_st *this, char *data) {
 				data = uv_jsonreader_find_child(child, "index", 1);
 				obj.obj.main_index = uv_jsonreader_get_int(data);
 
-				data = uv_jsonreader_find_child(child, "subindex", 1);
-				obj.obj.sub_index = uv_jsonreader_get_int(data);
-
 				data = uv_jsonreader_find_child(child, "type", 1);
 				obj.obj.type = str_to_type(data);
+
+				if (!CANOPEN_IS_ARRAY(obj.obj.type)) {
+					data = uv_jsonreader_find_child(child, "subindex", 1);
+					obj.obj.sub_index = uv_jsonreader_get_int(data);
+
+					data = uv_jsonreader_find_child(child, "min", 1);
+					obj.min = uv_jsonreader_get_int(data);
+
+					data = uv_jsonreader_find_child(child, "max", 1);
+					obj.max = uv_jsonreader_get_int(data);
+
+					data = uv_jsonreader_find_child(child, "default", 1);
+					obj.def = uv_jsonreader_get_int(data);
+				}
+				else {
+					data = uv_jsonreader_find_child(child, "arraysize", 1);
+					obj.obj.array_max_size = uv_jsonreader_get_int(data);
+				}
 
 				data = uv_jsonreader_find_child(child, "permissions", 1);
 				obj.obj.permissions = str_to_permissions(data);
 
-				data = uv_jsonreader_find_child(child, "data", 1);
-				uv_jsonreader_get_string(data, obj.data, sizeof(obj.data));
+				data = uv_jsonreader_find_child(child, "dataptr", 1);
+				uv_jsonreader_get_string(data, obj.dataptr, sizeof(obj.dataptr));
 
-				data = uv_jsonreader_find_child(child, "min", 1);
-				obj.min = uv_jsonreader_get_int(data);
 
-				data = uv_jsonreader_find_child(child, "max", 1);
-				obj.max = uv_jsonreader_get_int(data);
 
-				data = uv_jsonreader_find_child(child, "default", 1);
-				obj.def = uv_jsonreader_get_int(data);
+				if (CANOPEN_IS_ARRAY(obj.obj.type)) {
+					// cycle trough children and make a new object for each of them
+					// obj main index and type are already inherited from the array object
 
+					db_array_child_st *thischild;
+					void **last_ptr = (void**) &obj.child_ptr;
+					char *children = uv_jsonreader_find_child(child, "data", 1);
+
+					if (children == NULL || uv_jsonreader_get_type(children) != JSON_ARRAY) {
+						printf("children array not an array! 0x%x\n", children);
+					}
+					for (uint8_t i = 0; i < obj.obj.array_max_size; i++) {
+						thischild = malloc(sizeof(db_array_child_st));
+						*last_ptr = thischild;
+						last_ptr = &(thischild->next_sibling);
+						thischild->next_sibling = NULL;
+
+						char *str = uv_jsonreader_array_at(children, i);
+						if (str == NULL) {
+							printf("ERROR: Array object didn't have enought children. \n"
+									"Number of children: %u, should be: %u\n", i, obj.obj.array_max_size);
+						}
+						else {
+							data = uv_jsonreader_find_child(str, "name", 1);
+							uv_jsonreader_get_string(data, thischild->name, sizeof(thischild->name));
+
+							data = uv_jsonreader_find_child(str, "min", 1);
+							thischild->min = uv_jsonreader_get_int(data);
+
+							data = uv_jsonreader_find_child(str, "max", 1);
+							thischild->max = uv_jsonreader_get_int(data);
+
+							data = uv_jsonreader_find_child(str, "default", 1);
+							thischild->def = uv_jsonreader_get_int(data);
+						}
+					}
+				}
 
 				uv_vector_push_back(&dev.db.objects, &obj);
-
 			}
 		}
 
@@ -201,15 +261,20 @@ static bool parse_json(db_st *this, char *data) {
 }
 
 
-#define this (&dev)
+#define this (&dev.db)
 
 
 bool cmd_db(const char *arg) {
 	bool ret = false;
 
-	uv_vector_init(&this->db.objects, this->db.objects_buffer,
-			sizeof(this->db.objects_buffer) / sizeof(this->db.objects_buffer[0]),
-			sizeof(this->db.objects_buffer[0]));
+	// if database is already loaded, free the old memory
+	if (is_loaded) {
+		db_deinit();
+	}
+
+	uv_vector_init(&this->objects, this->objects_buffer,
+			sizeof(this->objects_buffer) / sizeof(this->objects_buffer[0]),
+			sizeof(this->objects_buffer[0]));
 
 	// try to load the CANOpen database
 
@@ -234,7 +299,7 @@ bool cmd_db(const char *arg) {
 		else {
 			char data[DB_MAX_FILE_SIZE];
 			if (fread(data, 1, size, fptr)) {
-				if (parse_json(&this->db, data)) {
+				if (parse_json(this, data)) {
 					printf("JSON parsed succesfully.\n");
 					strcpy(dev.db.filepath, arg);
 					ret = true;
@@ -256,8 +321,8 @@ bool cmd_db(const char *arg) {
 //		printf("PARSED DATA:\n\n");
 //
 //		printf("Node ID: %u\nObject Dictionary:\n", this->nodeid);
-//		for (uint8_t i = 0; i < uv_vector_size(&this->db.objects); i++) {
-//			db_obj_st *obj = uv_vector_at(&this->db.objects, i);
+//		for (uint8_t i = 0; i < uv_vector_size(&this->objects); i++) {
+//			db_obj_st *obj = uv_vector_at(&this->objects, i);
 //
 //			char type[64], perm[64];
 //			type_to_str(obj->obj.type, type);
@@ -283,4 +348,20 @@ bool cmd_db(const char *arg) {
 }
 
 
+static void free_child(db_array_child_st *child) {
+	if (child->next_sibling != NULL) {
+		free_child(child->next_sibling);
+	}
+	free(child);
+}
+
+void db_deinit(void) {
+	is_loaded = false;
+	for (int i = 0; i < db_get_object_count(this); i++) {
+		db_obj_st *obj = db_get_obj(this, i);
+		if (CANOPEN_IS_ARRAY(obj->obj.type)) {
+			free_child(obj->child_ptr);
+		}
+	}
+}
 
