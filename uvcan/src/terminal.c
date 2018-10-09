@@ -103,6 +103,9 @@ static void command_step(void *ptr) {
 
 		while (uv_ring_buffer_pop(&rx, &c) == ERR_NONE) {
 			printf("%c", c);
+			if (c == '\n') {
+				fflush(stdout);
+			}
 		}
 
 		uv_rtos_task_delay(20);

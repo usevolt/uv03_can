@@ -158,6 +158,9 @@ static bool parse_json(db_st *this, char *data) {
 	obj = uv_jsonreader_find_child(data, "nodeid", 1);
 	if (obj != NULL) {
 		this->node_id = uv_jsonreader_get_int(obj);
+		if (dev.nodeid == 0) {
+			dev.nodeid = this->node_id;
+		}
 	}
 
 	// object dictionary

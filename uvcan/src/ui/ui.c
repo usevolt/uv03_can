@@ -140,11 +140,13 @@ static void activate (GtkApplication* app, gpointer user_data)
 
 			// object dictionary
 			obj = gtk_builder_get_object(builder, "obj_dict");
-			obj_dict_show(&this->obj_dict, obj);
+			obj_dict_show(&this->obj_dict, obj, (struct GtkBuilder *) builder);
 
 			// load firmware
 			load_firmware_init(&this->load_firmware, builder);
 
+			// terminal
+			terminal_init(&this->terminal, builder);
 
 
 			g_object_unref(builder);

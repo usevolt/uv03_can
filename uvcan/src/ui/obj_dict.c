@@ -28,6 +28,9 @@ static void par_init(obj_dict_par_st *this, db_obj_st *db_obj, GtkWidget *parent
 static void par_expand(obj_dict_par_st *this);
 static void par_compress(obj_dict_par_st *this);
 static void obj_dict_par_selected (GtkListBox *box, GtkListBoxRow *row, gpointer user_data);
+static void reset(GtkButton *button, gpointer user_data);
+static void revert(GtkButton *button, gpointer user_data);
+static void save(GtkButton *button, gpointer user_data);
 
 
 
@@ -48,7 +51,7 @@ void obj_dict_update_view(obj_dict_st *this) {
 }
 
 
-void obj_dict_show(obj_dict_st *this, GObject *container) {
+void obj_dict_show(obj_dict_st *this, GObject *container, struct GtkBuilder *builder) {
 	this->obj_dict = (GObject*) container;
 	gtk_list_box_set_selection_mode(GTK_LIST_BOX(container), GTK_SELECTION_NONE);
 
@@ -56,6 +59,15 @@ void obj_dict_show(obj_dict_st *this, GObject *container) {
 
 	g_signal_connect(container, "row-activated", G_CALLBACK(obj_dict_par_selected), NULL);
 	this->selected_par = -1;
+
+	GObject *obj = gtk_builder_get_object(GTK_BUILDER(builder), "reset");
+	g_signal_connect(obj, "clicked", G_CALLBACK(reset), NULL);
+
+	obj = gtk_builder_get_object(GTK_BUILDER(builder), "revert");
+	g_signal_connect(obj, "clicked", G_CALLBACK(revert), NULL);
+
+	obj = gtk_builder_get_object(GTK_BUILDER(builder), "save");
+	g_signal_connect(obj, "clicked", G_CALLBACK(save), NULL);
 }
 
 
@@ -97,7 +109,7 @@ static void par_expand(obj_dict_par_st *this) {
 
 	if (CANOPEN_IS_INTEGER(this->obj->obj.type)) {
 		// read the object value from the device
-		int32_t value = -1;
+		int32_t value = 0;
 		if (uv_canopen_sdo_read(db_get_nodeid(&dev.db), this->obj->obj.main_index,
 				this->obj->obj.sub_index, CANOPEN_TYPE_LEN(this->obj->obj.type), &value) != ERR_NONE) {
 			// reading the value from the device failed
@@ -128,6 +140,7 @@ static void par_expand(obj_dict_par_st *this) {
 
 		obj = gtk_spin_button_new_with_range(this->obj->min, this->obj->max, 1);
 		this->spin_button = obj;
+		gtk_spin_button_set_value(GTK_SPIN_BUTTON(obj), value);
 		gtk_widget_set_sensitive(obj, CANOPEN_IS_WRITABLE(this->obj->obj.permissions));
 		g_signal_connect(obj, "value-changed", G_CALLBACK(obj_dict_spin_button_value_changed), NULL);
 		gtk_container_add(GTK_CONTAINER(row), obj);
@@ -141,7 +154,7 @@ static void par_expand(obj_dict_par_st *this) {
 			g_object_set(obj, "width-request", 300, NULL);
 			gtk_container_add(GTK_CONTAINER(row), obj);
 
-			int32_t value = -1;
+			int32_t value = 0;
 			if (!errmessage_shown &&
 					uv_canopen_sdo_read(db_get_nodeid(&dev.db), this->obj->obj.main_index,
 					i + 1, CANOPEN_TYPE_LEN(this->obj->obj.type), &value) != ERR_NONE) {
@@ -162,6 +175,7 @@ static void par_expand(obj_dict_par_st *this) {
 				errmessage_shown = true;
 			}
 
+
 			obj = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL,
 					child->min, child->max, 1);
 			gtk_widget_set_hexpand(obj, TRUE);
@@ -173,6 +187,7 @@ static void par_expand(obj_dict_par_st *this) {
 
 			obj = gtk_spin_button_new_with_range(child->min, child->max, 1);
 			gtk_widget_set_sensitive(obj, CANOPEN_IS_WRITABLE(this->obj->obj.permissions));
+			gtk_spin_button_set_value(GTK_SPIN_BUTTON(obj), value);
 			g_signal_connect(obj, "value-changed", G_CALLBACK(obj_dict_spin_button_value_changed), NULL);
 			gtk_container_add(GTK_CONTAINER(row), obj);
 
@@ -217,21 +232,8 @@ static void par_compress(obj_dict_par_st *this) {
 
 static void obj_dict_scale_value_changed(GtkRange *range, gpointer user_data) {
 	db_obj_st *obj = db_get_obj(&dev.db, this->selected_par);
-	int16_t sindex = obj->obj.sub_index;
 	if (CANOPEN_IS_ARRAY(obj->obj.type)) {
-		// find out which index was modified
 		GtkWidget *p = gtk_widget_get_parent(GTK_WIDGET(range));
-		GtkWidget *pp = gtk_widget_get_parent(p);
-		GList *children = gtk_container_get_children(GTK_CONTAINER(pp));
-		int i;
-		for (i = 0; i < g_list_length(children); i++) {
-			GtkWidget *c = (GtkWidget*) g_list_nth_data(children, i);
-			// found the children number
-			if (c == p) {
-				sindex = i;
-				break;
-			}
-		}
 		// note: number 2 refers to the spin button. If the order of UI elements is modified,
 		// it should be modified accordingly
 		GtkWidget *spinbutton = g_list_nth_data(gtk_container_get_children(GTK_CONTAINER(p)), 2);
@@ -241,9 +243,6 @@ static void obj_dict_scale_value_changed(GtkRange *range, gpointer user_data) {
 		gtk_spin_button_set_value(GTK_SPIN_BUTTON(this->obj_dict_params[this->selected_par].spin_button),
 				gtk_range_get_value(range));
 	}
-	int32_t value = gtk_range_get_value(range);
-	uv_canopen_sdo_write(dev.nodeid, obj->obj.main_index, sindex,
-			CANOPEN_TYPE_LEN(obj->obj.type), &value);
 }
 
 static void obj_dict_spin_button_value_changed(GtkSpinButton *spin_button, gpointer user_data) {
@@ -259,6 +258,7 @@ static void obj_dict_spin_button_value_changed(GtkSpinButton *spin_button, gpoin
 			GtkWidget *c = (GtkWidget*) g_list_nth_data(children, i);
 			// found the children number
 			if (c == p) {
+				sindex = i;
 				break;
 			}
 		}
@@ -272,7 +272,7 @@ static void obj_dict_spin_button_value_changed(GtkSpinButton *spin_button, gpoin
 				gtk_spin_button_get_value(GTK_SPIN_BUTTON(this->obj_dict_params[this->selected_par].spin_button)));
 	}
 	int32_t value = gtk_spin_button_get_value(spin_button);
-	uv_canopen_sdo_write(dev.nodeid, obj->obj.main_index, sindex,
+	uv_canopen_sdo_write(db_get_nodeid(&dev.db), obj->obj.main_index, sindex,
 			CANOPEN_TYPE_LEN(obj->obj.type), &value);
 }
 
@@ -291,3 +291,31 @@ static void obj_dict_par_selected (GtkListBox *box, GtkListBoxRow *row, gpointer
 	}
 }
 
+
+
+
+static void reset(GtkButton *button, gpointer user_data) {
+	uv_canopen_nmt_master_reset_node(db_get_nodeid(&dev.db));
+}
+
+
+static void revert(GtkButton *button, gpointer user_data) {
+	GtkWidget *d = gtk_message_dialog_new(GTK_WINDOW(dev.ui.window), 0,
+			GTK_MESSAGE_WARNING, GTK_BUTTONS_YES_NO,
+			"Clear all modifications and restore device to factory settings?");
+	int result = gtk_dialog_run(GTK_DIALOG(d));
+	gtk_widget_destroy(GTK_WIDGET(d));
+
+	if (result == GTK_RESPONSE_YES) {
+		uv_canopen_sdo_write(db_get_nodeid(&dev.db), CONFIG_CANOPEN_RESTORE_PARAMS_INDEX, 1, 4, "load");
+
+		uv_canopen_nmt_master_reset_node(db_get_nodeid(&dev.db));
+
+		par_compress(&this->obj_dict_params[this->selected_par]);
+	}
+}
+
+
+static void save(GtkButton *button, gpointer user_data) {
+	uv_canopen_sdo_write(db_get_nodeid(&dev.db), CONFIG_CANOPEN_STORE_PARAMS_INDEX, 1, 4, "save");
+}

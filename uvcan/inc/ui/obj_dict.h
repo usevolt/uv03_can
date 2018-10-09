@@ -33,6 +33,9 @@ typedef struct _GObject GObject;
 struct _GtkWidget;
 typedef struct _GtkWidget GtkWidget;
 
+struct GtkBuilder;
+
+
 
 /// @brief: GTK object structure defining a single object dictionary parameter
 typedef struct {
@@ -61,7 +64,7 @@ typedef struct {
 
 /// @brief: Shows the object dictionary. Should be called when initializing the window where
 /// object dictionary is.
-void obj_dict_show(obj_dict_st *this, GObject *parent);
+void obj_dict_show(obj_dict_st *this, GObject *container, struct GtkBuilder *builder);
 
 /// @brief: Loads the object dictionary entries from the database
 void obj_dict_update_view(obj_dict_st *this);

@@ -16,16 +16,11 @@
 */
 
 
-#ifndef UI_H_
-#define UI_H_
+#ifndef UI_UITERMINAL_H_
+#define UI_UITERMINAL_H_
 
-#include <stdbool.h>
 #include <uv_utilities.h>
-#include <uv_canopen.h>
-#include "db.h"
-#include "obj_dict.h"
-#include "load_firmware.h"
-#include "uiterminal.h"
+#include <uv_rtos.h>
 
 
 struct _GObject;
@@ -34,27 +29,15 @@ typedef struct _GObject GObject;
 struct _GtkWidget;
 typedef struct _GtkWidget GtkWidget;
 
-
+typedef struct _GtkBuilder GtkBuilder;
 
 typedef struct {
-	GtkWidget *window;
-	GObject *can_dev;
-	GObject *can_baudrate;
-	GObject *can_switch;
-	GObject *db;
-
-	obj_dict_st obj_dict;
-	load_firmware_st load_firmware;
-	terminal_st terminal;
-} ui_st;
+	GtkWidget *entry;
+	GtkWidget *terminal;
+	uv_mutex_st mutex;
+} terminal_st;
 
 
+void terminal_init(terminal_st *this, GtkBuilder *builder);
 
-/// @brief: Database command provides uvcan with CANOpen device database file.
-/// Also works as an initializer.
-bool cmd_ui(const char *arg);
-
-
-
-
-#endif /* UI_H_ */
+#endif /* UI_UITERMINAL_H_ */
