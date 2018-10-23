@@ -25,6 +25,7 @@
 #include "db.h"
 #include "obj_dict.h"
 #include "load_firmware.h"
+#include "uiterminal.h"
 
 
 struct _GObject;
@@ -44,6 +45,7 @@ typedef struct {
 
 	obj_dict_st obj_dict;
 	load_firmware_st load_firmware;
+	terminal_st terminal;
 } ui_st;
 
 

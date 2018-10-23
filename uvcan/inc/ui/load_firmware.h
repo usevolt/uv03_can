@@ -25,13 +25,8 @@
 
 
 
-struct _GObject;
 typedef struct _GObject GObject;
-
-struct _GtkWidget;
 typedef struct _GtkWidget GtkWidget;
-
-struct _GtkBuilder;
 typedef struct _GtkBuilder GtkBuilder;
 
 
@@ -41,6 +36,7 @@ typedef struct {
 	GtkWidget *firmwarelog;
 	char buffer[1024];
 	FILE *fp;
+	int update_id;
 } load_firmware_st;
 
 

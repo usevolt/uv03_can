@@ -24,7 +24,7 @@
 static void flash(GtkButton *button, gpointer user_data);
 static void flashwfr(GtkButton *button, gpointer user_data);
 static void bin_set (GtkFileChooserButton *widget, gpointer user_data);
-static void load(void *ptr);
+static gboolean update(gpointer data);
 
 
 
@@ -45,6 +45,7 @@ void load_firmware_init(load_firmware_st *this, GtkBuilder *builder) {
 	memset(this->buffer, '\0', sizeof(this->buffer));
 
 	this->fp = NULL;
+	this->update_id = -1;
 }
 
 
@@ -52,40 +53,44 @@ void load_firmware_init(load_firmware_st *this, GtkBuilder *builder) {
 #define this (&dev.ui.load_firmware)
 
 static void flash(GtkButton *button, gpointer user_data) {
-	gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(this->firmwarelog)), "", -1);
-	char *filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(this->filechooser));
-	if (this->fp == NULL && filename != NULL) {
-		char cmd[256];
-		sprintf(cmd, "uvcan --nodeid %u --loadbin %s", dev.nodeid, filename);
-		printf("executing: %s\n", cmd);
-		this->fp = popen(cmd, "r");
-		if (this->fp == NULL) {
-			printf("Failed to run command %s\n", cmd);
+	if (this->update_id == -1) {
+		gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(this->firmwarelog)), "", -1);
+		char *filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(this->filechooser));
+		if (this->fp == NULL && filename != NULL) {
+			char cmd[256];
+			sprintf(cmd, "uvcan --nodeid %u --loadbin %s", dev.nodeid, filename);
+			printf("executing: %s\n", cmd);
+			this->fp = popen(cmd, "r");
+			if (this->fp == NULL) {
+				printf("Failed to run command %s\n", cmd);
+			}
+			else {
+				this->update_id = g_timeout_add(20, update, NULL);
+			}
 		}
-		else {
-			uv_rtos_task_create(&load, "load", UV_RTOS_MIN_STACK_SIZE, NULL, UV_RTOS_IDLE_PRIORITY + 1, NULL);
-		}
+		g_free(filename);
 	}
-	g_free(filename);
 }
 
 
 static void flashwfr(GtkButton *button, gpointer user_data) {
-	gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(this->firmwarelog)), "", -1);
-	char *filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(this->filechooser));
-	if (this->fp == NULL && filename != NULL) {
-		char cmd[256];
-		sprintf(cmd, "uvcan --nodeid %u --loadbinwfr %s", dev.nodeid, filename);
-		printf("executing: %s\n", cmd);
-		this->fp = popen(cmd, "r");
-		if (this->fp == NULL) {
-			printf("Failed to run command %s\n", cmd);
+	if (this->update_id == -1) {
+		gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(this->firmwarelog)), "", -1);
+		char *filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(this->filechooser));
+		if (this->fp == NULL && filename != NULL) {
+			char cmd[256];
+			sprintf(cmd, "uvcan --nodeid %u --loadbinwfr %s", dev.nodeid, filename);
+			printf("executing: %s\n", cmd);
+			this->fp = popen(cmd, "r");
+			if (this->fp == NULL) {
+				printf("Failed to run command %s\n", cmd);
+			}
+			else {
+				this->update_id = g_timeout_add(20, update, NULL);
+			}
 		}
-		else {
-			uv_rtos_task_create(&load, "load", UV_RTOS_MIN_STACK_SIZE, NULL, UV_RTOS_IDLE_PRIORITY + 1, NULL);
-		}
+		g_free(filename);
 	}
-	g_free(filename);
 }
 
 
@@ -102,16 +107,25 @@ void bin_set (GtkFileChooserButton *widget, gpointer user_data) {
 }
 
 
-static void load(void *ptr) {
+static gboolean update(gpointer data) {
 	if (this->fp != NULL) {
 		char line[256];
-		while (fgets(line, sizeof(line), this->fp) != NULL) {
+		if (fgets(line, sizeof(line), this->fp) != NULL) {
 			gtk_text_buffer_insert_at_cursor(
 					gtk_text_view_get_buffer(GTK_TEXT_VIEW(this->firmwarelog)), line, -1);
-		}
 
-		pclose(this->fp);
-		this->fp = NULL;
+			GtkWidget *scrollwindow = gtk_widget_get_parent(GTK_WIDGET(this->firmwarelog));
+			GtkAdjustment *adj = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scrollwindow));
+			gtk_adjustment_set_value(adj, gtk_adjustment_get_upper(adj));
+			gtk_scrolled_window_set_vadjustment(GTK_SCROLLED_WINDOW(scrollwindow), adj);
+		}
+		else {
+			pclose(this->fp);
+			this->fp = NULL;
+			g_source_remove(this->update_id);
+			this->update_id = -1;
+		}
 	}
+	return TRUE;
 }
 

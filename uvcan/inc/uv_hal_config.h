@@ -107,7 +107,7 @@
 #define CONFIG_CAN									1
 #define CONFIG_CAN0									1
 #define CONFIG_CAN0_BAUDRATE						250000
-#define CONFIG_CAN0_RX_BUFFER_SIZE					256
+#define CONFIG_CAN0_RX_BUFFER_SIZE					2048
 #define CONFIG_CAN0_TX_BUFFER_SIZE					256
 #define CONFIG_CAN1									0
 #define CONFIG_CAN_LOG								0
