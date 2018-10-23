@@ -1,0 +1,3 @@
+#Finds all dll's that uvcan.exe depends on and copies them to a directory given as an argument
+ldd uvcan.exe | grep '\/mingw.*\.dll' -o | xargs -I{} cp "{}" $1
+cp uvcan.exe $1
