@@ -40,7 +40,7 @@ bool cmd_load(const char *arg) {
 		printf("ERROR: Give firmware as a file path to binary file.\n");
 	}
 	else {
-		printf("Firmware %s selected\n", arg, dev.nodeid);
+		printf("Firmware %s selected\n", arg);
 		strcpy(this->firmware, arg);
 		this->response = false;
 		this->wfr = false;
@@ -60,7 +60,7 @@ bool cmd_loadwfr(const char *arg) {
 		printf("ERROR: Give firmware as a file path to binary file.\n");
 	}
 	else {
-		printf("Firmware %s selected\n", arg, dev.nodeid);
+		printf("Firmware %s selected\n", arg);
 		strcpy(this->firmware, arg);
 		this->response = false;
 		this->wfr = true;

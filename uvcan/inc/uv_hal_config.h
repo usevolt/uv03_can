@@ -12,10 +12,12 @@
 /**** USER CONFIGURATIONS ****/
 
 
-#define CONFIG_TARGET_LPC11C14						0
-#define CONFIG_TARGET_LPC1785						0
-#define CONFIG_TARGET_LPC1549						0
-#define CONFIG_TARGET_LINUX							1
+// note: Target should be specified in the makefile
+//#define CONFIG_TARGET_LPC11C14						0
+//#define CONFIG_TARGET_LPC1785						0
+//#define CONFIG_TARGET_LPC1549						0
+//#define CONFIG_TARGET_LINUX							0
+//#define CONFIG_TARGET_WIN							1
 
 
 

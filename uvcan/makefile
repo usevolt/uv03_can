@@ -11,9 +11,16 @@
 
 ### APP CONFIG ###
 
+UNAME := $(shell uname)
 
 # Additional CPU define symbol, used for FreeRTOS compile
+ifeq ($(UNAME), MINGW64_NT-6.1)
+CORE := CORE_WIN
+TARGET := CONFIG_TARGET_WIN
+else
 CORE := CORE_LINUX
+TARGET := CONFIG_TARGET_LINUX
+endif
 
 #Sepcify the optimizations used. Os == optimize for size, Og = optimize for debug, O3, O2, O1
 O := Og
@@ -24,25 +31,41 @@ BUILDDIR := release
 # Name of the produced binary firmware
 BINARY := uvcan
 
+
 # List of include directories
 INCLUDEDIRS := 	-I"inc/" \
 				-I"inc/ui" \
 				-I"uw_can/" \
 				-I"hal/uv_hal/inc" \
 				-I"hal/uv_hal/inc/canopen"
+				
+ifeq ($(CORE), CORE_WIN)
+INCLUDEDIRS := $(INCLUDEDIRS) \
+	-IC:/msys64/mingw64/include/ncurses
+endif
 
 #List of directories where to search libraries
-LIB_DIRS := 	
+LIB_DIRS := 	-L./hal/uv_hal/src_win
 
 #List of libraries
-LIBS :=			
+ifeq ($(CORE), CORE_WIN)
+LIBS := -lPCANBasic
+endif
+
 
 #Source directories
 SOURCEDIRS := src \
 				src/ui \
 				hal/uv_hal/src \
-				hal/uv_hal/src_linux \
 				hal/uv_hal/src/canopen
+				
+ifeq ($(CORE), CORE_LINUX)
+SOURCEDIRS := $(SOURCEDIRS) \
+				hal/uv_hal/src_linux
+else
+SOURCEDIRS := $(SOURCEDIRS) \
+				hal/uv_hal/src_win
+endif
 
 # Path and name of GResource file for GTK UI
 # Path has to end in /
@@ -69,7 +92,7 @@ UIFILES := $(shell find $(GRESOURCE_DIR) -maxdepth 1 -name '*.ui')
 GRESOURCE := $(GRESOURCE_DIR)$(GRESOURCE_FILE).xml
 
 
-CFLAGS := $(shell pkg-config --cflags gtk+-3.0) -D__UV_PROJECT_NAME=$(FULL_NAME) $(INCLUDEDIRS) -D$(CORE) -$(O) -g3 -Wall -fmessage-length=0 -fno-builtin -ffunction-sections -fdata-sections
+CFLAGS := $(shell pkg-config --cflags gtk+-3.0) -D$(TARGET)=1 -D__UV_PROJECT_NAME=$(FULL_NAME) $(INCLUDEDIRS) -D$(CORE) -$(O) -g3 -Wall -fmessage-length=0 -fno-builtin -ffunction-sections -fdata-sections
 
 
 LDFLAGS := -D__UV_APP_VERSION=\"$(GIT_VERSION)\"
@@ -98,7 +121,7 @@ $(BINARY): $(OBJECTS)
 	@echo ""
 	@echo "Linking target"
 	@echo ""
-	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJECTS) -pthread -o "$(BINARY)" -lncurses -ltinfo $(shell pkg-config --libs gtk+-3.0)
+	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJECTS) -pthread -o "$(BINARY)" -lncurses $(shell pkg-config --libs gtk+-3.0) $(LIB_DIRS) $(LIBS)
 
 
 post-build:

@@ -36,13 +36,15 @@ void init(void *me) {
 	// initialize the default settings
 	strcpy(this->can_channel, "can0");
 	char cmd[128];
+#if CONFIG_TARGET_LINUX
 	// get the net dev baudrate. If dev was not available, baudrate will be 0.
 	sprintf(cmd, "ip -det link show %s | grep bitrate | awk '{print $2}'", this->can_channel);
 	FILE *fp = popen(cmd, "r");
 	if (fgets(cmd, sizeof(cmd), fp)) {
 		this->baudrate = strtol(cmd, NULL, 0);
 	}
-	// if baudrate was not set on the device, initialize it to 0
+#endif
+	// if baudrate was not set on the device, initialize it to 250000
 	if (this->baudrate == 0) {
 		this->baudrate = 250000;
 	}
@@ -129,6 +131,7 @@ int main(int argc, char *argv[]) {
 
 	bool error = false;
 	char c = 'c';
+	bool none_args = true;
 	while ((c = getopt_long(argc, argv, "", opts, NULL)) != -1) {
 		if (c != '?') {
 			// execute command callback
@@ -138,7 +141,13 @@ int main(int argc, char *argv[]) {
 				error = true;
 				break;
 			}
+			none_args = false;
 		}
+	}
+	// if none arguments were given,
+	// uvcan starts with --ui command
+	if (none_args) {
+		cmd_ui("");
 	}
 
 	if (!error) {
