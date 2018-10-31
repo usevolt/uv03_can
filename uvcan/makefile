@@ -94,8 +94,12 @@ GRESOURCE := $(GRESOURCE_DIR)$(GRESOURCE_FILE).xml
 
 CFLAGS := $(shell pkg-config --cflags gtk+-3.0) -D$(TARGET)=1 -D__UV_PROJECT_NAME=$(FULL_NAME) $(INCLUDEDIRS) -D$(CORE) -$(O) -g3 -Wall -fmessage-length=0 -fno-builtin -ffunction-sections -fdata-sections
 
-
 LDFLAGS := -D__UV_APP_VERSION=\"$(GIT_VERSION)\"
+
+ifeq ($(CORE), CORE_WIN)
+CFLAGS := $(CFLAGS) -mwindows
+LDFLAGS := $(LDFLAGS) -mwindows
+endif
 
 
 # Get list of object files, with paths
