@@ -23,6 +23,7 @@
 #include <uv_terminal.h>
 #include <ncurses.h>
 #include <uv_json.h>
+#include <ctype.h>
 #include "main.h"
 
 
@@ -35,31 +36,34 @@ bool db_is_loaded(db_st *this) {
 
 void db_type_to_str(canopen_object_type_e type, char *dest) {
 	if (type == CANOPEN_UNSIGNED32) {
-		strcpy(dest, "UNSIGNED32");
+		strcpy(dest, "CANOPEN_UNSIGNED32");
 	}
 	else if (type == CANOPEN_SIGNED32) {
-		strcpy(dest, "SIGNED32");
+		strcpy(dest, "CANOPEN_SIGNED32");
 	}
 	else if (type == CANOPEN_UNSIGNED16) {
-		strcpy(dest, "UNSIGNED16");
+		strcpy(dest, "CANOPEN_UNSIGNED16");
 	}
 	else if (type == CANOPEN_SIGNED16) {
-		strcpy(dest, "SIGNED16");
+		strcpy(dest, "CANOPEN_SIGNED16");
 	}
 	else if (type == CANOPEN_UNSIGNED8) {
-		strcpy(dest, "UNSIGNED8");
+		strcpy(dest, "CANOPEN_UNSIGNED8");
 	}
 	else if (type == CANOPEN_SIGNED8) {
-		strcpy(dest, "SIGNED8");
+		strcpy(dest, "CANOPEN_SIGNED8");
 	}
 	else if (type == CANOPEN_ARRAY32) {
-		strcpy(dest, "ARRAY32");
+		strcpy(dest, "CANOPEN_ARRAY32");
 	}
 	else if (type == CANOPEN_ARRAY16) {
-		strcpy(dest, "ARRAY16");
+		strcpy(dest, "CANOPEN_ARRAY16");
 	}
 	else if (type == CANOPEN_ARRAY8) {
-		strcpy(dest, "ARRAY8");
+		strcpy(dest, "CANOPEN_ARRAY8");
+	}
+	else if (type == CANOPEN_STRING) {
+		strcpy(dest, "CANOPEN_STRING");
 	}
 	else {
 		strcpy(dest, "UNKNOWN");
@@ -68,13 +72,13 @@ void db_type_to_str(canopen_object_type_e type, char *dest) {
 
 void db_permission_to_str(canopen_permissions_e permissions, char *dest) {
 	if (permissions == CANOPEN_RO) {
-		strcpy(dest, "RO");
+		strcpy(dest, "CANOPEN_RO");
 	}
 	else if (permissions == CANOPEN_RW) {
-		strcpy(dest, "RW");
+		strcpy(dest, "CANOPEN_RW");
 	}
 	else if (permissions == CANOPEN_WO) {
-		strcpy(dest, "WO");
+		strcpy(dest, "CANOPEN_WO");
 	}
 	else {
 		strcpy(dest, "UNKNOWN");
@@ -101,23 +105,26 @@ static canopen_object_type_e str_to_type(char *json_child) {
 	char str[128];
 	canopen_object_type_e ret;
 	uv_jsonreader_get_string(json_child, str, 128);
-	if (strcmp(str, "UNSIGNED32") == 0 || strcmp(str, "SIGNED32") == 0) {
+	if (strcmp(str, "CANOPEN_UNSIGNED32") == 0 || strcmp(str, "CANOPEN_SIGNED32") == 0) {
 		ret = CANOPEN_UNSIGNED32;
 	}
-	else if (strcmp(str, "UNSIGNED16") == 0 || strcmp(str, "SIGNED16") == 0) {
+	else if (strcmp(str, "CANOPEN_UNSIGNED16") == 0 || strcmp(str, "CANOPEN_SIGNED16") == 0) {
 		ret = CANOPEN_UNSIGNED16;
 	}
-	else if (strcmp(str, "UNSIGNED8") == 0 || strcmp(str, "SIGNED8") == 0) {
+	else if (strcmp(str, "CANOPEN_UNSIGNED8") == 0 || strcmp(str, "CANOPEN_SIGNED8") == 0) {
 		ret = CANOPEN_UNSIGNED8;
 	}
-	else if (strcmp(str, "ARRAY32") == 0) {
+	else if (strcmp(str, "CANOPEN_ARRAY32") == 0) {
 		ret = CANOPEN_ARRAY32;
 	}
-	else if (strcmp(str, "ARRAY16") == 0) {
+	else if (strcmp(str, "CANOPEN_ARRAY16") == 0) {
 		ret = CANOPEN_ARRAY16;
 	}
-	else if (strcmp(str, "ARRAY8") == 0) {
+	else if (strcmp(str, "CANOPEN_ARRAY8") == 0) {
 		ret = CANOPEN_ARRAY8;
+	}
+	else if (strcmp(str, "CANOPEN_STRING") == 0) {
+		ret = CANOPEN_STRING;
 	}
 	else {
 		ret = CANOPEN_UNSIGNED8;
@@ -129,13 +136,13 @@ static canopen_permissions_e str_to_permissions(char *json_child) {
 	char str[64];
 	canopen_permissions_e ret;
 	uv_jsonreader_get_string(json_child, str, 64);
-	if (strcmp(str, "WO") == 0) {
+	if (strcmp(str, "CANOPEN_WO") == 0) {
 		ret = CANOPEN_WO;
 	}
-	else if (strcmp(str, "RW") == 0) {
+	else if (strcmp(str, "CANOPEN_RW") == 0) {
 		ret = CANOPEN_RW;
 	}
-	else if (strcmp(str, "RO") == 0) {
+	else if (strcmp(str, "CANOPEN_RO") == 0) {
 		ret = CANOPEN_RO;
 	}
 	else {
@@ -154,13 +161,80 @@ static bool parse_json(db_st *this, char *data) {
 
 	char *obj;
 
+	// dev name
+	obj = uv_jsonreader_find_child(data, "DEV", 1);
+	if (obj != NULL) {
+		uv_jsonreader_get_string(obj, this->dev_name, sizeof(this->dev_name));
+	}
+	else {
+		printf("*** ERROR *** 'DEV' object not found in the JSON\n");
+	}
+
 	// nodeid
-	obj = uv_jsonreader_find_child(data, "nodeid", 1);
+	obj = uv_jsonreader_find_child(data, "NODEID", 1);
 	if (obj != NULL) {
 		this->node_id = uv_jsonreader_get_int(obj);
 		if (dev.nodeid == 0) {
 			dev.nodeid = this->node_id;
 		}
+	}
+	else {
+		printf("*** ERROR *** 'NODEID' object not found in the JSON\n");
+	}
+
+
+	// emcy
+	obj = uv_jsonreader_find_child(data, "EMCY", 1);
+	if (uv_jsonreader_get_type(obj) != JSON_ARRAY) {
+		printf("*** JSON ERROR **** EMCY array is not an array\n");
+	}
+	else if (obj != NULL) {
+		for (unsigned int i = 0; i < uv_jsonreader_array_get_size(obj); i++) {
+			db_emcy_st emcy;
+			uv_jsonreader_array_get_string(obj, i, emcy.name, sizeof(emcy.name));
+			emcy.value = i;
+			uv_vector_push_back(&this->emcys, &emcy);
+		}
+	}
+	else {
+
+	}
+
+	// defines
+	obj = uv_jsonreader_find_child(data, "DEFINES", 1);
+	if (obj != NULL) {
+		if (uv_jsonreader_get_type(obj) != JSON_ARRAY) {
+			printf("*** JSON ERROR **** DEFINES array is not an array\n");
+		}
+		else {
+			for (unsigned int i = 0; i < uv_jsonreader_array_get_size(obj); i++) {
+				db_define_st define;
+				char *d = uv_jsonreader_array_at(obj, i);
+				if (d != NULL) {
+					char *v = uv_jsonreader_find_child(d, "name", 1);
+					uv_jsonreader_get_string(v, define.name, sizeof(define.name));
+					char *s = define.name;
+					while(*s != '\0') {
+						if (isspace(*s)) {
+							*s = '_';
+						}
+						else {
+							*s = toupper(*s);
+						}
+						s++;
+					}
+					v = uv_jsonreader_find_child(d, "value", 1);
+					define.value = uv_jsonreader_get_int(v);
+					uv_vector_push_back(&this->defines, &define);
+				}
+				else {
+					printf("*** ERROR *** DEFINES array member was not an object at index %u\n", i);
+				}
+			}
+		}
+	}
+	else {
+
 	}
 
 	// object dictionary
@@ -187,17 +261,26 @@ static bool parse_json(db_st *this, char *data) {
 				obj.obj.type = str_to_type(data);
 
 				if (!CANOPEN_IS_ARRAY(obj.obj.type)) {
-					data = uv_jsonreader_find_child(child, "subindex", 1);
-					obj.obj.sub_index = uv_jsonreader_get_int(data);
+					if (CANOPEN_IS_STRING(obj.obj.type)) {
+						data = uv_jsonreader_find_child(child, "stringsize", 1);
+						obj.obj.string_len = uv_jsonreader_get_int(data);
 
-					data = uv_jsonreader_find_child(child, "min", 1);
-					obj.min = uv_jsonreader_get_int(data);
+						data = uv_jsonreader_find_child(child, "default", 1);
+						uv_jsonreader_get_string(data, obj.string_def, sizeof(obj.string_def));
+					}
+					else {
+						data = uv_jsonreader_find_child(child, "subindex", 1);
+						obj.obj.sub_index = uv_jsonreader_get_int(data);
 
-					data = uv_jsonreader_find_child(child, "max", 1);
-					obj.max = uv_jsonreader_get_int(data);
+						data = uv_jsonreader_find_child(child, "min", 1);
+						obj.min = uv_jsonreader_get_int(data);
 
-					data = uv_jsonreader_find_child(child, "default", 1);
-					obj.def = uv_jsonreader_get_int(data);
+						data = uv_jsonreader_find_child(child, "max", 1);
+						obj.max = uv_jsonreader_get_int(data);
+
+						data = uv_jsonreader_find_child(child, "default", 1);
+						obj.def = uv_jsonreader_get_int(data);
+					}
 				}
 				else {
 					data = uv_jsonreader_find_child(child, "arraysize", 1);
@@ -278,6 +361,14 @@ bool cmd_db(const char *arg) {
 	uv_vector_init(&this->objects, this->objects_buffer,
 			sizeof(this->objects_buffer) / sizeof(this->objects_buffer[0]),
 			sizeof(this->objects_buffer[0]));
+
+	uv_vector_init(&this->emcys, this->emcys_buffer,
+			sizeof(this->emcys_buffer) / sizeof(this->emcys_buffer[0]),
+			sizeof(this->emcys_buffer[0]));
+
+	uv_vector_init(&this->defines, this->defines_buffer,
+			sizeof(this->defines_buffer) / sizeof(this->defines_buffer[0]),
+			sizeof(this->defines_buffer[0]));
 
 	// try to load the CANOpen database
 

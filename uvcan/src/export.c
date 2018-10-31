@@ -20,28 +20,322 @@
 #include <export.h>
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 #include <uv_terminal.h>
+#include <libgen.h>
+#include "db.h"
 #include "main.h"
 
-
-static void step(void *ptr);
 
 
 #define this (&dev)
 
 
+bool get_header_objs(char *dest, const char *filename) {
+	strcpy(dest, "\n\n\n/// @file: UVCAN generated header file describing the object dictionary\n"
+			"/// of this device. DO NOT EDIT DIRECTLY\n\n");
+	strcat(dest, "#ifndef ");
+	char name[1024];
+	strcpy(name, filename);
+	char *basenam = basename(name);
+	strcat(dest, basenam);
+	strcat(dest, "\n#define ");
+	strcat(dest, basenam);
+	strcat(dest, "\n\n");
+	strcat(dest, "#include <stdint.h>\n"
+			"#include <string.h>\n\n");
+
+	// create symbol for node id
+	char nameupper[1024];
+	nameupper[0] = '\0';
+	strcat(dest, "#define ");
+	for (int i = 0; i < strlen(db_get_dev_name(&dev.db)); i++) {
+		char c[2];
+		c[0] = toupper(db_get_dev_name(&dev.db)[i]);
+		c[1] = '\0';
+		strcat(nameupper, c);
+	}
+	strcat(dest, nameupper);
+	strcat(dest, "_NODEID");
+	sprintf(&dest[strlen(dest)], "           0x%x\n\n", db_get_nodeid(&dev.db));
+
+	// create symbols for EMCY messages
+	strcat(dest, "enum {\n");
+	for (int i = 0; i < db_get_emcy_count(&dev.db); i++) {
+		db_emcy_st *emcy = db_get_emcy(&dev.db, i);
+
+		char line[1024];
+		line[0] = '\0';
+		strcat(line, "    ");
+		strcat(line, nameupper);
+		strcat(line, "_EMCY_");
+		strcat(line, emcy->name);
+		strcat(line, " =            ");
+		sprintf(&line[strlen(line)], "%i,\n", emcy->value);
+
+		strcat(dest, line);
+	}
+	sprintf(&(dest[strlen(dest)]), "    %s_EMCY_COUNT =            %u\n};",
+			nameupper, db_get_emcy_count(&dev.db));
+	strcat(dest, "\n\n");
+
+	// create symbols for defines
+	for (int i = 0; i < db_get_define_count(&dev.db); i++) {
+		db_define_st *define = db_get_define(&dev.db, i);
+
+		char line[1024];
+		line[0] = '\0';
+		strcat(line, "#define ");
+		strcat(line, nameupper);
+		strcat(line, "_");
+		strcat(line, define->name);
+		strcat(line, "            ");
+		sprintf(&line[strlen(line)], "%i\n", define->value);
+
+		strcat(dest, line);
+	}
+	strcat(dest, "\n\n");
+
+
+	// create header objects from object dictionary objects
+	for (int i = 0; i < db_get_object_count(&dev.db); i++) {
+		db_obj_st *obj = db_get_obj(&dev.db, i);
+		// *name* contains the object name in upper case letters
+		char name[1024];
+		int j = 0;
+		while (obj->name[j] != '\0') {
+			if (isspace(obj->name[j])) {
+				name[j] = '_';
+			}
+			else {
+				name[j] = toupper(obj->name[j]);
+			}
+			j++;
+		}
+		name[j] = '\0';
+		char line[1024];
+		strcpy(line, "#define ");
+		strcat(line, nameupper);
+		strcat(line, "_");
+		strcat(line, name);
+		strcat(line, "_INDEX           ");
+		sprintf(&line[strlen(line)], "0x%x\n", obj->obj.main_index);
+		strcat(line, "#define ");
+		strcat(line, nameupper);
+		strcat(line, "_");
+		strcat(line, name);
+		if (uv_canopen_is_array(&obj->obj)) {
+			strcat(line, "_ARRAY_MAX_SIZE            ");
+			sprintf(&line[strlen(line)], "%u\n", obj->obj.array_max_size);
+		}
+		else {
+			if (CANOPEN_IS_STRING(obj->obj.type)) {
+				strcat(line, "_STRING_LEN            ");
+				sprintf(&line[strlen(line)], "%u\n", obj->obj.string_len);
+			}
+			else {
+				strcat(line, "_SUBINDEX            ");
+				sprintf(&line[strlen(line)], "%u\n", obj->obj.sub_index);
+			}
+		}
+		strcat(line, "#define ");
+		strcat(line, nameupper);
+		strcat(line, "_");
+		strcat(line, name);
+		strcat(line, "_TYPE            ");
+		db_type_to_str(obj->obj.type, &line[strlen(line)]);
+		strcat(line, "\n");
+
+		strcat(line, "#define ");
+		strcat(line, nameupper);
+		strcat(line, "_");
+		strcat(line, name);
+		strcat(line, "_PERMISSIONS            ");
+		db_permission_to_str(obj->obj.permissions, &line[strlen(line)]);
+		strcat(line, "\n");
+
+		if (uv_canopen_is_array(&obj->obj)) {
+			db_array_child_st *child = obj->child_ptr;
+			int index = 0;
+			while (child != NULL) {
+				strcat(line, "#define ");
+				strcat(line, nameupper);
+				strcat(line, "_");
+				strcat(line, name);
+				strcat(line, "_");
+				char childname[1024] = { '\0' };
+				char *c = child->name;
+				while (*c != '\0') {
+					if (isspace(*c)) {
+						strcat(childname, "_");
+					}
+					else {
+						childname[strlen(childname)] = toupper(*c);
+					}
+					c++;
+				}
+				strcat(line, childname);
+				strcat(line, "_INDEX            ");
+				sprintf(&line[strlen(line)], "%u\n", index);
+
+				index++;
+				child = child->next_sibling;
+			}
+		}
+
+		strcat(dest, line);
+
+		strcat(dest, "\n\n");
+
+	}
+	strcat(dest, "\n/// @brief: returns the length of object dictionary in objects.\n"
+			"uint32_t obj_dict_len(void);\n\n");
+
+	strcat(dest, "#endif");
+
+	return true;
+}
+
+bool get_source_objs(char *dest, const char *filename) {
+	// create symbol for node id
+	char nameupper[1024];
+	nameupper[0] = '\0';
+	for (int i = 0; i < strlen(db_get_dev_name(&dev.db)); i++) {
+		char c[2];
+		c[0] = toupper(db_get_dev_name(&dev.db)[i]);
+		c[1] = '\0';
+		strcat(nameupper, c);
+	}
+
+	strcpy(dest, "#include <uv_utilities.h>\n"
+			"#include <uv_canopen.h>\n"
+			"#include \"main.h\"\n");
+	strcat(dest, "#include \"");
+	char name[1024];
+	strcpy(name, filename);
+	char *basenam = basename(name);
+	strcat(dest, basenam);
+	strcat(dest, ".h\"\n");
+	strcat(dest, "\n"
+			"\n"
+			"\n"
+			"canopen_object_st obj_dict[] = {\n");
+
+	for (int i = 0; i < db_get_object_count(&dev.db); i++) {
+		if (i != 0) {
+			strcat(dest, ",\n");
+		}
+
+		db_obj_st *obj = db_get_obj(&dev.db, i);
+		// *name* contains the object name in upper case letters
+		char name[1024] = {};
+		int j = 0;
+		while (obj->name[j] != '\0') {
+			if (isspace(obj->name[j])) {
+				name[j] = '_';
+			}
+			else {
+				name[j] = toupper(obj->name[j]);
+			}
+			j++;
+		}
+		name[j] = '\0';
+		char line[1024] = {};
+		strcpy(line, "    {\n"
+				"        .main_index = ");
+		strcat(line, nameupper);
+		strcat(line, "_");
+		strcat(line, name);
+		strcat(line, "_INDEX,\n");
+		if (uv_canopen_is_array(&obj->obj)) {
+			strcat(line, "        .array_max_size = ");
+			strcat(line, nameupper);
+			strcat(line, "_");
+			strcat(line, name);
+			strcat(line, "_ARRAY_MAX_SIZE,\n");
+		}
+		else {
+			if (CANOPEN_IS_STRING(obj->obj.type)) {
+				strcat(line, "        .string_len = ");
+				strcat(line, nameupper);
+				strcat(line, "_");
+				strcat(line, name);
+				strcat(line, "_STRING_LEN,\n");
+			}
+			else {
+				strcat(line, "        .sub_index = ");
+				strcat(line, nameupper);
+				strcat(line, "_");
+				strcat(line, name);
+				strcat(line, "_SUBINDEX,\n");
+			}
+		}
+		strcat(line, "        .type = ");
+		strcat(line, nameupper);
+		strcat(line, "_");
+		strcat(line, name);
+		strcat(line, "_TYPE,\n"
+				"        .permissions = ");
+		strcat(line, nameupper);
+		strcat(line, "_");
+		strcat(line, name);
+		strcat(line, "_PERMISSIONS,\n"
+				"        .data_ptr = (void *) ");
+		strcat(line, obj->dataptr);
+		strcat(line, "\n    }");
+
+		strcat(dest, line);
+
+	}
+	strcat(dest, "\n};\n"
+			"\n"
+			"uint32_t obj_dict_len(void) {\n"
+			"    return sizeof(obj_dict) / sizeof(canopen_object_st);\n"
+			"}\n"
+			"\n");
+
+	return true;
+}
+
 bool cmd_export(const char *arg) {
 	bool ret = false;
 
-	uv_rtos_add_idle_task(&step);
+	char filename[1024];
+	strcpy(filename, arg);
+	strcat(filename, ".h");
+	FILE *headerfile = fopen(filename, "w");
+
+
+	strcpy(filename, arg);
+	strcat(filename, ".c");
+	FILE *sourcefile = fopen(filename, "w");
+
+	if (headerfile == NULL) {
+		// failed to open the file, exit this task
+		printf("Failed to open header file '%s'.\n", headerfile);
+	}
+	else if (sourcefile == NULL) {
+		// failed to open source file
+		printf("Failed to open source file '%s'.\n", sourcefile);
+	}
+	else {
+		char objs[65536] = "";
+		get_header_objs(objs, arg);
+		fwrite(objs, sizeof(char), strlen(objs), headerfile);
+//		printf("header objects: \n%s\n", objs);
+
+		get_source_objs(objs, arg);
+		fwrite(objs, sizeof(char), strlen(objs), sourcefile);
+//		printf("source objects: \n %s\n", objs);
+
+
+		fclose(headerfile);
+		fclose(sourcefile);
+	}
+
 
 	ret = true;
-
 	return ret;
 }
 
 
-
-static void step(void *ptr) {
-	printf("hephep\n");
-}

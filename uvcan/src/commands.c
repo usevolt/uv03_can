@@ -97,8 +97,9 @@ commands_st commands[] = {
 		},
 		{
 				.cmd = "export",
-				.str = "Exports database given with --db to UV embedded header and source files.",
-				.args = ARG_NONE,
+				.str = "Exports database given with --db to UV embedded header and source files with a given name.\n"
+						"Both files should not exists, or they will be rewritten.",
+				.args = ARG_REQUIRE,
 				.callback = &cmd_export
 		},
 		{

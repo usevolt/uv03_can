@@ -58,9 +58,22 @@ typedef struct {
 		// array object's children object pointer.
 		// this points to dynamically allocated array of children.
 		db_array_child_st *child_ptr;
+		// string type parameters
+		struct {
+			char string_def[512];
+		};
 	};
 } db_obj_st;
 
+
+/// @brief: A single EMCY object
+typedef struct {
+	char name[128 - sizeof(int32_t)];
+	int32_t value;
+} db_emcy_st;
+
+/// @brief: Additional database defines have the same variables as emcy objects
+typedef db_emcy_st db_define_st;
 
 
 typedef struct {
@@ -68,7 +81,17 @@ typedef struct {
 	uv_vector_st objects;
 	// node id of the current database
 	uint8_t node_id;
+	// name of dev which is used to create a pre-processor macros
+	char dev_name[128];
+
 	char filepath[128];
+
+	db_emcy_st emcys_buffer[128];
+	uv_vector_st emcys;
+
+	db_define_st defines_buffer[128];
+	uv_vector_st defines;
+
 } db_st;
 
 /// @brief: Database command provides uvcan with CANOpen device database file.
@@ -96,6 +119,25 @@ static inline uint8_t db_get_nodeid(db_st *this) {
 	return this->node_id;
 }
 
+static inline char *db_get_dev_name(db_st *this) {
+	return this->dev_name;
+}
+
+static inline uint32_t db_get_emcy_count(db_st *this) {
+	return uv_vector_size(&this->emcys);
+}
+
+static inline db_emcy_st *db_get_emcy(db_st *this, uint32_t index) {
+	return ((db_emcy_st*) uv_vector_at(&this->emcys, index));
+}
+
+static inline uint32_t db_get_define_count(db_st *this) {
+	return uv_vector_size(&this->defines);
+}
+
+static inline db_define_st *db_get_define(db_st *this, uint32_t index) {
+	return (db_define_st*) uv_vector_at(&this->defines, index);
+}
 
 void db_permission_to_str(canopen_permissions_e permissions, char *dest);
 void db_permission_to_longstr(canopen_permissions_e permissions, char *dest);
