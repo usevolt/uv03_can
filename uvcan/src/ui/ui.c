@@ -48,6 +48,10 @@ bool cmd_ui(const char *arg) {
 	return ret;
 }
 
+void window_closed(GtkApplication *application, GtkWindow *window, gpointer user_data) {
+	uv_deinit();
+}
+
 
 static void can_dev_changed(GtkComboBox *box) {
 	strcpy(dev.can_channel, gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(box)));
@@ -164,6 +168,7 @@ static void ui_main(void *ptr) {
 
 	app = gtk_application_new("org.gtk.uvcan", G_APPLICATION_FLAGS_NONE);
 	g_signal_connect(app, "activate", G_CALLBACK(activate), NULL);
+	g_signal_connect (app, "window-removed", G_CALLBACK (window_closed), NULL);
 	g_application_run(G_APPLICATION(app), 0, NULL);
 	g_object_unref(app);
 
