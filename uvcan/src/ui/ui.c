@@ -63,7 +63,14 @@ static gboolean can_switch (GtkSwitch *widget, gboolean state, gpointer user_dat
 	if (state) {
 		uv_can_set_baudrate(dev.can_channel,
 				gtk_spin_button_get_value(GTK_SPIN_BUTTON(this->can_baudrate)));
-		uv_can_set_up();
+		char *err = uv_can_set_up();
+		if (err != NULL) {
+			GtkWidget *d = gtk_message_dialog_new(GTK_WINDOW(this->window), 0,
+					GTK_MESSAGE_WARNING, GTK_BUTTONS_OK,
+					"Connecting to CAN device returned an error: '%s'", err);
+			gtk_dialog_run(GTK_DIALOG(d));
+			gtk_widget_destroy(GTK_WIDGET(d));
+		}
 	}
 	else {
 	}

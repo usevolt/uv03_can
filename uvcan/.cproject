@@ -59,6 +59,8 @@
 									<listOptionValue builtIn="false" value="CONFIG_TARGET_WIN=1"/>
 									<listOptionValue builtIn="false" value="CORE_WIN=1"/>
 									<listOptionValue builtIn="false" value="_UV_PROJECT_NAME=&quot;uvcan&quot;"/>
+									<listOptionValue builtIn="false" value="CORE_LINUX=1"/>
+									<listOptionValue builtIn="false" value="CONFIG_TARGET_LINUX=1"/>
 								</option>
 								<inputType id="cdt.managedbuild.tool.gnu.c.compiler.input.527279993" superClass="cdt.managedbuild.tool.gnu.c.compiler.input"/>
 							</tool>
