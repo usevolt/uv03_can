@@ -129,7 +129,7 @@ static void par_expand(obj_dict_par_st *this) {
 		}
 
 		GtkWidget *obj = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL,
-				this->obj->min, this->obj->max, 1);
+				this->obj->min.value_int, this->obj->max.value_int, 1);
 		this->scale = obj;
 		gtk_widget_set_hexpand(obj, TRUE);
 		gtk_scale_set_draw_value(GTK_SCALE(obj), FALSE);
@@ -138,7 +138,7 @@ static void par_expand(obj_dict_par_st *this) {
 		gtk_widget_set_sensitive(obj, CANOPEN_IS_WRITABLE(this->obj->obj.permissions));
 		gtk_container_add(GTK_CONTAINER(row), obj);
 
-		obj = gtk_spin_button_new_with_range(this->obj->min, this->obj->max, 1);
+		obj = gtk_spin_button_new_with_range(this->obj->min.value_int, this->obj->max.value_int, 1);
 		this->spin_button = obj;
 		gtk_spin_button_set_value(GTK_SPIN_BUTTON(obj), value);
 		gtk_widget_set_sensitive(obj, CANOPEN_IS_WRITABLE(this->obj->obj.permissions));
@@ -177,7 +177,7 @@ static void par_expand(obj_dict_par_st *this) {
 
 
 			obj = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL,
-					child->min, child->max, 1);
+					child->min.value_int, child->max.value_int, 1);
 			gtk_widget_set_hexpand(obj, TRUE);
 			gtk_scale_set_draw_value(GTK_SCALE(obj), FALSE);
 			gtk_range_set_value(GTK_RANGE(obj), value);
@@ -185,7 +185,7 @@ static void par_expand(obj_dict_par_st *this) {
 			g_signal_connect(obj, "value-changed", G_CALLBACK(obj_dict_scale_value_changed), NULL);
 			gtk_container_add(GTK_CONTAINER(row), obj);
 
-			obj = gtk_spin_button_new_with_range(child->min, child->max, 1);
+			obj = gtk_spin_button_new_with_range(child->min.value_int, child->max.value_int, 1);
 			gtk_widget_set_sensitive(obj, CANOPEN_IS_WRITABLE(this->obj->obj.permissions));
 			gtk_spin_button_set_value(GTK_SPIN_BUTTON(obj), value);
 			g_signal_connect(obj, "value-changed", G_CALLBACK(obj_dict_spin_button_value_changed), NULL);

@@ -29,6 +29,75 @@
 
 static bool is_loaded = false;
 
+static void str_to_upper_nonspace(char *str) {
+	while (*str != '\0') {
+		if (isspace(*str)) {
+			*str = '_';
+		}
+		else {
+			*str = toupper(*str);
+		}
+		str++;
+	}
+}
+
+
+void dbvalue_init(dbvalue_st *this) {
+	this->type = DBVALUE_INT;
+	this->value_int = 0;
+}
+
+
+dbvalue_st dbvalue_set_int(int32_t value) {
+	dbvalue_st this;
+	this.type = DBVALUE_INT;
+	this.value_int = value;
+	return this;
+}
+
+dbvalue_st dbvalue_set_string(char *str, uint32_t str_len) {
+	dbvalue_st this;
+	this.type = DBVALUE_STRING;
+	this.value_str = malloc(str_len + 1);
+	memcpy(this.value_str, str, str_len);
+	this.value_str[str_len] = '\0';
+
+	str_to_upper_nonspace(this.value_str);
+
+	// if string value was set, search defines and assign the value which
+	// matches by name. Otherwise report an error.
+	bool match = false;
+	for (uint32_t i = 0; i < uv_vector_size(&dev.db.defines); i++) {
+		db_define_st *d = uv_vector_at(&dev.db.defines, i);
+
+		if (strcmp(d->name, this.value_str) == 0) {
+			match = true;
+			this.value_int = d->value;
+			break;
+		}
+	}
+	if (!match) {
+		this.value_int = 0;
+		printf("**** ERROR **** Cannot find '%s' definition from the database.\n", this.value_str);
+	}
+	return this;
+}
+
+void dbvalue_free(dbvalue_st *this) {
+	if (this->type == DBVALUE_STRING) {
+		free(this->value_str);
+	}
+}
+
+
+
+
+void db_array_child_init(db_array_child_st *this) {
+	dbvalue_init(&this->def);
+	dbvalue_init(&this->max);
+	dbvalue_init(&this->min);
+}
+
 
 bool db_is_loaded(db_st *this) {
 	return is_loaded;
@@ -260,35 +329,102 @@ static bool parse_json(db_st *this, char *data) {
 				data = uv_jsonreader_find_child(child, "type", 1);
 				obj.obj.type = str_to_type(data);
 
+				data = uv_jsonreader_find_child(child, "permissions", 1);
+				obj.obj.permissions = str_to_permissions(data);
+
 				if (!CANOPEN_IS_ARRAY(obj.obj.type)) {
+					// string parameters
 					if (CANOPEN_IS_STRING(obj.obj.type)) {
 						data = uv_jsonreader_find_child(child, "stringsize", 1);
-						obj.obj.string_len = uv_jsonreader_get_int(data);
+						uv_json_types_e type = uv_jsonreader_get_type(data);
+						if (type == JSON_INT) {
+							obj.obj.string_len = uv_jsonreader_get_int(data);
+							obj.string_len = dbvalue_set_int(uv_jsonreader_get_int(data));
+						}
+						else if (type == JSON_STRING) {
+							obj.string_len = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
+									uv_jsonreader_get_string_len(data));
+							obj.obj.string_len = obj.string_len.value_int;
+						}
+						else {
+							dbvalue_init(&obj.string_len);
+						}
 
 						data = uv_jsonreader_find_child(child, "default", 1);
 						uv_jsonreader_get_string(data, obj.string_def, sizeof(obj.string_def));
 					}
+					// integer parameters
 					else {
 						data = uv_jsonreader_find_child(child, "subindex", 1);
 						obj.obj.sub_index = uv_jsonreader_get_int(data);
 
-						data = uv_jsonreader_find_child(child, "min", 1);
-						obj.min = uv_jsonreader_get_int(data);
+						// writable integer parameters
+						if (obj.obj.permissions != CANOPEN_RO) {
 
-						data = uv_jsonreader_find_child(child, "max", 1);
-						obj.max = uv_jsonreader_get_int(data);
+							data = uv_jsonreader_find_child(child, "min", 1);
+							uv_json_types_e type = uv_jsonreader_get_type(data);
+							if (type == JSON_INT) {
+								obj.min = dbvalue_set_int(uv_jsonreader_get_int(data));
+							}
+							else if (type == JSON_STRING) {
+								obj.min = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
+										uv_jsonreader_get_string_len(data));
+							}
+							else {
+								dbvalue_init(&obj.min);
+							}
 
-						data = uv_jsonreader_find_child(child, "default", 1);
-						obj.def = uv_jsonreader_get_int(data);
+							data = uv_jsonreader_find_child(child, "max", 1);
+							type = uv_jsonreader_get_type(data);
+							if (type == JSON_INT) {
+								obj.max = dbvalue_set_int(uv_jsonreader_get_int(data));
+							}
+							else if (type == JSON_STRING) {
+								obj.max = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
+										uv_jsonreader_get_string_len(data));
+							}
+							else {
+								dbvalue_init(&obj.max);
+							}
+
+							data = uv_jsonreader_find_child(child, "default", 1);
+							type = uv_jsonreader_get_type(data);
+							if (type == JSON_INT) {
+								obj.def = dbvalue_set_int(uv_jsonreader_get_int(data));
+							}
+							else if (type == JSON_STRING) {
+								obj.def = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
+										uv_jsonreader_get_string_len(data));
+							}
+							else {
+								dbvalue_init(&obj.def);
+							}
+						}
+						// read-only integer parameters
+						else {
+							data = uv_jsonreader_find_child(child, "value", 1);
+							if (data == NULL) {
+								data = uv_jsonreader_find_child(child, "default", 1);
+							}
+							uv_json_types_e type = uv_jsonreader_get_type(data);
+							if (type == JSON_INT) {
+								obj.value = dbvalue_set_int(uv_jsonreader_get_int(data));
+							}
+							else if (type == JSON_STRING) {
+								obj.value = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
+										uv_jsonreader_get_string_len(data));
+							}
+							else {
+								dbvalue_init(&obj.value);
+							}
+						}
 					}
 				}
+				// array parameters
 				else {
 					data = uv_jsonreader_find_child(child, "arraysize", 1);
 					obj.obj.array_max_size = uv_jsonreader_get_int(data);
 				}
-
-				data = uv_jsonreader_find_child(child, "permissions", 1);
-				obj.obj.permissions = str_to_permissions(data);
 
 				data = uv_jsonreader_find_child(child, "dataptr", 1);
 				uv_jsonreader_get_string(data, obj.dataptr, sizeof(obj.dataptr));
@@ -300,6 +436,7 @@ static bool parse_json(db_st *this, char *data) {
 					// obj main index and type are already inherited from the array object
 
 					db_array_child_st *thischild;
+
 					void **last_ptr = (void**) &obj.child_ptr;
 					char *children = uv_jsonreader_find_child(child, "data", 1);
 
@@ -308,6 +445,8 @@ static bool parse_json(db_st *this, char *data) {
 					}
 					for (uint8_t i = 0; i < obj.obj.array_max_size; i++) {
 						thischild = malloc(sizeof(db_array_child_st));
+						db_array_child_init(thischild);
+
 						*last_ptr = thischild;
 						last_ptr = &(thischild->next_sibling);
 						thischild->next_sibling = NULL;
@@ -322,13 +461,47 @@ static bool parse_json(db_st *this, char *data) {
 							uv_jsonreader_get_string(data, thischild->name, sizeof(thischild->name));
 
 							data = uv_jsonreader_find_child(str, "min", 1);
-							thischild->min = uv_jsonreader_get_int(data);
-
-							data = uv_jsonreader_find_child(str, "max", 1);
-							thischild->max = uv_jsonreader_get_int(data);
+							uv_json_types_e type = uv_jsonreader_get_type(data);
+							if (obj.obj.permissions != CANOPEN_RO) {
+								if (type == JSON_INT) {
+									thischild->min = dbvalue_set_int(uv_jsonreader_get_int(data));
+								}
+								else if (type == JSON_STRING) {
+									thischild->min = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
+											uv_jsonreader_get_string_len(data));
+								}
+								else {
+									dbvalue_init(&thischild->min);
+								}
+								data = uv_jsonreader_find_child(str, "max", 1);
+								type = uv_jsonreader_get_type(data);
+								if (type == JSON_INT) {
+									thischild->max = dbvalue_set_int(uv_jsonreader_get_int(data));
+								}
+								else if (type == JSON_STRING) {
+									thischild->max = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
+											uv_jsonreader_get_string_len(data));
+								}
+								else {
+									dbvalue_init(&thischild->max);
+								}
+							}
 
 							data = uv_jsonreader_find_child(str, "default", 1);
-							thischild->def = uv_jsonreader_get_int(data);
+							if (data == NULL) {
+								data = uv_jsonreader_find_child(str, "value", 1);
+							}
+							type = uv_jsonreader_get_type(data);
+							if (type == JSON_INT) {
+								thischild->def = dbvalue_set_int(uv_jsonreader_get_int(data));
+							}
+							else if (type == JSON_STRING) {
+								thischild->def = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
+										uv_jsonreader_get_string_len(data));
+							}
+							else {
+								dbvalue_init(&thischild->def);
+							}
 						}
 					}
 				}
@@ -446,6 +619,9 @@ static void free_child(db_array_child_st *child) {
 	if (child->next_sibling != NULL) {
 		free_child(child->next_sibling);
 	}
+	dbvalue_free(&child->def);
+	dbvalue_free(&child->max);
+	dbvalue_free(&child->min);
 	free(child);
 }
 
@@ -455,6 +631,22 @@ void db_deinit(void) {
 		db_obj_st *obj = db_get_obj(this, i);
 		if (CANOPEN_IS_ARRAY(obj->obj.type)) {
 			free_child(obj->child_ptr);
+		}
+		else if (CANOPEN_IS_INTEGER(obj->obj.type)) {
+			if (obj->obj.permissions == CANOPEN_RO) {
+				dbvalue_free(&obj->value);
+			}
+			else {
+				dbvalue_free(&obj->def);
+				dbvalue_free(&obj->max);
+				dbvalue_free(&obj->min);
+			}
+		}
+		else if (CANOPEN_IS_STRING(obj->obj.type)) {
+			dbvalue_free(&obj->string_len);
+		}
+		else {
+
 		}
 	}
 }

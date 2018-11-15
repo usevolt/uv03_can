@@ -92,6 +92,7 @@ void step(void *me) {
 	uv_deinit();
 
 	if (!uv_rtos_idle_task_set()) {
+		db_deinit();
 		printf("Finished\n");
 		exit(0);
 	}

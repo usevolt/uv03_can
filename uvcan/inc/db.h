@@ -28,15 +28,44 @@
 #define DB_MAX_FILE_SIZE	65536
 
 
+enum {
+	DBVALUE_INT = 0,
+	DBVALUE_STRING
+};
+typedef uint8_t dbvalue_type_e;
+
+typedef struct {
+	dbvalue_type_e type;
+	int32_t value_int;
+	char *value_str;
+} dbvalue_st;
+
+void dbvalue_init(dbvalue_st *this);
+
+/// @brief: Sets the dbvalue to integer and returns the dbvalue object
+dbvalue_st dbvalue_set_int(int32_t value);
+
+/// @brief: Sets the dbvalue to string, allocates memory for the string and returns
+/// a new dbvalue object. dbvalues should be free'd with dbvalue_free after
+/// calling this
+dbvalue_st dbvalue_set_string(char *str, uint32_t str_len);
+
+void dbvalue_free(dbvalue_st *this);
+
+
 /// @brief: Data structure for each array object's children
 typedef struct {
 	char name[128];
-	int32_t min;
-	int32_t max;
-	int32_t def;
+	dbvalue_st min;
+	dbvalue_st max;
+	dbvalue_st def;
 	// pointer to the next sibling
 	void *next_sibling;
 } db_array_child_st;
+
+void db_array_child_init(db_array_child_st *this);
+
+
 
 /// @brief: A single object structure
 typedef struct {
@@ -47,19 +76,26 @@ typedef struct {
 	// data pointer as a string for embedded system
 	char dataptr[128];
 	union {
+		// for writable integer objects
 		struct {
+			union {
+				// for read-only integer objects
+				dbvalue_st value;
+				// default (reset) value
+				dbvalue_st def;
+			};
 			// minimum value for integer objects
-			int32_t min;
+			dbvalue_st min;
 			// maximum value for integer objects
-			int32_t max;
-			// default (reset) value
-			int32_t def;
+			dbvalue_st max;
 		};
+
 		// array object's children object pointer.
 		// this points to dynamically allocated array of children.
 		db_array_child_st *child_ptr;
 		// string type parameters
 		struct {
+			dbvalue_st string_len;
 			char string_def[512];
 		};
 	};

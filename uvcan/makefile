@@ -85,6 +85,7 @@ GRESOURCE_FILE := gresources
 CC := gcc
 SOURCES := $(shell find $(SOURCEDIRS) -maxdepth 1 -name '*.c')
 GIT_VERSION := $(shell git describe --abbrev=4 --dirty --always --tags)
+GIT_REV_ID := $(shell git rev-list --count HEAD)
 APP_NAME := $(shell basename `git rev-parse --show-toplevel`)
 FULL_NAME := $(APP_NAME)_$(GIT_VERSION)
 
@@ -92,7 +93,7 @@ UIFILES := $(shell find $(GRESOURCE_DIR) -maxdepth 1 -name '*.ui')
 GRESOURCE := $(GRESOURCE_DIR)$(GRESOURCE_FILE).xml
 
 
-CFLAGS := $(shell pkg-config --cflags gtk+-3.0) -D$(TARGET)=1 -D__UV_PROJECT_NAME=$(FULL_NAME) $(INCLUDEDIRS) -D$(CORE) -$(O) -g3 -Wall -fmessage-length=0 -fno-builtin -ffunction-sections -fdata-sections
+CFLAGS := $(shell pkg-config --cflags gtk+-3.0) -D$(TARGET)=1 -D__UV_PROJECT_NAME=$(FULL_NAME) -D__UV_PROGRAM_VERSION=$(GIT_REV_ID) $(INCLUDEDIRS) -D$(CORE) -$(O) -g3 -Wall -fmessage-length=0 -fno-builtin -ffunction-sections -fdata-sections
 
 LDFLAGS := -D__UV_APP_VERSION=\"$(GIT_VERSION)\"
 

@@ -65,17 +65,52 @@ commands_st commands[] = {
 		},
 		{
 				.cmd = "loadbin",
-				.str = "Loads firmware to UV device. "
+				.str = "Loads firmware to UV device with a CANopen 302 compatible bootloader. "
 						"The device node id should be selected with 'node' option prior to this command.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_load
 		},
 		{
 				.cmd = "loadbinwfr",
-				.str = "Loads firmware to UV device by waiting for NMT boot up message."
+				.str = "Loads firmware to UV device with a CANopen 302 compatible bootloader"
+						" by waiting for NMT boot up message."
 						"The device node id should be selected with 'node' option prior to this command.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_loadwfr
+		},
+		{
+				.cmd = "segloadbin",
+				.str = "Loads firmware to UV device with a CANopen 302 compatible bootloader. "
+						"The device node id should be selected with 'node' option prior to this command. "
+						"Uses the SDO segmented transfer to load the binary. Note that this is more "
+						"unsafe method compared to \"loadbin\".",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_segload
+		},
+		{
+				.cmd = "segloadbinwfr",
+				.str = "Loads firmware to UV device with a CANopen 302 compatible bootloader"
+						" by waiting for NMT boot up message."
+						"The device node id should be selected with 'node' option prior to this command. "
+						"Uses the SDO segmented transfer to load the binary. Note that this is more "
+						"unsafe method compared to \"loadbinwfr\".",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_segloadwfr
+		},
+		{
+				.cmd = "uvloadbin",
+				.str = "Loads firmware to UV device with an UV compatible bootloader. "
+						"The device node id should be selected with 'node' option prior to this command.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_uvload
+		},
+		{
+				.cmd = "uvloadbinwfr",
+				.str = "Loads firmware to UV device with an UV compatible bootloader "
+						"by waiting for NMT boot up message."
+						"The device node id should be selected with 'node' option prior to this command.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_uvloadwfr
 		},
 		{
 				.cmd = "listen",

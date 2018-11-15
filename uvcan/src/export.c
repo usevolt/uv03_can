@@ -57,7 +57,7 @@ bool get_header_objs(char *dest, const char *filename) {
 	}
 	strcat(dest, nameupper);
 	strcat(dest, "_NODEID");
-	sprintf(&dest[strlen(dest)], "           0x%x\n\n", db_get_nodeid(&dev.db));
+	sprintf(&dest[strlen(dest)], "           0x%x\n\n\n\n", db_get_nodeid(&dev.db));
 
 	// create symbols for EMCY messages
 	strcat(dest, "enum {\n");
@@ -77,7 +77,7 @@ bool get_header_objs(char *dest, const char *filename) {
 	}
 	sprintf(&(dest[strlen(dest)]), "    %s_EMCY_COUNT =            %u\n};",
 			nameupper, db_get_emcy_count(&dev.db));
-	strcat(dest, "\n\n");
+	strcat(dest, "\n\n\n\n");
 
 	// create symbols for defines
 	for (int i = 0; i < db_get_define_count(&dev.db); i++) {
@@ -90,11 +90,11 @@ bool get_header_objs(char *dest, const char *filename) {
 		strcat(line, "_");
 		strcat(line, define->name);
 		strcat(line, "            ");
-		sprintf(&line[strlen(line)], "%i\n", define->value);
+		sprintf(&line[strlen(line)], "%i\n\n", define->value);
 
 		strcat(dest, line);
 	}
-	strcat(dest, "\n\n");
+	strcat(dest, "\n\n\n\n");
 
 
 	// create header objects from object dictionary objects
@@ -181,6 +181,23 @@ bool get_header_objs(char *dest, const char *filename) {
 				index++;
 				child = child->next_sibling;
 			}
+		}
+		else if (CANOPEN_IS_INTEGER(obj->obj.type)) {
+			if (obj->obj.permissions == CANOPEN_RO) {
+				sprintf(&line[strlen(line)], "#define %s_%s_VALUE            %i\n",
+						nameupper, name, obj->value.value_int);
+			}
+			else {
+				sprintf(&line[strlen(line)], "#define %s_%s_MIN            %i\n",
+						nameupper, name, obj->min.value_int);
+				sprintf(&line[strlen(line)], "#define %s_%s_MAX            %i\n",
+						nameupper, name, obj->max.value_int);
+				sprintf(&line[strlen(line)], "#define %s_%s_DEFAULT            %i\n",
+						nameupper, name, obj->def.value_int);
+			}
+		}
+		else {
+
 		}
 
 		strcat(dest, line);

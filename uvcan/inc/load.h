@@ -30,6 +30,8 @@ typedef struct {
 	uv_delay_st delay;
 	bool response;
 	bool wfr;
+	bool uv;
+	bool block_transfer;
 } load_st;
 
 
@@ -45,5 +47,28 @@ bool cmd_load(const char *arg);
 /// waits for LOADWFT_WAIT_TIME_MS seconds to receive the boot up message from the node.
 /// Can be used when downloading binary to faulty node which is unable to run otherwise
 bool cmd_loadwfr(const char *arg);
+
+
+/// @brief: Loads firmware with the name of **arg** to device selected
+/// previously with command *nodeid* with SDO segmented transfer.
+bool cmd_segload(const char *arg);
+
+
+/// @brief: Loads the firmware by not resetting the node with SDO segmented transfer. Instead,
+/// waits for LOADWFT_WAIT_TIME_MS seconds to receive the boot up message from the node.
+/// Can be used when downloading binary to faulty node which is unable to run otherwise
+bool cmd_segloadwfr(const char *arg);
+
+
+/// @brief: Loads firmware with the name of **arg** to device selected
+/// previously with command *nodeid* with older, non-CANopen 302 compatible bootloader.
+bool cmd_uvload(const char *arg);
+
+
+/// @brief: Loads the firmware by not resetting the node. Instead,
+/// waits for LOADWFT_WAIT_TIME_MS seconds to receive the boot up message from the node
+/// with older, non-CANopen 302 compatible bootloader.
+/// Can be used when downloading binary to faulty node which is unable to run otherwise
+bool cmd_uvloadwfr(const char *arg);
 
 #endif /* LOAD_H_ */
