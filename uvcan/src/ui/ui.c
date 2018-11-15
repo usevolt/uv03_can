@@ -70,9 +70,12 @@ static gboolean can_switch (GtkSwitch *widget, gboolean state, gpointer user_dat
 					"Connecting to CAN device returned an error: '%s'", err);
 			gtk_dialog_run(GTK_DIALOG(d));
 			gtk_widget_destroy(GTK_WIDGET(d));
+
+			gtk_switch_set_state(GTK_SWITCH(widget), false);
 		}
 	}
 	else {
+		uv_can_close();
 	}
 	return FALSE;
 }
