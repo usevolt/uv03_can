@@ -21,6 +21,7 @@
 
 #include <uv_utilities.h>
 #include <uv_rtos.h>
+#include <uv_can.h>
 
 
 struct _GObject;
@@ -39,5 +40,9 @@ typedef struct {
 
 
 void terminal_init(terminal_st *this, GtkBuilder *builder);
+
+void terminal_step(terminal_st *this, uint16_t step_ms);
+
+void terminal_can_rx(terminal_st *this, uv_can_msg_st *msg);
 
 #endif /* UI_UITERMINAL_H_ */

@@ -27,13 +27,11 @@
 static void send(GtkButton *button, gpointer user_data);
 static void clear(GtkButton *button, gpointer user_data);
 static void enter(GtkEntry *entry, gpointer user_data);
-static gboolean update(gpointer data);
-static void can_callb(void *ptr, uv_can_message_st *msg);
 
 
 #define TERMINAL_CHAR_COUNT			65536
 
-static char rx_buffer[1024];
+static char rx_buffer[65535];
 static uv_ring_buffer_st rx;
 
 
@@ -58,9 +56,7 @@ void terminal_init(terminal_st *this, GtkBuilder *builder) {
 	uv_mutex_unlock(&this->mutex);
 
 	uv_ring_buffer_init(&rx, rx_buffer, sizeof(rx_buffer), sizeof(rx_buffer[0]));
-	uv_canopen_set_can_callback(&can_callb);
 
-	g_timeout_add(20, update, NULL);
 }
 
 #define this (&dev.ui.terminal)
@@ -109,8 +105,7 @@ static void enter(GtkEntry *entry, gpointer user_data) {
 }
 
 
-
-static void can_callb(void *ptr, uv_can_message_st *msg) {
+void terminal_can_rx(terminal_st *this_ptr, uv_can_msg_st *msg) {
 	if ((msg->type == CAN_STD) &&
 			(msg->id == (CANOPEN_SDO_RESPONSE_ID + db_get_nodeid(&dev.db))) &&
 			(msg->data_8bit[0] == 0x42) &&
@@ -127,7 +122,7 @@ static void can_callb(void *ptr, uv_can_message_st *msg) {
 }
 
 
-static gboolean update(gpointer data) {
+void terminal_step(terminal_st *this_ptr, uint16_t step_ms) {
 	uv_mutex_lock(&this->mutex);
 
 	char c[2];
@@ -150,11 +145,7 @@ static gboolean update(gpointer data) {
 		GtkAdjustment *adj = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scrollwindow));
 		gtk_adjustment_set_value(adj, gtk_adjustment_get_upper(adj));
 		gtk_scrolled_window_set_vadjustment(GTK_SCROLLED_WINDOW(scrollwindow), adj);
-
-
 	}
 
 	uv_mutex_unlock(&this->mutex);
-
-	return TRUE;
 }

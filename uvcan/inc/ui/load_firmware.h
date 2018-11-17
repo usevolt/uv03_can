@@ -34,13 +34,19 @@ typedef struct _GtkBuilder GtkBuilder;
 typedef struct {
 	GtkWidget *filechooser;
 	GtkWidget *firmwarelog;
+	GtkWidget *nodeid;
+	GtkWidget *flash;
+	GtkWidget *flashwfr;
 	char buffer[1024];
 	FILE *fp;
 	int update_id;
+	int16_t nodeid_count;
 } load_firmware_st;
 
 
 void load_firmware_init(load_firmware_st *this, GtkBuilder *builder);
+
+void load_firmware_step(load_firmware_st *this, uint16_t step_ms);
 
 
 #endif /* UI_LOAD_FIRMWARE_H_ */

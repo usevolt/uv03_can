@@ -26,7 +26,9 @@
 #include "obj_dict.h"
 #include "load_firmware.h"
 #include "uiterminal.h"
+#include "cantrace.h"
 
+#define UI_KNOWN_NODEID_COUNT			64
 
 struct _GObject;
 typedef struct _GObject GObject;
@@ -35,14 +37,21 @@ struct _GtkWidget;
 typedef struct _GtkWidget GtkWidget;
 
 
-
 typedef struct {
 	GtkWidget *window;
+	GObject *stackswitcher;
+	GObject *stack;
 	GObject *can_dev;
 	GObject *can_baudrate;
 	GObject *can_switch;
 	GObject *db;
 
+	uv_mutex_st mutex;
+
+	uint8_t nodeid_buffer[UI_KNOWN_NODEID_COUNT];
+	uv_vector_st nodeids;
+
+	cantrace_st cantrace;
 	obj_dict_st obj_dict;
 	load_firmware_st load_firmware;
 	terminal_st terminal;
@@ -55,6 +64,14 @@ typedef struct {
 bool cmd_ui(const char *arg);
 
 
+static inline uint16_t ui_get_nodeid_count(ui_st *this) {
+	return uv_vector_size(&this->nodeids);
+}
+
+static inline uint8_t ui_get_nodeid(ui_st *this, uint16_t index) {
+	uint8_t *value = uv_vector_at(&this->nodeids, index);
+	return *value;
+}
 
 
 #endif /* UI_H_ */

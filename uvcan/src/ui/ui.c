@@ -30,12 +30,40 @@
 static void ui_main(void *ptr);
 
 
-
-
+static gboolean update(gpointer data);
+static void can_callb(void *ptr, uv_can_message_st *msg);
+static void add_nodeid(uint8_t nodeid);
 
 
 #define this (&dev.ui)
 
+
+
+static void can_callb(void *ptr, uv_can_message_st *msg) {
+	uv_mutex_lock(&this->mutex);
+	if ((msg->id & 0xFF) == CANOPEN_SDO_RESPONSE_ID ||
+			(msg->id & 0xFF) == CANOPEN_SDO_REQUEST_ID) {
+		uint8_t nodeid = (msg->id & 0xFF);
+		add_nodeid(nodeid);
+	}
+	terminal_can_rx(&this->terminal, msg);
+	cantrace_rx(&this->cantrace, msg);
+	uv_mutex_unlock(&this->mutex);
+}
+
+static void add_nodeid(uint8_t nodeid) {
+	bool found = false;
+	for (uint8_t i = 0; i < uv_vector_size(&this->nodeids); i++) {
+		uint8_t *nid = uv_vector_at(&this->nodeids, i);
+		if (nodeid == *nid) {
+			found = true;
+			break;
+		}
+	}
+	if (!found) {
+		uv_vector_push_back(&this->nodeids, &nodeid);
+	}
+}
 
 
 bool cmd_ui(const char *arg) {
@@ -50,6 +78,7 @@ bool cmd_ui(const char *arg) {
 
 void window_closed(GtkApplication *application, GtkWindow *window, gpointer user_data) {
 	uv_deinit();
+	cantrace_deinit(&this->cantrace);
 }
 
 
@@ -72,12 +101,22 @@ static gboolean can_switch (GtkSwitch *widget, gboolean state, gpointer user_dat
 			gtk_widget_destroy(GTK_WIDGET(d));
 
 			gtk_switch_set_state(GTK_SWITCH(widget), false);
+			gtk_switch_set_active(GTK_SWITCH(widget), false);
+		}
+		else {
+			gtk_switch_set_state(GTK_SWITCH(widget), true);
+			gtk_switch_set_active(GTK_SWITCH(widget), true);
 		}
 	}
 	else {
 		uv_can_close();
+		gtk_switch_set_state(GTK_SWITCH(widget), false);
+		gtk_switch_set_active(GTK_SWITCH(widget), false);
 	}
-	return FALSE;
+	gtk_widget_set_sensitive(GTK_WIDGET(this->stackswitcher), gtk_switch_get_state(GTK_SWITCH(widget)));
+	gtk_widget_set_sensitive(GTK_WIDGET(this->stack), gtk_switch_get_state(GTK_SWITCH(widget)));
+
+	return TRUE;
 }
 
 void db_file_set (GtkFileChooserButton *widget, gpointer user_data) {
@@ -97,6 +136,7 @@ void db_file_set (GtkFileChooserButton *widget, gpointer user_data) {
 
 static void activate (GtkApplication* app, gpointer user_data)
 {
+
 	GtkBuilder *builder = gtk_builder_new();
 	GResource *resource = gresources_get_resource();
 	GBytes *strbytes = g_resource_lookup_data(resource, "/org/gtk/uvcan/src/ui/mainwindow.ui",
@@ -114,6 +154,16 @@ static void activate (GtkApplication* app, gpointer user_data)
 
 			GObject *obj;
 
+			// stack switcher
+			obj = gtk_builder_get_object(builder, "stackswitcher");
+			this->stackswitcher = obj;
+			gtk_widget_set_sensitive(GTK_WIDGET(obj), false);
+
+			// stack
+			obj = gtk_builder_get_object(builder, "stack1");
+			this->stack = obj;
+			gtk_widget_set_sensitive(GTK_WIDGET(obj), false);
+
 			// CAN dev
 			obj = gtk_builder_get_object(builder, "can_dev");
 			this->can_dev = obj;
@@ -128,6 +178,9 @@ static void activate (GtkApplication* app, gpointer user_data)
 			}
 			gtk_combo_box_set_active(GTK_COMBO_BOX(obj), selected_index);
 			g_signal_connect(obj, "changed", G_CALLBACK(can_dev_changed), NULL);
+#if CORE_WIN
+			gtk_widget_set_sensitive(obj, false);
+#endif
 
 			// Baudrate
 			obj = gtk_builder_get_object(builder, "can_baudrate");
@@ -152,6 +205,10 @@ static void activate (GtkApplication* app, gpointer user_data)
 				gtk_file_chooser_set_filename(GTK_FILE_CHOOSER(this->db), db_get_file(&dev.db));
 			}
 
+			// cantrace
+			obj = gtk_builder_get_object(builder, "cantrace");
+			cantrace_init(&this->cantrace, builder);
+
 			// object dictionary
 			obj = gtk_builder_get_object(builder, "obj_dict");
 			obj_dict_show(&this->obj_dict, obj, (struct GtkBuilder *) builder);
@@ -166,12 +223,38 @@ static void activate (GtkApplication* app, gpointer user_data)
 			g_object_unref(builder);
 			gtk_window_set_application(GTK_WINDOW(this->window), app);
 			gtk_widget_show_all(GTK_WIDGET(this->window));
+
+			uv_mutex_init(&this->mutex);
+			uv_mutex_unlock(&this->mutex);
+			uv_vector_init(&this->nodeids, this->nodeid_buffer,
+					sizeof(this->nodeid_buffer[0]) / sizeof(this->nodeid_buffer[0]),
+					sizeof(this->nodeid_buffer[0]));
+			uv_canopen_set_can_callback(&can_callb);
+			g_timeout_add(20, update, NULL);
 		}
 		else {
 			printf("error!\n");
 		}
 	}
 }
+
+static gboolean update(gpointer data) {
+	uint16_t step_ms = 20;
+	uv_mutex_lock(&this->mutex);
+
+	if (db_is_loaded(&dev.db)) {
+		add_nodeid(db_get_nodeid(&dev.db));
+	}
+	add_nodeid(dev.nodeid);
+
+	terminal_step(&this->terminal, step_ms);
+	cantrace_step(&this->cantrace, step_ms);
+	load_firmware_step(&this->load_firmware, step_ms);
+	uv_mutex_unlock(&this->mutex);
+
+	return true;
+}
+
 
 static void ui_main(void *ptr) {
 	GtkApplication *app;
