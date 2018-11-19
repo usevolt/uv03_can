@@ -35,16 +35,20 @@ void load_step(void *dev);
 
 
 static void update(void *ptr) {
+	int32_t data_index = 0;
 	while (true) {
-		int32_t percent = (_canopen.sdo.client.data_index) * 100 / _canopen.sdo.client.data_count;
-		printf("downloaded %u / %u bytes (%u %%)\n",
-				_canopen.sdo.client.data_index,
-				_canopen.sdo.client.data_count,
-				percent);
-		fflush(stdout);
-		if (percent == 100) {
-			break;
+		if (_canopen.sdo.client.data_index != data_index) {
+			int32_t percent = (_canopen.sdo.client.data_index) * 100 / _canopen.sdo.client.data_count;
+			printf("downloaded %u / %u bytes (%u %%)\n",
+					_canopen.sdo.client.data_index,
+					_canopen.sdo.client.data_count,
+					percent);
+			fflush(stdout);
+			if (percent == 100) {
+				break;
+			}
 		}
+		data_index = _canopen.sdo.client.data_index;
 		uv_rtos_task_delay(20);
 	}
 }
@@ -182,7 +186,7 @@ bool cmd_uvloadwfr(const char *arg) {
 
 
 static void can_callb(void * ptr, uv_can_msg_st *msg) {
-	if ((msg->id == CANOPEN_HEARTBEAT_ID + dev.nodeid) &&
+	if ((msg->id == CANOPEN_HEARTBEAT_ID + db_get_nodeid(&dev.db)) &&
 			(msg->type == CAN_STD) &&
 			(msg->data_length == 1) &&
 			(msg->data_8bit[0] == CANOPEN_BOOT_UP)) {
@@ -192,6 +196,7 @@ static void can_callb(void * ptr, uv_can_msg_st *msg) {
 		// disable CAN callback, it's not needed anymore.
 		uv_canopen_set_can_callback(NULL);
 	}
+	printf("0x%x\n", msg->id);
 }
 
 void load_step(void *ptr) {
@@ -207,6 +212,7 @@ void load_step(void *ptr) {
 		fseek(fptr, 0, SEEK_END);
 		size = ftell(fptr);
 		rewind(fptr);
+		bool success = false;
 
 		printf("Opened file %s. Size: %i bytes.\n", this->firmware, size);
 		fflush(stdout);
@@ -223,13 +229,10 @@ void load_step(void *ptr) {
 				fflush(stdout);
 				uv_canopen_nmt_master_reset_node(dev.nodeid);
 			}
-			else {
-				printf("Waiting to receive boot up message from node 0x%x...\n", dev.nodeid);
-				fflush(stdout);
-			}
-
 
 			// wait for a response to NMT reset command
+			printf("Waiting to receive boot up message from node 0x%x...\n", dev.nodeid);
+			fflush(stdout);
 			while (true) {
 				uint16_t step_ms = 1;
 				if (this->response) {
@@ -244,14 +247,10 @@ void load_step(void *ptr) {
 				}
 				uv_rtos_task_delay(step_ms);
 			}
-		}
-		bool success = false;
-		if (this->response) {
-
 			printf("Reset OK. Now downloading...\n");
 			fflush(stdout);
 
-			// download with block transfer
+			// download with multiple block transfers
 			if (this->block_transfer) {
 				printf("Downloading the firmware as SDO block transfer\n");
 				uint8_t data[BLOCK_SIZE];
@@ -278,20 +277,10 @@ void load_step(void *ptr) {
 					else {
 						if (uv_canopen_sdo_block_write(dev.nodeid, BOOTLOADER_INDEX, BOOTLOADER_SUBINDEX,
 								data_length, data) != ERR_NONE) {
-							printf("Error while downloading block %u. Trying again...\n", block);
+							printf("Error while downloading block %u.\n", block);
 							fflush(stdout);
-							// try again ONCE
-							if (uv_canopen_sdo_block_write(dev.nodeid, BOOTLOADER_INDEX, BOOTLOADER_SUBINDEX,
-									data_length, data) != ERR_NONE) {
-								printf("Second error while downloading block %u. Ending the transfer.\n", block);
-								fflush(stdout);
-								success = false;
-								break;
-							}
-							else {
-								printf("Block %u downloaded\n", block);
-								fflush(stdout);
-							}
+							success = false;
+							break;
 						}
 						else {
 							printf("Block %u downloaded, %u / %u bytes (%u %%)\n", block, index + data_length, size,
@@ -302,29 +291,89 @@ void load_step(void *ptr) {
 					index += data_length;
 				}
 			}
-			// download with segmented transfer
-			else {
-				printf("Downloading the firmware as SDO segmented transfer\n");
-				uint8_t data[size];
-				size_t ret = fread(data, size, 1, fptr);
-
-				if (!ret) {
-					printf("ERROR: Reading file failed at byte %u / %u. "
-							"Firmware download cancelled.\n", index, size);
-					fflush(stdout);
-				}
-				else {
-					// create task which will update the screen with the loading process
-					uv_rtos_task_create(&update, "segload update", UV_RTOS_MIN_STACK_SIZE,
-							NULL, UV_RTOS_IDLE_PRIORITY + 100, NULL);
-
-					if (uv_canopen_sdo_write(dev.nodeid,
-							BOOTLOADER_INDEX, BOOTLOADER_SUBINDEX, size, data) != ERR_NONE) {
-						printf("Downloading the binary failed.\n");
-						success = false;
+		}
+		// new 302 compatible protocol download
+		else {
+			if (this->wfr) {
+				this->response = false;
+				// set canopen callback function
+				uv_canopen_set_can_callback(&can_callb);
+				// wait for a response to NMT reset command
+				printf("Waiting to receive boot up message from node 0x%x...\n", dev.nodeid);
+				fflush(stdout);
+				while (true) {
+					uint16_t step_ms = 1;
+					if (this->response) {
+						break;
 					}
 					else {
-						success = true;
+						if (uv_delay(&this->delay, step_ms)) {
+							printf("Couldn't reset node. No response to NMT Reset Node.\n");
+							fflush(stdout);
+							break;
+						}
+					}
+					uv_rtos_task_delay(step_ms);
+				}
+			}
+
+			if (this->response) {
+
+				printf("Reset OK. Now downloading...\n");
+				fflush(stdout);
+
+				// download with block transfer
+				if (this->block_transfer) {
+					printf("Downloading the firmware as SDO block transfer\n");
+					uint8_t data[size];
+					size_t ret = fread(data, size, 1, fptr);
+
+					if (!ret) {
+						printf("ERROR: Reading file failed at byte %u / %u. "
+								"Firmware download cancelled.\n", index, size);
+						fflush(stdout);
+					}
+					else {
+						// create task which will update the screen with the loading process
+						uv_rtos_task_create(&update, "segload update", UV_RTOS_MIN_STACK_SIZE,
+								NULL, UV_RTOS_IDLE_PRIORITY + 100, NULL);
+
+						uv_errors_e e = uv_canopen_sdo_block_write(dev.nodeid,
+								BOOTLOADER_INDEX, BOOTLOADER_SUBINDEX, size, data);
+						if (e != ERR_NONE) {
+							printf("Downloading the binary failed. Error code: %u\n", e);
+							success = false;
+						}
+						else {
+							success = true;
+						}
+					}
+				}
+				// download with segmented transfer
+				else {
+					printf("Downloading the firmware as SDO segmented transfer\n");
+					uint8_t data[size];
+					size_t ret = fread(data, size, 1, fptr);
+
+					if (!ret) {
+						printf("ERROR: Reading file failed at byte %u / %u. "
+								"Firmware download cancelled.\n", index, size);
+						fflush(stdout);
+					}
+					else {
+						// create task which will update the screen with the loading process
+						uv_rtos_task_create(&update, "segload update", UV_RTOS_MIN_STACK_SIZE,
+								NULL, UV_RTOS_IDLE_PRIORITY + 100, NULL);
+
+						uv_errors_e e = uv_canopen_sdo_write(dev.nodeid,
+								BOOTLOADER_INDEX, BOOTLOADER_SUBINDEX, size, data);
+						if (e != ERR_NONE) {
+							printf("Downloading the binary failed. Error code: %u\n", e);
+							success = false;
+						}
+						else {
+							success = true;
+						}
 					}
 				}
 			}
