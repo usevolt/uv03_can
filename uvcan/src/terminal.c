@@ -45,7 +45,7 @@ static uv_ring_buffer_st rx;
 
 static void can_callb(void *ptr, uv_can_message_st *msg) {
 	if ((msg->type == CAN_STD) &&
-			(msg->id == (CANOPEN_SDO_RESPONSE_ID + this->nodeid)) &&
+			(msg->id == (CANOPEN_SDO_RESPONSE_ID + db_get_nodeid(&dev.db))) &&
 			(msg->data_8bit[0] == 0x42) &&
 			(msg->data_length > 4) &&
 			(msg->data_8bit[1] == UV_TERMINAL_CAN_INDEX % 256) &&
@@ -67,7 +67,7 @@ static void command_tx(void *ptr) {
 			uint8_t len = 0;
 			uv_can_msg_st msg;
 			msg.type = CAN_STD;
-			msg.id = UV_TERMINAL_CAN_RX_ID + this->nodeid;
+			msg.id = UV_TERMINAL_CAN_RX_ID + db_get_nodeid(&dev.db);
 			msg.data_8bit[0] = 0x22;
 			msg.data_8bit[1] = UV_TERMINAL_CAN_INDEX % 256;
 			msg.data_8bit[2] = UV_TERMINAL_CAN_INDEX / 256;
@@ -92,7 +92,7 @@ static void command_tx(void *ptr) {
 
 
 static void command_step(void *ptr) {
-	printf("Terminal opened for node ID 0x%x\n", this->nodeid);
+	printf("Terminal opened for node ID 0x%x\n", db_get_nodeid(&dev.db));
 	uv_canopen_set_can_callback(&can_callb);
 	uv_ring_buffer_init(&rx, rx_buffer,
 			sizeof(rx_buffer) / sizeof(rx_buffer[0]), sizeof(rx_buffer[0]));

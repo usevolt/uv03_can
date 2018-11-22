@@ -50,7 +50,6 @@ void init(void *me) {
 	}
 
 	uv_can_set_baudrate(this->can_channel, this->baudrate);
-	this->nodeid = 0;
 	uv_vector_init(&this->tasks, this->task_buffer, TASKS_LEN, sizeof(task_st));
 }
 

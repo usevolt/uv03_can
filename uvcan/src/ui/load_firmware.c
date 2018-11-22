@@ -86,7 +86,7 @@ static void flash(GtkButton *button, gpointer user_data) {
 			gtk_widget_set_sensitive(this->flash, false);
 			gtk_widget_set_sensitive(this->flashwfr, false);
 			char cmd[256];
-			sprintf(cmd, "uvcan --nodeid %u --loadbin %s", dev.nodeid, filename);
+			sprintf(cmd, "uvcan --nodeid %u --loadbin %s", db_get_nodeid(&dev.db), filename);
 			printf("executing: %s\n", cmd);
 			// on windows only 1 connection to the PEAK CAN-USB adapter
 			// is permitted. Thus close our connection to let the flashing open it
@@ -115,7 +115,7 @@ static void flashwfr(GtkButton *button, gpointer user_data) {
 			gtk_widget_set_sensitive(this->flash, false);
 			gtk_widget_set_sensitive(this->flashwfr, false);
 			char cmd[256];
-			sprintf(cmd, "uvcan --nodeid %u --loadbinwfr %s", dev.nodeid, filename);
+			sprintf(cmd, "uvcan --nodeid %u --loadbinwfr %s", db_get_nodeid(&dev.db), filename);
 			printf("executing: %s\n", cmd);
 
 			// on windows only 1 connection to the PEAK CAN-USB adapter

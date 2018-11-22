@@ -155,6 +155,10 @@ static inline uint8_t db_get_nodeid(db_st *this) {
 	return this->node_id;
 }
 
+static inline void db_set_nodeid(db_st *this, uint8_t value) {
+	this->node_id = value;
+}
+
 static inline char *db_get_dev_name(db_st *this) {
 	return this->dev_name;
 }

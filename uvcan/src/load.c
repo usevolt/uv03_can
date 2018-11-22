@@ -192,11 +192,12 @@ static void can_callb(void * ptr, uv_can_msg_st *msg) {
 			(msg->data_8bit[0] == CANOPEN_BOOT_UP)) {
 		// canopen boot up message recieved, node found.
 		this->response = true;
+		printf("done\n");
 
 		// disable CAN callback, it's not needed anymore.
 		uv_canopen_set_can_callback(NULL);
 	}
-	printf("0x%x\n", msg->id);
+	printf("0x%x\n", db_get_nodeid(&dev.db));
 }
 
 void load_step(void *ptr) {
@@ -225,13 +226,13 @@ void load_step(void *ptr) {
 			uv_canopen_set_can_callback(&can_callb);
 
 			if (!this->wfr) {
-				printf("Resetting node 0x%x\n", dev.nodeid);
+				printf("Resetting node 0x%x\n", db_get_nodeid(&dev.db));
 				fflush(stdout);
-				uv_canopen_nmt_master_reset_node(dev.nodeid);
+				uv_canopen_nmt_master_reset_node(db_get_nodeid(&dev.db));
 			}
 
 			// wait for a response to NMT reset command
-			printf("Waiting to receive boot up message from node 0x%x...\n", dev.nodeid);
+			printf("Waiting to receive boot up message from node 0x%x...\n", db_get_nodeid(&dev.db));
 			fflush(stdout);
 			while (true) {
 				uint16_t step_ms = 1;
@@ -275,7 +276,7 @@ void load_step(void *ptr) {
 						break;
 					}
 					else {
-						if (uv_canopen_sdo_block_write(dev.nodeid, BOOTLOADER_INDEX, BOOTLOADER_SUBINDEX,
+						if (uv_canopen_sdo_block_write(db_get_nodeid(&dev.db), BOOTLOADER_INDEX, BOOTLOADER_SUBINDEX,
 								data_length, data) != ERR_NONE) {
 							printf("Error while downloading block %u.\n", block);
 							fflush(stdout);
@@ -299,7 +300,7 @@ void load_step(void *ptr) {
 				// set canopen callback function
 				uv_canopen_set_can_callback(&can_callb);
 				// wait for a response to NMT reset command
-				printf("Waiting to receive boot up message from node 0x%x...\n", dev.nodeid);
+				printf("Waiting to receive boot up message from node 0x%x...\n", db_get_nodeid(&dev.db));
 				fflush(stdout);
 				while (true) {
 					uint16_t step_ms = 1;
@@ -338,7 +339,7 @@ void load_step(void *ptr) {
 						uv_rtos_task_create(&update, "segload update", UV_RTOS_MIN_STACK_SIZE,
 								NULL, UV_RTOS_IDLE_PRIORITY + 100, NULL);
 
-						uv_errors_e e = uv_canopen_sdo_block_write(dev.nodeid,
+						uv_errors_e e = uv_canopen_sdo_block_write(db_get_nodeid(&dev.db),
 								BOOTLOADER_INDEX, BOOTLOADER_SUBINDEX, size, data);
 						if (e != ERR_NONE) {
 							printf("Downloading the binary failed. Error code: %u\n", e);
@@ -365,7 +366,7 @@ void load_step(void *ptr) {
 						uv_rtos_task_create(&update, "segload update", UV_RTOS_MIN_STACK_SIZE,
 								NULL, UV_RTOS_IDLE_PRIORITY + 100, NULL);
 
-						uv_errors_e e = uv_canopen_sdo_write(dev.nodeid,
+						uv_errors_e e = uv_canopen_sdo_write(db_get_nodeid(&dev.db),
 								BOOTLOADER_INDEX, BOOTLOADER_SUBINDEX, size, data);
 						if (e != ERR_NONE) {
 							printf("Downloading the binary failed. Error code: %u\n", e);
@@ -383,7 +384,7 @@ void load_step(void *ptr) {
 		if (success) {
 			printf("Loading done. Resetting device... OK!\n");
 			fflush(stdout);
-			uv_canopen_nmt_master_reset_node(dev.nodeid);
+			uv_canopen_nmt_master_reset_node(db_get_nodeid(&dev.db));
 			printf("Binary file closed.\n");
 			fflush(stdout);
 		}

@@ -242,10 +242,7 @@ static gboolean update(gpointer data) {
 	uint16_t step_ms = 20;
 	uv_mutex_lock(&this->mutex);
 
-	if (db_is_loaded(&dev.db)) {
-		add_nodeid(db_get_nodeid(&dev.db));
-	}
-	add_nodeid(dev.nodeid);
+	add_nodeid(db_get_nodeid(&dev.db));
 
 	terminal_step(&this->terminal, step_ms);
 	cantrace_step(&this->cantrace, step_ms);

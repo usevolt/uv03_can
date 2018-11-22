@@ -48,9 +48,6 @@ struct _dev_st {
 
 	unsigned int baudrate;
 
-	/// @brief: CANopen Node ID of the selected device
-	uint8_t nodeid;
-
 	/// @brief: operating tasks of the application. Commands can
 	/// register their tasks via *add_task* function.
 	/// The commands get execution order each in turn.
