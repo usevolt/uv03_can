@@ -176,25 +176,21 @@ bool get_header_objs(char *dest, const char *filename) {
 				}
 				strcat(line, childname);
 				strcat(line, "_INDEX            ");
-				sprintf(&line[strlen(line)], "%u\n", index);
+				sprintf(&line[strlen(line)], "%u\n", index + 1);
 
 				index++;
 				child = child->next_sibling;
 			}
 		}
 		else if (CANOPEN_IS_INTEGER(obj->obj.type)) {
-			if (obj->obj.permissions == CANOPEN_RO) {
-				sprintf(&line[strlen(line)], "#define %s_%s_VALUE            %i\n",
-						nameupper, name, obj->value.value_int);
-			}
-			else {
-				sprintf(&line[strlen(line)], "#define %s_%s_MIN            %i\n",
-						nameupper, name, obj->min.value_int);
-				sprintf(&line[strlen(line)], "#define %s_%s_MAX            %i\n",
-						nameupper, name, obj->max.value_int);
-				sprintf(&line[strlen(line)], "#define %s_%s_DEFAULT            %i\n",
-						nameupper, name, obj->def.value_int);
-			}
+			sprintf(&line[strlen(line)], "#define %s_%s_VALUE            %i\n",
+					nameupper, name, obj->value.value_int);
+			sprintf(&line[strlen(line)], "#define %s_%s_DEFAULT            %i\n",
+					nameupper, name, obj->def.value_int);
+			sprintf(&line[strlen(line)], "#define %s_%s_MIN            %i\n",
+					nameupper, name, obj->min.value_int);
+			sprintf(&line[strlen(line)], "#define %s_%s_MAX            %i\n",
+					nameupper, name, obj->max.value_int);
 		}
 		else {
 

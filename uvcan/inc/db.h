@@ -76,7 +76,7 @@ typedef struct {
 	// data pointer as a string for embedded system
 	char dataptr[128];
 	union {
-		// for writable integer objects
+		// for integer objects
 		struct {
 			union {
 				// for read-only integer objects
@@ -90,9 +90,12 @@ typedef struct {
 			dbvalue_st max;
 		};
 
-		// array object's children object pointer.
-		// this points to dynamically allocated array of children.
-		db_array_child_st *child_ptr;
+		struct {
+			// array object's children object pointer.
+			// this points to dynamically allocated array of children.
+			db_array_child_st *child_ptr;
+			dbvalue_st array_max_size;
+		};
 		// string type parameters
 		struct {
 			dbvalue_st string_len;

@@ -414,13 +414,61 @@ static bool parse_json(db_st *this, char *data) {
 							else {
 								dbvalue_init(&obj.value);
 							}
+
+							data = uv_jsonreader_find_child(child, "min", 1);
+							if (data != NULL) {
+								uv_json_types_e type = uv_jsonreader_get_type(data);
+								if (type == JSON_INT) {
+									obj.min = dbvalue_set_int(uv_jsonreader_get_int(data));
+								}
+								else if (type == JSON_STRING) {
+									obj.min = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
+											uv_jsonreader_get_string_len(data));
+								}
+								else {
+									dbvalue_init(&obj.min);
+								}
+							}
+							else {
+								obj.min = dbvalue_set_int(obj.value.value_int);
+							}
+
+							data = uv_jsonreader_find_child(child, "max", 1);
+							if (data != NULL) {
+								type = uv_jsonreader_get_type(data);
+								if (type == JSON_INT) {
+									obj.max = dbvalue_set_int(uv_jsonreader_get_int(data));
+								}
+								else if (type == JSON_STRING) {
+									obj.max = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
+											uv_jsonreader_get_string_len(data));
+								}
+								else {
+									dbvalue_init(&obj.max);
+								}
+							}
+							else {
+								obj.max = dbvalue_set_int(obj.value.value_int);
+							}
 						}
 					}
 				}
 				// array parameters
 				else {
 					data = uv_jsonreader_find_child(child, "arraysize", 1);
-					obj.obj.array_max_size = uv_jsonreader_get_int(data);
+					uv_json_types_e type = uv_jsonreader_get_type(data);
+					if (type == JSON_INT) {
+						obj.array_max_size = dbvalue_set_int(uv_jsonreader_get_int(data));
+					}
+					else if (type == JSON_STRING) {
+						obj.array_max_size = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
+								uv_jsonreader_get_string_len(data));
+					}
+					else {
+						dbvalue_init(&obj.array_max_size);
+					}
+
+					obj.obj.array_max_size = obj.array_max_size.value_int;
 				}
 
 				data = uv_jsonreader_find_child(child, "dataptr", 1);
@@ -627,17 +675,13 @@ void db_deinit(void) {
 	for (int i = 0; i < db_get_object_count(this); i++) {
 		db_obj_st *obj = db_get_obj(this, i);
 		if (CANOPEN_IS_ARRAY(obj->obj.type)) {
+			dbvalue_free(&obj->array_max_size);
 			free_child(obj->child_ptr);
 		}
 		else if (CANOPEN_IS_INTEGER(obj->obj.type)) {
-			if (obj->obj.permissions == CANOPEN_RO) {
-				dbvalue_free(&obj->value);
-			}
-			else {
-				dbvalue_free(&obj->def);
-				dbvalue_free(&obj->max);
-				dbvalue_free(&obj->min);
-			}
+			dbvalue_free(&obj->def);
+			dbvalue_free(&obj->max);
+			dbvalue_free(&obj->min);
 		}
 		else if (CANOPEN_IS_STRING(obj->obj.type)) {
 			dbvalue_free(&obj->string_len);
