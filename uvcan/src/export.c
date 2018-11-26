@@ -96,6 +96,12 @@ bool get_header_objs(char *dest, const char *filename) {
 	}
 	strcat(dest, "\n\n\n\n");
 
+	// create symbols for PDO counts
+	sprintf(&dest[strlen(dest)], "#define %s_RXPDO_COUNT            %u\n",
+			nameupper, db_get_rxpdo_count(&dev.db));
+	sprintf(&dest[strlen(dest)], "#define %s_TXPDO_COUNT            %u\n\n\n",
+			nameupper, db_get_txpdo_count(&dev.db));
+
 
 	// create header objects from object dictionary objects
 	for (int i = 0; i < db_get_object_count(&dev.db); i++) {
@@ -211,13 +217,16 @@ bool get_header_objs(char *dest, const char *filename) {
 
 bool get_source_objs(char *dest, const char *filename) {
 	// create symbol for node id
-	char nameupper[1024];
-	nameupper[0] = '\0';
+	char nameupper[1024] = { '\0' };
+	char namelower[1024] = { '\0' };
 	for (int i = 0; i < strlen(db_get_dev_name(&dev.db)); i++) {
 		char c[2];
 		c[0] = toupper(db_get_dev_name(&dev.db)[i]);
 		c[1] = '\0';
 		strcat(nameupper, c);
+		c[0] = tolower(db_get_dev_name(&dev.db)[i]);
+		c[1] = '\0';
+		strcat(namelower, c);
 	}
 
 	strcpy(dest, "#include <uv_utilities.h>\n"
@@ -228,7 +237,108 @@ bool get_source_objs(char *dest, const char *filename) {
 	strcpy(name, filename);
 	char *basenam = basename(name);
 	strcat(dest, basenam);
-	strcat(dest, ".h\"\n");
+	strcat(dest, ".h\"\n\n\n");
+
+	// CANopen initializer structure
+	sprintf(&dest[strlen(dest)], "const uv_canopen_non_volatile_st %s_canopen_init = {\n"
+			"    .producer_heartbeat_time_ms = %u,\n"
+			"    .rxpdo_coms = {\n",
+			namelower,
+			400);
+	for (uint32_t i = 0; i < db_get_rxpdo_count(&dev.db); i++) {
+		db_rxpdo_st *pdo = db_get_rxpdo(&dev.db, i);
+		char transmission[128];
+		db_transmission_to_str(pdo->transmission, transmission);
+		sprintf(&dest[strlen(dest)], "        {\n"
+				"            .cob_id = %s,\n"
+				"            .transmission_type = %s\n"
+				"        }%s\n",
+				pdo->cobid,
+				transmission,
+				(i == db_get_rxpdo_count(&dev.db) - 1) ? "" : ",");
+	}
+	strcat(dest, "    },\n"
+			"    .rxpdo_maps = {\n");
+	for (uint32_t i = 0; i < db_get_rxpdo_count(&dev.db); i++) {
+		db_rxpdo_st *pdo = db_get_rxpdo(&dev.db, i);
+		strcat(dest, "        {\n"
+				"            .mappings = {\n");
+		int32_t mi = 0;
+			canopen_pdo_mapping_st *mapping = &pdo->mappings.mappings[mi];
+			while (true) {
+				if (mapping->length == 0) {
+					break;
+				}
+				sprintf(&dest[strlen(dest)], "                {\n"
+						"                    .main_index = 0x%x,\n"
+						"                    .sub_index = %u,\n"
+						"                    .length = %u\n"
+						"                },\n",
+						mapping->main_index,
+						mapping->sub_index,
+						mapping->length);
+
+				mi++;
+				mapping = &pdo->mappings.mappings[mi];
+			}
+
+		sprintf(&dest[strlen(dest)], "            }\n"
+				"        }%s\n",
+				(i == db_get_rxpdo_count(&dev.db) - 1) ? "" : ",");
+	}
+	strcat(dest,"    },\n"
+			"    .txpdo_coms = {\n");
+	for (uint32_t i = 0; i < db_get_txpdo_count(&dev.db); i++) {
+		db_txpdo_st *pdo = db_get_txpdo(&dev.db, i);
+		char transmission[128];
+		db_transmission_to_str(pdo->transmission, transmission);
+		sprintf(&dest[strlen(dest)], "        {\n"
+				"            .cob_id = %s,\n"
+				"            .transmission_type = %s,\n"
+				"            .inhibit_time = %u,\n"
+				"            .event_timer = %u\n"
+				"        }%s\n",
+				pdo->cobid,
+				transmission,
+				pdo->inhibit_time,
+				pdo->event_timer,
+				(i == db_get_txpdo_count(&dev.db) - 1) ? "" : ",");
+	}
+	strcat(dest, "    },\n"
+			"    .txpdo_maps = {\n");
+	for (uint32_t i = 0; i < db_get_txpdo_count(&dev.db); i++) {
+		db_txpdo_st *pdo = db_get_txpdo(&dev.db, i);
+		strcat(dest, "        {\n"
+				"            .mappings = {\n");
+		int32_t mi = 0;
+			canopen_pdo_mapping_st *mapping = &pdo->mappings.mappings[mi];
+			while (true) {
+				if (mapping->length == 0) {
+					break;
+				}
+				sprintf(&dest[strlen(dest)], "                {\n"
+						"                    .main_index = 0x%x,\n"
+						"                    .sub_index = %u,\n"
+						"                    .length = %u\n"
+						"                },\n",
+						mapping->main_index,
+						mapping->sub_index,
+						mapping->length);
+
+				mi++;
+				mapping = &pdo->mappings.mappings[mi];
+			}
+
+		sprintf(&dest[strlen(dest)], "            }\n"
+				"        }%s\n",
+				(i == db_get_txpdo_count(&dev.db) - 1) ? "" : ",");
+	}
+	strcat(dest, "\n"
+			"    }\n"
+			"};\n");
+
+
+	// Object dictionary
 	strcat(dest, "\n"
 			"\n"
 			"\n"

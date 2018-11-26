@@ -114,6 +114,22 @@ typedef struct {
 /// @brief: Additional database defines have the same variables as emcy objects
 typedef db_emcy_st db_define_st;
 
+/// @brief: Database RXPDO structure
+typedef struct {
+	char cobid[128];
+	canopen_pdo_transmission_types_e transmission;
+	canopen_pdo_mapping_parameter_st mappings;
+} db_rxpdo_st;
+
+
+/// @brief: Database TXPDO structure
+typedef struct {
+	char cobid[128];
+	canopen_pdo_transmission_types_e transmission;
+	int32_t inhibit_time;
+	uint32_t event_timer;
+	canopen_pdo_mapping_parameter_st mappings;
+} db_txpdo_st;
 
 typedef struct {
 	db_obj_st objects_buffer[DB_OBJ_MAX_COUNT];
@@ -130,6 +146,11 @@ typedef struct {
 
 	db_define_st defines_buffer[128];
 	uv_vector_st defines;
+
+	db_rxpdo_st rxpdo_buffer[128];
+	uv_vector_st rxpdos;
+	db_txpdo_st txpdo_buffer[128];
+	uv_vector_st txpdos;
 
 } db_st;
 
@@ -182,9 +203,26 @@ static inline db_define_st *db_get_define(db_st *this, uint32_t index) {
 	return (db_define_st*) uv_vector_at(&this->defines, index);
 }
 
+static inline uint16_t db_get_rxpdo_count(db_st *this) {
+	return uv_vector_size(&this->rxpdos);
+}
+
+static inline db_rxpdo_st *db_get_rxpdo(db_st *this, uint16_t index) {
+	return uv_vector_at(&this->rxpdos, index);
+}
+
+static inline uint16_t db_get_txpdo_count(db_st *this) {
+	return uv_vector_size(&this->txpdos);
+}
+
+static inline db_txpdo_st *db_get_txpdo(db_st *this, uint16_t index) {
+	return uv_vector_at(&this->txpdos, index);
+}
+
 void db_permission_to_str(canopen_permissions_e permissions, char *dest);
 void db_permission_to_longstr(canopen_permissions_e permissions, char *dest);
 void db_type_to_str(canopen_object_type_e type, char *dest);
+void db_transmission_to_str(canopen_pdo_transmission_types_e transmission, char *dest);
 
 /// @brief: Deinitializes the database and frees all allocated memory
 void db_deinit(void);
