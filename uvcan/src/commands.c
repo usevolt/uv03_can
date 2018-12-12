@@ -28,6 +28,8 @@
 #include "terminal.h"
 #include "db.h"
 #include "ui.h"
+#include "loadmedia.h"
+#include "clearmedia.h"
 
 #define this (&dev)
 
@@ -142,6 +144,20 @@ commands_st commands[] = {
 				.str = "Opens the GUI configuration tool with this argument.",
 				.args = ARG_NONE,
 				.callback = &cmd_ui
+		},
+		{
+				.cmd = "loadmedia",
+				.str = "Loads a media file with UV media download protocol. Note that the media file is loaded\n"
+						"with the same file path as what is given to this command. In most cases this means\n"
+						"that the media should be in the same directory where uvcan is run or in a subdirectory.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_loadmedia
+		},
+		{
+				.cmd = "clearmedia",
+				.str = "Clears the all media in the device specified by the Node-ID.",
+				.args = ARG_NONE,
+				.callback = &cmd_clearmedia
 		}
 };
 
@@ -187,5 +203,7 @@ bool cmd_node(const char *arg) {
 
 	return ret;
 }
+
+
 
 

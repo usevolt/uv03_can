@@ -29,6 +29,7 @@
 #include "load.h"
 #include "export.h"
 #include "ui.h"
+#include "loadmedia.h"
 
 
 
@@ -60,6 +61,7 @@ struct _dev_st {
 	db_st db;
 	export_st export;
 	ui_st ui;
+	loadmedia_st loadmedia;
 
 	uv_data_start_t data_start;
 
