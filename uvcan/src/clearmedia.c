@@ -46,9 +46,28 @@ void clearmedia_step(void *ptr) {
 	CANOPEN_TYPEOF(CONFIG_CANOPEN_EXMEM_CLEARREQ_TYPE) clear = 1;
 	if (uv_canopen_sdo_write(db_get_nodeid(&dev.db), CONFIG_CANOPEN_EXMEM_CLEARREQ_INDEX,
 			0, CANOPEN_SIZEOF(CONFIG_CANOPEN_EXMEM_CLEARREQ_TYPE), &clear) == ERR_NONE) {
+		while (true) {
+			if (uv_canopen_sdo_read(db_get_nodeid(&dev.db), CONFIG_CANOPEN_EXMEM_CLEARREQ_INDEX,
+					0, CANOPEN_SIZEOF(CONFIG_CANOPEN_EXMEM_CLEARREQ_TYPE), &clear) == ERR_NONE) {
+				if (clear == 0) {
+					break;
+				}
+				else {
+					printf(".");
+					fflush(stdout);
+				}
+			}
+			else {
+				printf("Error while clearing media.\n");
+				return;
+			}
+			uv_rtos_task_delay(1000);
+		}
 		printf("Media cleared from node 0x%x\n", db_get_nodeid(&dev.db));
+		fflush(stdout);
 	}
 	else {
 		printf("Couldn't clear media from node 0x%x\n", db_get_nodeid(&dev.db));
+		fflush(stdout);
 	}
 }
