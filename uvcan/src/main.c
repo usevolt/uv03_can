@@ -48,6 +48,8 @@ void init(void *me) {
 	if (this->baudrate == 0) {
 		this->baudrate = 250000;
 	}
+	strcpy(this->srcdest, ".");
+	strcpy(this->incdest, ".");
 
 	uv_can_set_baudrate(this->can_channel, this->baudrate);
 	uv_vector_init(&this->tasks, this->task_buffer, TASKS_LEN, sizeof(task_st));

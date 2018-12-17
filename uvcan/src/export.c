@@ -424,12 +424,20 @@ bool cmd_export(const char *arg) {
 	bool ret = false;
 
 	char filename[1024];
-	strcpy(filename, arg);
+	strcpy(filename, dev.incdest);
+	if (dev.incdest[strlen(dev.incdest) - 1] != '/') {
+		strcat(filename, "/");
+	}
+	strcat(filename, arg);
 	strcat(filename, ".h");
 	FILE *headerfile = fopen(filename, "w");
 
 
-	strcpy(filename, arg);
+	strcpy(filename, dev.srcdest);
+	if (dev.srcdest[strlen(dev.srcdest) - 1] != '/') {
+		strcat(filename, "/");
+	}
+	strcat(filename, arg);
 	strcat(filename, ".c");
 	FILE *sourcefile = fopen(filename, "w");
 

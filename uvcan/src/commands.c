@@ -37,6 +37,8 @@
 bool cmd_can(const char *arg);
 bool cmd_baud(const char *arg);
 bool cmd_node(const char *arg);
+bool cmd_srcdest(const char *arg);
+bool cmd_incdest(const char *arg);
 
 commands_st commands[] = {
 		{
@@ -57,6 +59,18 @@ commands_st commands[] = {
 						"Defaults to 250 kbaud.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_baud
+		},
+		{
+				.cmd = "srcdest",
+				.str = "Sets the source destination file path. This is used by various commands which output data.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_srcdest
+		},
+		{
+				.cmd = "incdest",
+				.str = "Sets the include destination file path. This is used by various commands which output data.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_incdest
 		},
 		{
 				.cmd = "nodeid",
@@ -204,6 +218,17 @@ bool cmd_node(const char *arg) {
 	return ret;
 }
 
+bool cmd_srcdest(const char *arg) {
+	strcpy(dev.srcdest, arg);
+	printf("Source destination file path set to '%s'\n", arg);
+	return true;
+}
+
+bool cmd_incdest(const char *arg) {
+	strcpy(dev.incdest, arg);
+	printf("Include destination file path set to '%s'\n", arg);
+	return true;
+}
 
 
 

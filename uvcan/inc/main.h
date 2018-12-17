@@ -49,6 +49,9 @@ struct _dev_st {
 
 	unsigned int baudrate;
 
+	char srcdest[1024];
+	char incdest[1024];
+
 	/// @brief: operating tasks of the application. Commands can
 	/// register their tasks via *add_task* function.
 	/// The commands get execution order each in turn.
