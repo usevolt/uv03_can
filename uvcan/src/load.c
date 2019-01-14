@@ -190,14 +190,14 @@ static void can_callb(void * ptr, uv_can_msg_st *msg) {
 			(msg->type == CAN_STD) &&
 			(msg->data_length == 1) &&
 			(msg->data_8bit[0] == CANOPEN_BOOT_UP)) {
-		// canopen boot up message recieved, node found.
+		// canopen boot up message received, node found.
 		this->response = true;
 		printf("done\n");
 
 		// disable CAN callback, it's not needed anymore.
 		uv_canopen_set_can_callback(NULL);
 	}
-	printf("0x%x\n", db_get_nodeid(&dev.db));
+//	printf("0x%x\n", db_get_nodeid(&dev.db));
 }
 
 void load_step(void *ptr) {
@@ -330,8 +330,8 @@ void load_step(void *ptr) {
 					size_t ret = fread(data, size, 1, fptr);
 
 					if (!ret) {
-						printf("ERROR: Reading file failed at byte %u / %u. "
-								"Firmware download cancelled.\n", index, size);
+						printf("ERROR: Reading file failed. "
+								"Firmware download cancelled.\n");
 						fflush(stdout);
 					}
 					else {
@@ -357,8 +357,8 @@ void load_step(void *ptr) {
 					size_t ret = fread(data, size, 1, fptr);
 
 					if (!ret) {
-						printf("ERROR: Reading file failed at byte %u / %u. "
-								"Firmware download cancelled.\n", index, size);
+						printf("ERROR: Reading file failed. "
+								"Firmware download cancelled.\n");
 						fflush(stdout);
 					}
 					else {

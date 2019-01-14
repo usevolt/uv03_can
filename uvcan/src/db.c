@@ -633,7 +633,7 @@ static bool parse_json(db_st *this, char *json) {
 					CHECK_OBJ(data, "data", obj.name);
 
 					if (children == NULL || uv_jsonreader_get_type(children) != JSON_ARRAY) {
-						printf("children array not an array! 0x%x\n", children);
+						printf("children array not an array in object %s\n", obj.name);
 					}
 					for (uint8_t i = 0; i < obj.obj.array_max_size; i++) {
 						thischild = malloc(sizeof(db_array_child_st));

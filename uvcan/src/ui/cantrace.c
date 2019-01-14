@@ -138,7 +138,7 @@ void cantrace_step(cantrace_st *this, uint16_t step_ms) {
 void cantrace_rx(cantrace_st *this, uv_can_msg_st *msg) {
 	// add message to the buffer
 	uv_mutex_lock(&this->mutex);
-	uv_ring_buffer_push(&this->msgs, msg);
+//	uv_ring_buffer_push(&this->msgs, msg);
 	uv_mutex_unlock(&this->mutex);
 }
 

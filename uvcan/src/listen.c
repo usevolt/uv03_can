@@ -62,9 +62,9 @@ void can_callb(void *ptr, uv_can_msg_st *msg) {
 	}
 	struct tm *time;
 	struct timeval timev = uv_can_get_rx_time();
-	time = localtime(&timev.tv_sec);
+	time = localtime((const time_t*) &timev.tv_sec);
 
-	printf("%02u:%02u:%02u:%03u ", time->tm_hour, time->tm_min, time->tm_sec, timev.tv_usec / 1000);
+	printf("%02u:%02u:%02u:%03u ", time->tm_hour, time->tm_min, time->tm_sec, (unsigned int) timev.tv_usec / 1000);
 
 	printf("%s ID: 0x%x, DLC: %u, ", type, msg->id, msg->data_length);
 	for (uint8_t i = 0; i < msg->data_length; i++) {

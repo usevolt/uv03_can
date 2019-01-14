@@ -431,37 +431,38 @@ bool cmd_export(const char *arg) {
 	strcat(filename, arg);
 	strcat(filename, ".h");
 	FILE *headerfile = fopen(filename, "w");
-
-
-	strcpy(filename, dev.srcdest);
-	if (dev.srcdest[strlen(dev.srcdest) - 1] != '/') {
-		strcat(filename, "/");
-	}
-	strcat(filename, arg);
-	strcat(filename, ".c");
-	FILE *sourcefile = fopen(filename, "w");
-
 	if (headerfile == NULL) {
 		// failed to open the file, exit this task
-		printf("Failed to open header file '%s'.\n", headerfile);
-	}
-	else if (sourcefile == NULL) {
-		// failed to open source file
-		printf("Failed to open source file '%s'.\n", sourcefile);
+		printf("Failed to open header file '%s'.\n", filename);
 	}
 	else {
-		char objs[65536] = "";
-		get_header_objs(objs, arg);
-		fwrite(objs, sizeof(char), strlen(objs), headerfile);
-//		printf("header objects: \n%s\n", objs);
+		strcpy(filename, dev.srcdest);
+		if (dev.srcdest[strlen(dev.srcdest) - 1] != '/') {
+			strcat(filename, "/");
+		}
+		strcat(filename, arg);
+		strcat(filename, ".c");
+		FILE *sourcefile = fopen(filename, "w");
 
-		get_source_objs(objs, arg);
-		fwrite(objs, sizeof(char), strlen(objs), sourcefile);
-//		printf("source objects: \n %s\n", objs);
+		if (sourcefile == NULL) {
+			// failed to open source file
+			printf("Failed to open source file '%s'.\n", filename);
+		}
+		else {
+			char objs[65536] = "";
+			get_header_objs(objs, arg);
+			fwrite(objs, sizeof(char), strlen(objs), headerfile);
+	//		printf("header objects: \n%s\n", objs);
+
+			get_source_objs(objs, arg);
+			fwrite(objs, sizeof(char), strlen(objs), sourcefile);
+	//		printf("source objects: \n %s\n", objs);
 
 
-		fclose(headerfile);
-		fclose(sourcefile);
+			fclose(headerfile);
+			fclose(sourcefile);
+		}
+
 	}
 
 
