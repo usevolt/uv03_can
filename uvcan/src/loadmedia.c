@@ -70,8 +70,8 @@ void loadmedia_step(void *ptr) {
 		printf("Opened file %s. Size: %i bytes.\n", this->filename, size);
 		size_t ret = fread(data, size, 1, fptr);
 		if (!ret) {
-			printf("ERROR: Reading media file '%s' failed at byte %u / %u. "
-					"Firmware download cancelled.\n", this->filename, index, size);
+			printf("ERROR: Reading media file '%s' failed. "
+					"Firmware download cancelled.\n", this->filename);
 			fflush(stdout);
 		}
 		else {
