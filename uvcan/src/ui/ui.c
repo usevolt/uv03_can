@@ -41,8 +41,8 @@ static void add_nodeid(uint8_t nodeid);
 
 static void can_callb(void *ptr, uv_can_message_st *msg) {
 	uv_mutex_lock(&this->mutex);
-	if ((msg->id & 0xFF) == CANOPEN_SDO_RESPONSE_ID ||
-			(msg->id & 0xFF) == CANOPEN_SDO_REQUEST_ID) {
+	if ((msg->id & ~0xFF) == CANOPEN_SDO_RESPONSE_ID ||
+			(msg->id & ~0xFF) == CANOPEN_SDO_REQUEST_ID) {
 		uint8_t nodeid = (msg->id & 0xFF);
 		add_nodeid(nodeid);
 	}
@@ -179,7 +179,7 @@ static void activate (GtkApplication* app, gpointer user_data)
 			gtk_combo_box_set_active(GTK_COMBO_BOX(obj), selected_index);
 			g_signal_connect(obj, "changed", G_CALLBACK(can_dev_changed), NULL);
 #if CORE_WIN
-			gtk_widget_set_sensitive(obj, false);
+			gtk_widget_set_sensitive(GTK_WIDGET(obj), false);
 #endif
 
 			// Baudrate
