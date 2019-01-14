@@ -41,7 +41,7 @@ typedef struct {
 	char data_str[CANTRACE_MSG_STR_LEN];
 	char type_str[CANTRACE_MSG_STR_LEN];
 	char time_str[CANTRACE_MSG_STR_LEN];
-	char dlc_str[2];
+	char dlc_str[8];
 	void *next_sibling;
 	void *previous_sibling;
 } cantrace_msg_st;

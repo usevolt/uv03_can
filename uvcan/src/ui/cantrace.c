@@ -33,6 +33,10 @@ static void adj_value_changed(GtkAdjustment *adjustment, gpointer user_data);
 
 cantrace_msg_st *cantrace_msg_new(uv_can_msg_st *msg) {
 	cantrace_msg_st *this = malloc(sizeof(cantrace_msg_st));
+	if (this == NULL) {
+		printf("This is NULL\n");
+		fflush(stdout);
+	}
 	memset(this, 0, sizeof(cantrace_msg_st));
 	this->previous_sibling = NULL;
 	this->next_sibling = NULL;
@@ -50,17 +54,23 @@ cantrace_msg_st *cantrace_msg_new(uv_can_msg_st *msg) {
 		strcpy(this->type_str, "?");
 		break;
 	}
-	snprintf(this->id_str, sizeof(this->id_str), "0x%x", msg->id);
+	snprintf(this->id_str, sizeof(this->id_str) - 1, "0x%x", msg->id);
 	struct tm *time;
 	struct timeval timev = uv_can_get_rx_time();
 	time = localtime(&timev.tv_sec);
-	snprintf(this->time_str, sizeof(this->time_str), "%02u:%02u:%02u:%03u ",
+	snprintf(this->time_str, sizeof(this->time_str) - 1, "%02u:%02u:%02u:%03u ",
 			time->tm_hour, time->tm_min, time->tm_sec, (unsigned int) timev.tv_usec / 1000);
-	snprintf(this->dlc_str, sizeof(this->dlc_str), "%u", msg->data_length);
+	snprintf(this->dlc_str, sizeof(this->dlc_str) - 1, "%u", msg->data_length);
 	this->data_str[0] = '\0';
 	for (int i = 0; i < msg->data_length; i++) {
-		sprintf(&this->data_str[strlen(this->data_str)], "%x ", msg->data_8bit[i]);
+		char str[64] = { 0 };
+		snprintf(str, sizeof(str) - 1, "%02x ", msg->data_8bit[i]);
+		int len = sizeof(this->data_str) - 1 - strnlen(this->data_str, sizeof(this->data_str));
+		if (len > 0) {
+			strncat(this->data_str, str, len);
+		}
 	}
+
 	return this;
 }
 
@@ -106,12 +116,12 @@ void cantrace_step(cantrace_st *this, uint16_t step_ms) {
 		this->children_count++;
 		// free the oldest child
 		if (this->children_count > CANTRACE_CHILDREN_COUNT) {
+			gtk_container_remove(GTK_CONTAINER(this->traceview),
+					GTK_WIDGET(gtk_list_box_get_row_at_index(GTK_LIST_BOX(this->traceview), 0)));
 			cantrace_msg_st *first = this->first_child;
 			this->first_child = cantrace_msg_get_next_sibling(first);
 			cantrace_msg_free(first);
 			this->children_count--;
-			gtk_container_remove(GTK_CONTAINER(this->traceview),
-					GTK_WIDGET(gtk_list_box_get_row_at_index(GTK_LIST_BOX(this->traceview), 0)));
 		}
 		GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
 		gtk_widget_set_hexpand(GTK_WIDGET(row), true);
@@ -138,7 +148,7 @@ void cantrace_step(cantrace_st *this, uint16_t step_ms) {
 void cantrace_rx(cantrace_st *this, uv_can_msg_st *msg) {
 	// add message to the buffer
 	uv_mutex_lock(&this->mutex);
-//	uv_ring_buffer_push(&this->msgs, msg);
+	uv_ring_buffer_push(&this->msgs, msg);
 	uv_mutex_unlock(&this->mutex);
 }
 

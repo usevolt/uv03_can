@@ -154,6 +154,10 @@ static void activate (GtkApplication* app, gpointer user_data)
 
 			GObject *obj;
 
+			// menubar
+			obj = gtk_builder_get_object(builder, "menubar");
+			gtk_header_bar_set_subtitle(GTK_HEADER_BAR(obj), uv_projname);
+
 			// stack switcher
 			obj = gtk_builder_get_object(builder, "stackswitcher");
 			this->stackswitcher = obj;
