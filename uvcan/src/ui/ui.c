@@ -41,8 +41,8 @@ static void add_nodeid(uint8_t nodeid);
 
 static void can_callb(void *ptr, uv_can_message_st *msg) {
 	uv_mutex_lock(&this->mutex);
-	if ((msg->id & ~0xFF) == CANOPEN_SDO_RESPONSE_ID ||
-			(msg->id & ~0xFF) == CANOPEN_SDO_REQUEST_ID) {
+	if ((msg->id & ~CANOPEN_NODE_ID_MASK) == CANOPEN_SDO_RESPONSE_ID ||
+			(msg->id & ~CANOPEN_NODE_ID_MASK) == CANOPEN_SDO_REQUEST_ID) {
 		uint8_t nodeid = (msg->id & 0xFF);
 		add_nodeid(nodeid);
 	}
