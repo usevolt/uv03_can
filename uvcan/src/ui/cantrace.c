@@ -31,15 +31,8 @@ static void adj_value_changed(GtkAdjustment *adjustment, gpointer user_data);
 
 
 
-cantrace_msg_st *cantrace_msg_new(uv_can_msg_st *msg) {
-	cantrace_msg_st *this = malloc(sizeof(cantrace_msg_st));
-	if (this == NULL) {
-		printf("This is NULL\n");
-		fflush(stdout);
-	}
+void cantrace_msg_init(cantrace_msg_st *this, uv_can_msg_st *msg) {
 	memset(this, 0, sizeof(cantrace_msg_st));
-	this->previous_sibling = NULL;
-	this->next_sibling = NULL;
 	switch (msg->type) {
 	case CAN_STD:
 		strcpy(this->type_str, "STD");
@@ -70,13 +63,8 @@ cantrace_msg_st *cantrace_msg_new(uv_can_msg_st *msg) {
 			strncat(this->data_str, str, len);
 		}
 	}
-
-	return this;
 }
 
-void cantrace_msg_free(cantrace_msg_st *this) {
-	free(this);
-}
 
 
 void cantrace_init(cantrace_st *this, GtkBuilder *builder) {
@@ -88,8 +76,6 @@ void cantrace_init(cantrace_st *this, GtkBuilder *builder) {
 	g_signal_connect(G_OBJECT(adj), "value-changed", G_CALLBACK(adj_value_changed), NULL);
 
 	this->children_count = 0;
-	this->first_child = NULL;
-	this->last_child = NULL;
 	uv_ring_buffer_init(&this->msgs, this->msg_buffer,
 			sizeof(this->msg_buffer) / sizeof(this->msg_buffer[0]),
 			sizeof(this->msg_buffer[0]));
@@ -104,42 +90,31 @@ void cantrace_step(cantrace_st *this, uint16_t step_ms) {
 	uv_mutex_lock(&this->mutex);
 	uv_can_msg_st msg;
 	while (uv_ring_buffer_pop(&this->msgs, &msg) == ERR_NONE) {
-		cantrace_msg_st *tracemsg = cantrace_msg_new(&msg);
-		cantrace_msg_set_previous_sibling(tracemsg, this->last_child);
-		if (this->last_child) {
-			cantrace_msg_set_next_sibling(this->last_child, tracemsg);
-		}
-		this->last_child = tracemsg;
-		if (this->first_child == NULL) {
-			this->first_child = tracemsg;
-		}
-		this->children_count++;
+		cantrace_msg_st tracemsg;
+		cantrace_msg_init(&tracemsg, &msg);
 		// free the oldest child
+		this->children_count++;
 		if (this->children_count > CANTRACE_CHILDREN_COUNT) {
 			gtk_container_remove(GTK_CONTAINER(this->traceview),
 					GTK_WIDGET(gtk_list_box_get_row_at_index(GTK_LIST_BOX(this->traceview), 0)));
-			cantrace_msg_st *first = this->first_child;
-			this->first_child = cantrace_msg_get_next_sibling(first);
-			cantrace_msg_free(first);
-			this->children_count--;
 		}
 		GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
 		gtk_widget_set_hexpand(GTK_WIDGET(row), true);
 		gtk_box_set_homogeneous(GTK_BOX(row), true);
-		GtkWidget *obj = gtk_label_new(tracemsg->id_str);
+		GtkWidget *obj;
+		obj = gtk_label_new(tracemsg.id_str);
 		gtk_container_add(GTK_CONTAINER(row), GTK_WIDGET(obj));
-		obj = gtk_label_new(tracemsg->dlc_str);
+		obj = gtk_label_new(tracemsg.dlc_str);
 		gtk_container_add(GTK_CONTAINER(row), GTK_WIDGET(obj));
-		obj = gtk_label_new(tracemsg->data_str);
+		obj = gtk_label_new(tracemsg.data_str);
 		gtk_container_add(GTK_CONTAINER(row), GTK_WIDGET(obj));
-		obj = gtk_label_new(tracemsg->type_str);
+		obj = gtk_label_new(tracemsg.type_str);
 		gtk_container_add(GTK_CONTAINER(row), GTK_WIDGET(obj));
-		obj = gtk_label_new(tracemsg->time_str);
+		obj = gtk_label_new(tracemsg.time_str);
 		gtk_container_add(GTK_CONTAINER(row), GTK_WIDGET(obj));
 
 		gtk_container_add(GTK_CONTAINER(this->traceview), GTK_WIDGET(row));
 		gtk_widget_show_all(GTK_WIDGET(this->traceview));
-
 	}
 
 	uv_mutex_unlock(&this->mutex);
@@ -154,9 +129,6 @@ void cantrace_rx(cantrace_st *this, uv_can_msg_st *msg) {
 
 
 void cantrace_deinit(cantrace_st *this) {
-	if (this->last_child) {
-		cantrace_msg_free(this->last_child);
-	}
 }
 
 
@@ -164,7 +136,6 @@ void cantrace_deinit(cantrace_st *this) {
 
 
 static void adj_changed(GtkAdjustment *adjustment, gpointer user_data) {
-//	printf("upper: %f\n", gtk_adjustment_get_upper(adjustment));
 	gtk_adjustment_set_value(adjustment, gtk_adjustment_get_upper(adjustment));
 	GtkViewport *viewport = (void*) gtk_widget_get_parent(GTK_WIDGET(this->traceview));
 	gtk_scrollable_set_vadjustment(GTK_SCROLLABLE(viewport), adjustment);

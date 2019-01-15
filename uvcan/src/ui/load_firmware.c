@@ -63,12 +63,10 @@ void load_firmware_step(load_firmware_st *this, uint16_t step_ms) {
 		uint16_t i = ui_get_nodeid(&dev.ui, this->nodeid_count);
 		char id[64];
 		sprintf(id, "0x%x", i);
-		if (db_is_loaded(&dev.db) && i == db_get_nodeid(&dev.db)) {
-			strcat(id, " (Default)");
-		}
 		gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(this->nodeid), id);
-		if (this->nodeid_count == 0) {
-			gtk_combo_box_set_active(GTK_COMBO_BOX(this->nodeid), 0);
+		if ((db_is_loaded(&dev.db) && i == db_get_nodeid(&dev.db)) ||
+				this->nodeid_count == 0) {
+			gtk_combo_box_set_active(GTK_COMBO_BOX(this->nodeid), this->nodeid_count);
 		}
 		this->nodeid_count++;
 	}

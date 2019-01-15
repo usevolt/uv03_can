@@ -42,7 +42,8 @@ static void add_nodeid(uint8_t nodeid);
 static void can_callb(void *ptr, uv_can_message_st *msg) {
 	uv_mutex_lock(&this->mutex);
 	if ((msg->id & ~CANOPEN_NODE_ID_MASK) == CANOPEN_SDO_RESPONSE_ID ||
-			(msg->id & ~CANOPEN_NODE_ID_MASK) == CANOPEN_SDO_REQUEST_ID) {
+			(msg->id & ~CANOPEN_NODE_ID_MASK) == CANOPEN_SDO_REQUEST_ID ||
+			(msg->id & ~CANOPEN_NODE_ID_MASK) == CANOPEN_HEARTBEAT_ID) {
 		uint8_t nodeid = (msg->id & 0xFF);
 		add_nodeid(nodeid);
 	}
@@ -52,16 +53,18 @@ static void can_callb(void *ptr, uv_can_message_st *msg) {
 }
 
 static void add_nodeid(uint8_t nodeid) {
-	bool found = false;
-	for (uint8_t i = 0; i < uv_vector_size(&this->nodeids); i++) {
-		uint8_t *nid = uv_vector_at(&this->nodeids, i);
-		if (nodeid == *nid) {
-			found = true;
-			break;
+	if (nodeid != 0) {
+		bool found = false;
+		for (uint8_t i = 0; i < uv_vector_size(&this->nodeids); i++) {
+			uint8_t *nid = uv_vector_at(&this->nodeids, i);
+			if (nodeid == *nid) {
+				found = true;
+				break;
+			}
 		}
-	}
-	if (!found) {
-		uv_vector_push_back(&this->nodeids, &nodeid);
+		if (!found) {
+			uv_vector_push_back(&this->nodeids, &nodeid);
+		}
 	}
 }
 
@@ -231,7 +234,7 @@ static void activate (GtkApplication* app, gpointer user_data)
 			uv_mutex_init(&this->mutex);
 			uv_mutex_unlock(&this->mutex);
 			uv_vector_init(&this->nodeids, this->nodeid_buffer,
-					sizeof(this->nodeid_buffer[0]) / sizeof(this->nodeid_buffer[0]),
+					sizeof(this->nodeid_buffer) / sizeof(this->nodeid_buffer[0]),
 					sizeof(this->nodeid_buffer[0]));
 			uv_canopen_set_can_callback(&can_callb);
 			g_timeout_add(20, update, NULL);
@@ -245,6 +248,7 @@ static void activate (GtkApplication* app, gpointer user_data)
 static gboolean update(gpointer data) {
 	uint16_t step_ms = 20;
 	uv_mutex_lock(&this->mutex);
+
 
 	add_nodeid(db_get_nodeid(&dev.db));
 

@@ -25,7 +25,6 @@
 
 
 #define CANTRACE_BUFFER_LEN		128
-#define CANTRACE_MSG_STR_LEN	64
 #define CANTRACE_CHILDREN_COUNT	150
 
 struct _GObject;
@@ -37,44 +36,24 @@ typedef struct _GtkWidget GtkWidget;
 typedef struct _GtkBuilder GtkBuilder;
 
 typedef struct {
-	char id_str[CANTRACE_MSG_STR_LEN];
-	char data_str[CANTRACE_MSG_STR_LEN];
-	char type_str[CANTRACE_MSG_STR_LEN];
-	char time_str[CANTRACE_MSG_STR_LEN];
+	char id_str[32];
+	char data_str[32];
+	char type_str[8];
+	char time_str[32];
 	char dlc_str[8];
-	void *next_sibling;
-	void *previous_sibling;
 } cantrace_msg_st;
 
 /// @brief: initializes the cantrace_msg structure from CAN message
-cantrace_msg_st *cantrace_msg_new(uv_can_msg_st *msg);
+void cantrace_msg_init(cantrace_msg_st *this, uv_can_msg_st *msg);
 
-static inline void cantrace_msg_set_next_sibling(cantrace_msg_st *this, void *sibling) {
-	this->next_sibling = sibling;
-}
-static inline void cantrace_msg_set_previous_sibling(cantrace_msg_st *this, void *sibling) {
-	this->previous_sibling = sibling;
-}
-static inline void *cantrace_msg_get_next_sibling(cantrace_msg_st *this) {
-	return this->previous_sibling;
-}
-
-/// @brief: Frees the memory allocated to the cantrace message and all its next siblings
-void cantrace_msg_free(cantrace_msg_st *this);
 
 
 typedef struct {
 	GtkWidget *traceview;
 	uv_can_msg_st msg_buffer[CANTRACE_BUFFER_LEN];
 	uv_ring_buffer_st msgs;
+	int32_t children_count;
 
-
-	// count of the trace messages on the screen
-	uint32_t children_count;
-	// linked list of the trace message content. This points to the newest child, e.g. last one
-	cantrace_msg_st *last_child;
-	// this points to the olders child.
-	cantrace_msg_st *first_child;
 	uv_mutex_st mutex;
 } cantrace_st;
 
