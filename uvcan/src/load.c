@@ -44,6 +44,7 @@ static void update(void *ptr) {
 					_canopen.sdo.client.data_count,
 					percent);
 			fflush(stdout);
+			this->progress = percent;
 			if (percent == 100) {
 				break;
 			}
@@ -51,6 +52,19 @@ static void update(void *ptr) {
 		data_index = _canopen.sdo.client.data_index;
 		uv_rtos_task_delay(20);
 	}
+}
+
+
+void loadbin(char *filepath, uint8_t nodeid, bool wfr, bool uv, bool block_transfer) {
+	strcpy(this->firmware, filepath);
+	this->wfr = wfr;
+	this->uv = this->uv;
+	this->block_transfer = block_transfer;
+	this->nodeid = nodeid;
+	uv_delay_init(&this->delay, RESPONSE_DELAY_MS);
+
+	uv_rtos_task_create(&load_step, "loadbin_task",
+			UV_RTOS_MIN_STACK_SIZE, NULL, UV_RTOS_IDLE_PRIORITY + 1, NULL);
 }
 
 bool cmd_load(const char *arg) {
@@ -66,6 +80,7 @@ bool cmd_load(const char *arg) {
 		this->wfr = false;
 		this->uv = false;
 		this->block_transfer = true;
+		this->nodeid = db_get_nodeid(&dev.db);
 		uv_delay_init(&this->delay, RESPONSE_DELAY_MS);
 		add_task(load_step);
 		uv_can_set_up();
@@ -88,6 +103,7 @@ bool cmd_loadwfr(const char *arg) {
 		this->wfr = true;
 		this->uv = false;
 		this->block_transfer = true;
+		this->nodeid = db_get_nodeid(&dev.db);
 		uv_delay_init(&this->delay, LOADWFR_WAIT_TIME_MS);
 		add_task(load_step);
 		uv_can_set_up();
@@ -109,6 +125,7 @@ bool cmd_segload(const char *arg) {
 		this->wfr = false;
 		this->uv = false;
 		this->block_transfer = false;
+		this->nodeid = db_get_nodeid(&dev.db);
 		uv_delay_init(&this->delay, RESPONSE_DELAY_MS);
 		add_task(load_step);
 		uv_can_set_up();
@@ -131,6 +148,7 @@ bool cmd_segloadwfr(const char *arg) {
 		this->wfr = true;
 		this->uv = false;
 		this->block_transfer = false;
+		this->nodeid = db_get_nodeid(&dev.db);
 		uv_delay_init(&this->delay, LOADWFR_WAIT_TIME_MS);
 		add_task(load_step);
 		uv_can_set_up();
@@ -153,6 +171,7 @@ bool cmd_uvload(const char *arg) {
 		this->wfr = false;
 		this->uv = true;
 		this->block_transfer = true;
+		this->nodeid = db_get_nodeid(&dev.db);
 		uv_delay_init(&this->delay, RESPONSE_DELAY_MS);
 		add_task(load_step);
 		uv_can_set_up();
@@ -175,6 +194,7 @@ bool cmd_uvloadwfr(const char *arg) {
 		this->wfr = true;
 		this->uv = true;
 		this->block_transfer = true;
+		this->nodeid = db_get_nodeid(&dev.db);
 		uv_delay_init(&this->delay, LOADWFR_WAIT_TIME_MS);
 		add_task(load_step);
 		uv_can_set_up();
@@ -186,7 +206,7 @@ bool cmd_uvloadwfr(const char *arg) {
 
 
 static void can_callb(void * ptr, uv_can_msg_st *msg) {
-	if ((msg->id == CANOPEN_HEARTBEAT_ID + db_get_nodeid(&dev.db)) &&
+	if ((msg->id == CANOPEN_HEARTBEAT_ID + this->nodeid) &&
 			(msg->type == CAN_STD) &&
 			(msg->data_length == 1) &&
 			(msg->data_8bit[0] == CANOPEN_BOOT_UP)) {
@@ -197,10 +217,13 @@ static void can_callb(void * ptr, uv_can_msg_st *msg) {
 		// disable CAN callback, it's not needed anymore.
 		uv_canopen_set_can_callback(NULL);
 	}
-//	printf("0x%x\n", db_get_nodeid(&dev.db));
 }
 
 void load_step(void *ptr) {
+	this->finished = false;
+	this->progress = 0;
+
+
 	FILE *fptr = fopen(this->firmware, "rb");
 
 	if (fptr == NULL) {
@@ -226,13 +249,13 @@ void load_step(void *ptr) {
 			uv_canopen_set_can_callback(&can_callb);
 
 			if (!this->wfr) {
-				printf("Resetting node 0x%x\n", db_get_nodeid(&dev.db));
+				printf("Resetting node 0x%x\n", this->nodeid);
 				fflush(stdout);
-				uv_canopen_nmt_master_reset_node(db_get_nodeid(&dev.db));
+				uv_canopen_nmt_master_reset_node(this->nodeid);
 			}
 
 			// wait for a response to NMT reset command
-			printf("Waiting to receive boot up message from node 0x%x...\n", db_get_nodeid(&dev.db));
+			printf("Waiting to receive boot up message from node 0x%x...\n", this->nodeid);
 			fflush(stdout);
 			while (true) {
 				uint16_t step_ms = 1;
@@ -276,7 +299,7 @@ void load_step(void *ptr) {
 						break;
 					}
 					else {
-						if (uv_canopen_sdo_block_write(db_get_nodeid(&dev.db), BOOTLOADER_INDEX, BOOTLOADER_SUBINDEX,
+						if (uv_canopen_sdo_block_write(this->nodeid, BOOTLOADER_INDEX, BOOTLOADER_SUBINDEX,
 								data_length, data) != ERR_NONE) {
 							printf("Error while downloading block %u.\n", block);
 							fflush(stdout);
@@ -300,7 +323,7 @@ void load_step(void *ptr) {
 				// set canopen callback function
 				uv_canopen_set_can_callback(&can_callb);
 				// wait for a response to NMT reset command
-				printf("Waiting to receive boot up message from node 0x%x...\n", db_get_nodeid(&dev.db));
+				printf("Waiting to receive boot up message from node 0x%x...\n", this->nodeid);
 				fflush(stdout);
 				while (true) {
 					uint16_t step_ms = 1;
@@ -339,7 +362,7 @@ void load_step(void *ptr) {
 						uv_rtos_task_create(&update, "segload update", UV_RTOS_MIN_STACK_SIZE,
 								NULL, UV_RTOS_IDLE_PRIORITY + 100, NULL);
 
-						uv_errors_e e = uv_canopen_sdo_block_write(db_get_nodeid(&dev.db),
+						uv_errors_e e = uv_canopen_sdo_block_write(this->nodeid,
 								BOOTLOADER_INDEX, BOOTLOADER_SUBINDEX, size, data);
 						if (e != ERR_NONE) {
 							printf("Downloading the binary failed. Error code: %u\n", e);
@@ -366,7 +389,7 @@ void load_step(void *ptr) {
 						uv_rtos_task_create(&update, "segload update", UV_RTOS_MIN_STACK_SIZE,
 								NULL, UV_RTOS_IDLE_PRIORITY + 100, NULL);
 
-						uv_errors_e e = uv_canopen_sdo_write(db_get_nodeid(&dev.db),
+						uv_errors_e e = uv_canopen_sdo_write(this->nodeid,
 								BOOTLOADER_INDEX, BOOTLOADER_SUBINDEX, size, data);
 						if (e != ERR_NONE) {
 							printf("Downloading the binary failed. Error code: %u\n", e);
@@ -384,9 +407,11 @@ void load_step(void *ptr) {
 		if (success) {
 			printf("Loading done. Resetting device... OK!\n");
 			fflush(stdout);
-			uv_canopen_nmt_master_reset_node(db_get_nodeid(&dev.db));
+			uv_canopen_nmt_master_reset_node(this->nodeid);
 			printf("Binary file closed.\n");
 			fflush(stdout);
 		}
 	}
+
+	this->finished = true;
 }

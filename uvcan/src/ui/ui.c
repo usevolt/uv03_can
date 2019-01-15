@@ -31,7 +31,6 @@ static void ui_main(void *ptr);
 
 
 static gboolean update(gpointer data);
-static void can_callb(void *ptr, uv_can_message_st *msg);
 static void add_nodeid(uint8_t nodeid);
 
 
@@ -39,7 +38,7 @@ static void add_nodeid(uint8_t nodeid);
 
 
 
-static void can_callb(void *ptr, uv_can_message_st *msg) {
+void uican_callb(void *ptr, uv_can_message_st *msg) {
 	uv_mutex_lock(&this->mutex);
 	if ((msg->id & ~CANOPEN_NODE_ID_MASK) == CANOPEN_SDO_RESPONSE_ID ||
 			(msg->id & ~CANOPEN_NODE_ID_MASK) == CANOPEN_SDO_REQUEST_ID ||
@@ -236,7 +235,7 @@ static void activate (GtkApplication* app, gpointer user_data)
 			uv_vector_init(&this->nodeids, this->nodeid_buffer,
 					sizeof(this->nodeid_buffer) / sizeof(this->nodeid_buffer[0]),
 					sizeof(this->nodeid_buffer[0]));
-			uv_canopen_set_can_callback(&can_callb);
+			uv_canopen_set_can_callback(&uican_callb);
 			g_timeout_add(20, update, NULL);
 		}
 		else {

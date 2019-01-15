@@ -33,12 +33,12 @@ typedef struct _GtkBuilder GtkBuilder;
 /// @brief: Flash firmware structure
 typedef struct {
 	GtkWidget *filechooser;
-	GtkWidget *firmwarelog;
+	GtkWidget *progressbar;
 	GtkWidget *nodeid;
 	GtkWidget *flash;
-	GtkWidget *flashwfr;
-	char buffer[1024];
-	FILE *fp;
+	GtkWidget *wfr;
+	GtkWidget *blocktransfer;
+	GtkWidget *infolabel;
 	int update_id;
 	int16_t nodeid_count;
 } load_firmware_st;

@@ -32,10 +32,30 @@ typedef struct {
 	bool wfr;
 	bool uv;
 	bool block_transfer;
+
+	uint8_t nodeid;
+	uint8_t progress;
+	// true if the loading has finished
+	bool finished;
 } load_st;
 
 
 #define LOADWFR_WAIT_TIME_MS			10000
+
+
+/// @brief: Returns true if the loading has finished. Note that this doesn't separate
+/// failed flashing and successful flashing from each other
+static inline bool loadbin_is_finished(load_st *this) {
+	return this->finished;
+}
+
+/// @brief: Returns the progress percent while downloading
+static inline uint8_t loadbin_get_progress(load_st *this) {
+	return this->progress;
+}
+
+/// @brief: Can be used to trigger the loading of the binary via uvcan, for example from ui
+void loadbin(char *filepath, uint8_t nodeid, bool wfr, bool uv, bool block_transfer);
 
 
 /// @brief: Loads firmware with the name of **arg** to device selected
