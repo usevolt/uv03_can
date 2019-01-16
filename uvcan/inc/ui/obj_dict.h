@@ -43,8 +43,20 @@ typedef struct {
 	char main_index_str[16];
 	char permissions_str[32];
 	db_obj_st *obj;
-	GtkWidget *scale;
-	GtkWidget *spin_button;
+	union {
+		// for writable integers
+		struct {
+			GtkWidget *scale;
+			GtkWidget *spin_button;
+		};
+		// for read-only integers
+		GtkWidget *label;
+		// for strings
+		struct {
+			GtkWidget *text_entry;
+			GtkWidget *text_button;
+		};
+	};
 } obj_dict_par_st;
 
 
@@ -56,9 +68,9 @@ typedef struct {
 
 typedef struct {
 	GObject *obj_dict;
-	obj_dict_par_st obj_dict_params[128];
+	obj_dict_par_st obj_dict_params[258];
 	int8_t selected_par;
-	obj_dict_arr_par_st active_arr_param[128];
+	obj_dict_arr_par_st active_arr_param[258];
 } obj_dict_st;
 
 

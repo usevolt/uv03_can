@@ -24,6 +24,8 @@
 
 static void obj_dict_scale_value_changed(GtkRange *range, gpointer user_data);
 static void obj_dict_spin_button_value_changed(GtkSpinButton *spin_button, gpointer user_data);
+static void obj_dict_text_entry_activated(GtkEntry *entry, gpointer user_data);
+static void obj_dict_text_button_clicked(GtkButton *button, gpointer user_data);
 static void par_init(obj_dict_par_st *this, db_obj_st *db_obj, GtkWidget *parent);
 static void par_expand(obj_dict_par_st *this);
 static void par_compress(obj_dict_par_st *this);
@@ -98,6 +100,7 @@ static void par_init(obj_dict_par_st *this, db_obj_st *db_obj, GtkWidget *parent
 	db_type_to_str(db_obj->obj.type, str);
 	strcat(this->permissions_str, str);
 	label = gtk_label_new(this->permissions_str);
+	gtk_label_set_xalign(GTK_LABEL(label), 0.5f);
 	gtk_container_add(GTK_CONTAINER(headerbox), label);
 }
 
@@ -110,40 +113,51 @@ static void par_expand(obj_dict_par_st *this) {
 	if (CANOPEN_IS_INTEGER(this->obj->obj.type)) {
 		// read the object value from the device
 		int32_t value = 0;
-		if (uv_canopen_sdo_read(db_get_nodeid(&dev.db), this->obj->obj.main_index,
-				this->obj->obj.sub_index, CANOPEN_TYPE_LEN(this->obj->obj.type), &value) != ERR_NONE) {
-			// reading the value from the device failed
-			GtkWidget *d;
-			if (gtk_switch_get_state(GTK_SWITCH(dev.ui.can_switch))) {
-				d = gtk_message_dialog_new(GTK_WINDOW(dev.ui.window), 0,
-						GTK_MESSAGE_WARNING, GTK_BUTTONS_OK, "Couldn't read the object value from the device. "
-								"Check that the device is connected and powered properly.");
+		if (CANOPEN_IS_READABLE(this->obj->obj.permissions)) {
+			if (uv_canopen_sdo_read(db_get_nodeid(&dev.db), this->obj->obj.main_index,
+					this->obj->obj.sub_index, CANOPEN_TYPE_LEN(this->obj->obj.type), &value) != ERR_NONE) {
+				// reading the value from the device failed
+				GtkWidget *d;
+				if (gtk_switch_get_state(GTK_SWITCH(dev.ui.can_switch))) {
+					d = gtk_message_dialog_new(GTK_WINDOW(dev.ui.window), 0,
+							GTK_MESSAGE_WARNING, GTK_BUTTONS_OK, "Couldn't read the object value from the device. "
+									"Check that the device is connected and powered properly.");
+				}
+				else {
+					d = gtk_message_dialog_new(GTK_WINDOW(dev.ui.window), 0,
+							GTK_MESSAGE_WARNING, GTK_BUTTONS_OK, "Couldn't read the object value from the device "
+									"because the CAN-USB adapter is not connected.");
+				}
+				gtk_dialog_run(GTK_DIALOG(d));
+				gtk_widget_destroy(GTK_WIDGET(d));
 			}
-			else {
-				d = gtk_message_dialog_new(GTK_WINDOW(dev.ui.window), 0,
-						GTK_MESSAGE_WARNING, GTK_BUTTONS_OK, "Couldn't read the object value from the device "
-								"because the CAN-USB adapter is not connected.");
-			}
-			gtk_dialog_run(GTK_DIALOG(d));
-			gtk_widget_destroy(GTK_WIDGET(d));
 		}
 
-		GtkWidget *obj = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL,
-				this->obj->min.value_int, this->obj->max.value_int, 1);
-		this->scale = obj;
-		gtk_widget_set_hexpand(obj, TRUE);
-		gtk_scale_set_draw_value(GTK_SCALE(obj), FALSE);
-		gtk_range_set_value(GTK_RANGE(obj), value);
-		g_signal_connect(obj, "value-changed", G_CALLBACK(obj_dict_scale_value_changed), NULL);
-		gtk_widget_set_sensitive(obj, CANOPEN_IS_WRITABLE(this->obj->obj.permissions));
-		gtk_container_add(GTK_CONTAINER(row), obj);
+		if (CANOPEN_IS_WRITABLE(this->obj->obj.permissions)) {
+			GtkWidget *obj = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL,
+					this->obj->min.value_int, this->obj->max.value_int, 1);
+			this->scale = obj;
+			gtk_widget_set_hexpand(obj, TRUE);
+			gtk_scale_set_draw_value(GTK_SCALE(obj), FALSE);
+			gtk_range_set_value(GTK_RANGE(obj), value);
+				g_signal_connect(obj, "value-changed", G_CALLBACK(obj_dict_scale_value_changed), NULL);
+			gtk_container_add(GTK_CONTAINER(row), obj);
 
-		obj = gtk_spin_button_new_with_range(this->obj->min.value_int, this->obj->max.value_int, 1);
-		this->spin_button = obj;
-		gtk_spin_button_set_value(GTK_SPIN_BUTTON(obj), value);
-		gtk_widget_set_sensitive(obj, CANOPEN_IS_WRITABLE(this->obj->obj.permissions));
-		g_signal_connect(obj, "value-changed", G_CALLBACK(obj_dict_spin_button_value_changed), NULL);
-		gtk_container_add(GTK_CONTAINER(row), obj);
+			obj = gtk_spin_button_new_with_range(this->obj->min.value_int, this->obj->max.value_int, 1);
+			this->spin_button = obj;
+			gtk_spin_button_set_value(GTK_SPIN_BUTTON(obj), value);
+			g_signal_connect(obj, "value-changed", G_CALLBACK(obj_dict_spin_button_value_changed), NULL);
+			gtk_container_add(GTK_CONTAINER(row), obj);
+		}
+		else {
+			// read only objects
+			char str[1024];
+			sprintf(str, "Value: %i", value);
+			GtkWidget *obj = gtk_label_new(str);
+			gtk_widget_set_hexpand(obj, true);
+			gtk_container_add(GTK_CONTAINER(row), obj);
+			this->label = obj;
+		}
 	}
 	else if (CANOPEN_IS_ARRAY(this->obj->obj.type)) {
 
@@ -155,9 +169,10 @@ static void par_expand(obj_dict_par_st *this) {
 			gtk_container_add(GTK_CONTAINER(row), obj);
 
 			int32_t value = 0;
-			if (!errmessage_shown &&
+			if (CANOPEN_IS_READABLE(this->obj->obj.permissions) &&
+					!errmessage_shown &&
 					uv_canopen_sdo_read(db_get_nodeid(&dev.db), this->obj->obj.main_index,
-					i + 1, CANOPEN_TYPE_LEN(this->obj->obj.type), &value) != ERR_NONE) {
+							i + 1, CANOPEN_TYPE_LEN(this->obj->obj.type), &value) != ERR_NONE) {
 				// reading the value from the device failed
 				GtkWidget *d;
 				if (gtk_switch_get_state(GTK_SWITCH(dev.ui.can_switch))) {
@@ -199,6 +214,39 @@ static void par_expand(obj_dict_par_st *this) {
 			gtk_container_add(GTK_CONTAINER(this->gobject), row);
 
 		}
+	}
+	else if (CANOPEN_IS_STRING(this->obj->obj.type)) {
+		char str[1024] = { 0 };
+		// read the value from device
+
+		if (CANOPEN_IS_READABLE(this->obj->obj.permissions) &&
+				uv_canopen_sdo_read(db_get_nodeid(&dev.db), this->obj->obj.main_index,
+						this->obj->obj.sub_index, this->obj->array_max_size.value_int, str)) {
+			// reading failed, show the error message
+			GtkWidget *d;
+			if (gtk_switch_get_state(GTK_SWITCH(dev.ui.can_switch))) {
+				d = gtk_message_dialog_new(GTK_WINDOW(dev.ui.window), 0,
+						GTK_MESSAGE_WARNING, GTK_BUTTONS_OK, "Couldn't read the object value from the device. "
+								"Check that the device is connected and powered properly.");
+			}
+			else {
+				d = gtk_message_dialog_new(GTK_WINDOW(dev.ui.window), 0,
+						GTK_MESSAGE_WARNING, GTK_BUTTONS_OK, "Couldn't read the object value from the device "
+								"because the CAN-USB adapter is not connected.");
+			}
+			gtk_dialog_run(GTK_DIALOG(d));
+			gtk_widget_destroy(GTK_WIDGET(d));
+		}
+		GtkWidget *obj = gtk_entry_new();
+		this->text_entry = GTK_WIDGET(obj);
+		gtk_entry_set_text(GTK_ENTRY(obj), str);
+		g_signal_connect(obj, "activate", G_CALLBACK(obj_dict_text_entry_activated), this);
+		gtk_container_add(GTK_CONTAINER(row), obj);
+
+		obj = gtk_button_new_with_label("Update");
+		this->text_button = obj;
+		g_signal_connect(obj, "clicked", G_CALLBACK(obj_dict_text_button_clicked), this);
+		gtk_container_add(GTK_CONTAINER(row), obj);
 	}
 	else {
 		// unknown data type
@@ -277,6 +325,21 @@ static void obj_dict_spin_button_value_changed(GtkSpinButton *spin_button, gpoin
 }
 
 
+static void obj_dict_text_entry_activated(GtkEntry *entry, gpointer user_data) {
+	obj_dict_par_st *par = &this->obj_dict_params[this->selected_par];
+	obj_dict_text_button_clicked(GTK_BUTTON(par->text_button), par);
+}
+
+static void obj_dict_text_button_clicked(GtkButton *button, gpointer user_data) {
+	db_obj_st *obj = db_get_obj(&dev.db, this->selected_par);
+	obj_dict_par_st *par = &this->obj_dict_params[this->selected_par];
+
+	const char *value = gtk_entry_get_text(GTK_ENTRY(par->text_entry));
+	uv_canopen_sdo_write(db_get_nodeid(&dev.db), obj->obj.main_index, obj->obj.sub_index,
+			uv_mini(obj->array_max_size.value_int, strlen(value) + 1), (void*) value);
+}
+
+
 static void obj_dict_par_selected (GtkListBox *box, GtkListBoxRow *row, gpointer user_data) {
 	if (this->selected_par == gtk_list_box_row_get_index(row)) {
 		par_compress(&this->obj_dict_params[this->selected_par]);
@@ -311,7 +374,9 @@ static void revert(GtkButton *button, gpointer user_data) {
 
 		uv_canopen_nmt_master_reset_node(db_get_nodeid(&dev.db));
 
-		par_compress(&this->obj_dict_params[this->selected_par]);
+		if (this->selected_par >= 0) {
+			par_compress(&this->obj_dict_params[this->selected_par]);
+		}
 	}
 }
 
