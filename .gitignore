@@ -5,3 +5,4 @@ uvcan/uvcan.exe
 uvcan/install
 uvcan/src/ui/gresources.c
 uvcan/src/ui/gresources.h
+uvcan/*.zip
