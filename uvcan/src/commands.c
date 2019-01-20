@@ -163,7 +163,9 @@ commands_st commands[] = {
 				.cmd = "loadmedia",
 				.str = "Loads a media file with UV media download protocol. Note that the media file is loaded\n"
 						"with the same file path as what is given to this command. In most cases this means\n"
-						"that the media should be in the same directory where uvcan is run or in a subdirectory.",
+						"that the media should be in the same directory where uvcan is run or in a subdirectory.\n"
+						"If a directory is given to this command, all recognized media files will be loaded from \n"
+						"that directory. Recursive loading from subdirectories is not supported.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_loadmedia
 		},

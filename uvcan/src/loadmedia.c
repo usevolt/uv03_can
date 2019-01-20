@@ -19,14 +19,19 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <dirent.h>
 #include "loadmedia.h"
 #include "main.h"
 
 #define this (&dev.loadmedia)
 
 
-void loadmedia_step(void *dev);
-
+static void loadmedia_step(void *dev);
+static void load(char *filename);
+static bool is_known_mediafile(char *filename);
 
 
 
@@ -48,15 +53,26 @@ bool cmd_loadmedia(const char *arg) {
 }
 
 
+static bool is_known_mediafile(char *filename) {
+	bool ret = false;
+	if (strstr(filename, ".jpg") ||
+			strstr(filename, ".JPG") ||
+			strstr(filename, ".jpeg") ||
+			strstr(filename, ".JPEG") ||
+			strstr(filename, ".png") ||
+			strstr(filename, ".PNG")) {
+		ret = true;
+	}
+	return ret;
+}
 
 
-
-void loadmedia_step(void *ptr) {
-	FILE *fptr = fopen(this->filename, "rb");
+static void load(char *filename) {
+	FILE *fptr = fopen(filename, "rb");
 
 	if (fptr == NULL) {
 		// failed to open the file, exit this task
-		printf("Failed to open media file %s.\n", this->filename);
+		printf("Failed to open media file %s.\n", filename);
 		fflush(stdout);
 	}
 	else {
@@ -67,11 +83,11 @@ void loadmedia_step(void *ptr) {
 		rewind(fptr);
 		bool success = true;
 		uint8_t data[size];
-		printf("Opened file %s. Size: %i bytes.\n", this->filename, size);
+		printf("Opened file %s. Size: %i bytes.\n", filename, size);
 		size_t ret = fread(data, size, 1, fptr);
 		if (!ret) {
 			printf("ERROR: Reading media file '%s' failed. "
-					"Firmware download cancelled.\n", this->filename);
+					"Firmware download cancelled.\n", filename);
 			fflush(stdout);
 		}
 		else {
@@ -85,7 +101,7 @@ void loadmedia_step(void *ptr) {
 			else {
 				// filename
 				uv_errors_e e = uv_canopen_sdo_write(db_get_nodeid(&dev.db), CONFIG_CANOPEN_EXMEM_FILENAME_INDEX,
-						0, strlen(this->filename) + 1, this->filename);
+						0, strlen(filename) + 1, filename);
 
 				// filesize
 				e |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), CONFIG_CANOPEN_EXMEM_FILESIZE_INDEX,
@@ -131,9 +147,12 @@ void loadmedia_step(void *ptr) {
 						}
 
 						addr += len;
-						printf("Loaded %u / %u bytes (%u %%)\n",
+						printf("\33[2K\r");
+						printf("Loaded %u / %u bytes (%u %%)",
 								addr, size, 100 * addr / size);
+						fflush(stdout);
 					}
+					printf("\n");
 				}
 				else {
 					printf("Errors (%i) while downloading the media settings. Media download discarded.\n", e);
@@ -147,8 +166,40 @@ void loadmedia_step(void *ptr) {
 
 		fclose(fptr);
 		if (success) {
-			printf("Media file %s loaded\n", this->filename);
+			printf("Media file %s loaded\n", filename);
 			fflush(stdout);
 		}
 	}
+}
+
+
+
+static void loadmedia_step(void *ptr) {
+	struct stat path_stat;
+	stat(this->filename, &path_stat);
+	if (S_ISDIR(path_stat.st_mode)) {
+		DIR *dirp;
+		dirp = opendir(this->filename);
+		while(dirp) {
+			struct dirent *d;
+			if ((d = readdir(dirp)) != NULL) {
+				if (is_known_mediafile(d->d_name)) {
+					char str[1024];
+					sprintf(str, "%s/%s", this->filename, d->d_name);
+					load(str);
+				}
+			}
+			else {
+				closedir(dirp);
+				break;
+			}
+		}
+	}
+	else if (S_ISREG(path_stat.st_mode)) {
+		load(this->filename);
+	}
+	else {
+		printf("Unknown file '%s' given to *loadmedia*\n", this->filename);
+	}
+
 }
