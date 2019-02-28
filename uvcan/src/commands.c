@@ -141,6 +141,12 @@ commands_st commands[] = {
 				.callback = &cmd_terminal
 		},
 		{
+				.cmd = "uwterminal",
+				.str = "Communicates with the uw device chosen with **nodeid** via deprecated UW terminal protocol.",
+				.args = ARG_NONE,
+				.callback = &cmd_uwterminal
+		},
+		{
 				.cmd = "db",
 				.str = "Provides uvcan a CANOpen device database file as an argument.",
 				.args = ARG_REQUIRE,

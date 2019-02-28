@@ -111,8 +111,24 @@ typedef struct {
 	int32_t value;
 } db_emcy_st;
 
+typedef enum {
+	DB_DEFINE_INT = 0,
+	DB_DEFINE_ENUM
+} db_define_types_e;
+
 /// @brief: Additional database defines have the same variables as emcy objects
-typedef db_emcy_st db_define_st;
+typedef struct {
+	char name[128 - sizeof(int32_t)];
+	db_define_types_e type;
+	union {
+		int32_t value;
+		struct {
+			// null-terminated array of pointer to strings. Used for enum type defines
+			char (*childs)[128];
+			int32_t child_count;
+		};
+	};
+} db_define_st;
 
 /// @brief: Database RXPDO structure
 typedef struct {

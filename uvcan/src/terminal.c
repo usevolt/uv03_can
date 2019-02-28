@@ -24,6 +24,14 @@
 
 #define this (&dev)
 
+#define UW_TERMINAL_CAN_PREFIX		(0x1556 << 16)
+
+
+
+static char rx_buffer[1024];
+static uv_ring_buffer_st rx;
+static bool uw_terminal = false;
+
 
 static void command_step(void *ptr);
 static void command_tx(void *ptr);
@@ -39,20 +47,34 @@ bool cmd_terminal(const char *arg) {
 }
 
 
-static char rx_buffer[1024];
-static uv_ring_buffer_st rx;
+bool cmd_uwterminal(const char *arg) {
+	uw_terminal = true;
+	cmd_terminal(arg);
+
+	return true;
+}
 
 
 static void can_callb(void *ptr, uv_can_message_st *msg) {
-	if ((msg->type == CAN_STD) &&
-			(msg->id == (CANOPEN_SDO_RESPONSE_ID + db_get_nodeid(&dev.db))) &&
-			(msg->data_8bit[0] == 0x42) &&
-			(msg->data_length > 4) &&
-			(msg->data_8bit[1] == UV_TERMINAL_CAN_INDEX % 256) &&
-			(msg->data_8bit[2] == UV_TERMINAL_CAN_INDEX / 256) &&
-			(msg->data_8bit[3] == UV_TERMINAL_CAN_SUBINDEX)) {
-		for (int i = 4; i < msg->data_length; i++) {
-			uv_ring_buffer_push(&rx, &msg->data_8bit[i]);
+	if (uw_terminal) {
+		if ((msg->type == CAN_EXT) &&
+				(msg->id == (UW_TERMINAL_CAN_PREFIX + db_get_nodeid(&dev.db)))) {
+			for (int i = 0; i < msg->data_length; i++) {
+				uv_ring_buffer_push(&rx, &msg->data_8bit[i]);
+			}
+		}
+	}
+	else {
+		if ((msg->type == CAN_STD) &&
+				(msg->id == (CANOPEN_SDO_RESPONSE_ID + db_get_nodeid(&dev.db))) &&
+				(msg->data_8bit[0] == 0x42) &&
+				(msg->data_length > 4) &&
+				(msg->data_8bit[1] == UV_TERMINAL_CAN_INDEX % 256) &&
+				(msg->data_8bit[2] == UV_TERMINAL_CAN_INDEX / 256) &&
+				(msg->data_8bit[3] == UV_TERMINAL_CAN_SUBINDEX)) {
+			for (int i = 4; i < msg->data_length; i++) {
+				uv_ring_buffer_push(&rx, &msg->data_8bit[i]);
+			}
 		}
 	}
 }
@@ -66,23 +88,34 @@ static void command_tx(void *ptr) {
 
 			uint8_t len = 0;
 			uv_can_msg_st msg;
-			msg.type = CAN_STD;
-			msg.id = UV_TERMINAL_CAN_RX_ID + db_get_nodeid(&dev.db);
-			msg.data_8bit[0] = 0x22;
-			msg.data_8bit[1] = UV_TERMINAL_CAN_INDEX % 256;
-			msg.data_8bit[2] = UV_TERMINAL_CAN_INDEX / 256;
-			msg.data_8bit[3] = UV_TERMINAL_CAN_SUBINDEX;
-			for (int i = 0; i < strlen(str); i++) {
-				msg.data_8bit[4 + len++] = str[i];
-				if (len == 4) {
-					msg.data_length = 8;
+			if (uw_terminal) {
+				msg.type = CAN_EXT;
+				msg.id = UW_TERMINAL_CAN_PREFIX + db_get_nodeid(&dev.db);
+				msg.data_length = 1;
+				for (uint8_t i = 0; i < strlen(str); i++) {
+					msg.data_8bit[0] = str[i];
 					uv_can_send(this->can_channel, &msg);
-					len = 0;
 				}
 			}
-			if (len != 0) {
-				msg.data_length = 4 + len;
-				uv_can_send(this->can_channel, &msg);
+			else {
+				msg.type = CAN_STD;
+				msg.id = UV_TERMINAL_CAN_RX_ID + db_get_nodeid(&dev.db);
+				msg.data_8bit[0] = 0x22;
+				msg.data_8bit[1] = UV_TERMINAL_CAN_INDEX % 256;
+				msg.data_8bit[2] = UV_TERMINAL_CAN_INDEX / 256;
+				msg.data_8bit[3] = UV_TERMINAL_CAN_SUBINDEX;
+				for (int i = 0; i < strlen(str); i++) {
+					msg.data_8bit[4 + len++] = str[i];
+					if (len == 4) {
+						msg.data_length = 8;
+						uv_can_send(this->can_channel, &msg);
+						len = 0;
+					}
+				}
+				if (len != 0) {
+					msg.data_length = 4 + len;
+					uv_can_send(this->can_channel, &msg);
+				}
 			}
 		}
 

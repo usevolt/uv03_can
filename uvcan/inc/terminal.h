@@ -22,10 +22,15 @@
 
 #include <stdbool.h>
 
+
+
 /// @brief: Communicates with a device via terminal interface with usevolt SDO reply protocol.
 /// nodeID should be set with **nodeid** command prior to this one.
 bool cmd_terminal(const char *arg);
 
+
+/// @brief: Old terminal protocol, used nowadays only with uw_mb devices on some FM_6.x machines
+bool cmd_uwterminal(const char *arg);
 
 
 

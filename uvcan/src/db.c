@@ -70,10 +70,12 @@ dbvalue_st dbvalue_set_string(char *str, uint32_t str_len) {
 	for (uint32_t i = 0; i < uv_vector_size(&dev.db.defines); i++) {
 		db_define_st *d = uv_vector_at(&dev.db.defines, i);
 
-		if (strcmp(d->name, this.value_str) == 0) {
-			match = true;
-			this.value_int = d->value;
-			break;
+		if (d->type == DB_DEFINE_INT) {
+			if (strcmp(d->name, this.value_str) == 0) {
+				match = true;
+				this.value_int = d->value;
+				break;
+			}
 		}
 	}
 	if (!match) {
@@ -422,8 +424,29 @@ static bool parse_json(db_st *this, char *json) {
 						s++;
 					}
 					v = uv_jsonreader_find_child(d, "value", 1);
-					define.value = uv_jsonreader_get_int(v);
-					uv_vector_push_back(&this->defines, &define);
+					uv_json_types_e type = uv_jsonreader_get_type(v);
+					if (type == JSON_INT) {
+						define.type = DB_DEFINE_INT;
+						define.value = uv_jsonreader_get_int(v);
+						uv_vector_push_back(&this->defines, &define);
+					}
+					else if (type == JSON_ARRAY) {
+						define.type = DB_DEFINE_ENUM;
+						int32_t len = uv_jsonreader_array_get_size(v);
+						define.child_count = len + 1;
+						define.childs = malloc(128 * (len + 1));
+						for (int32_t i = 0; i < len; i++) {
+							char c[128];
+							uv_jsonreader_array_get_string(v, i, c, sizeof(c));
+							strcpy(define.childs[i], c);
+						}
+						strcpy(define.childs[define.child_count - 1], "COUNT");
+						uv_vector_push_back(&this->defines, &define);
+					}
+					else {
+						printf("*** ERROR *** DEFINES array had an illegal type of value. "
+								"Only integers and arrays are supported\n");
+					}
 				}
 				else {
 					printf("*** ERROR *** DEFINES array member was not an object at index %u\n", i);
@@ -936,6 +959,12 @@ static void free_child(db_array_child_st *child) {
 
 void db_deinit(void) {
 	is_loaded = false;
+	for (int i = 0; i < db_get_define_count(this); i++) {
+		db_define_st *d = db_get_define(this, i);
+		if (d->type == DB_DEFINE_ENUM) {
+			free(d->childs);
+		}
+	}
 	for (int i = 0; i < db_get_object_count(this); i++) {
 		db_obj_st *obj = db_get_obj(this, i);
 		if (CANOPEN_IS_ARRAY(obj->obj.type)) {

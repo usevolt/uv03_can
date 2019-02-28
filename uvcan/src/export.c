@@ -84,15 +84,41 @@ bool get_header_objs(char *dest, const char *filename) {
 		db_define_st *define = db_get_define(&dev.db, i);
 
 		char line[1024];
-		line[0] = '\0';
-		strcat(line, "#define ");
-		strcat(line, nameupper);
-		strcat(line, "_");
-		strcat(line, define->name);
-		strcat(line, "            ");
-		sprintf(&line[strlen(line)], "%i\n\n", define->value);
-
-		strcat(dest, line);
+		if (define->type == DB_DEFINE_INT) {
+			line[0] = '\0';
+			strcat(line, "#define ");
+			strcat(line, nameupper);
+			strcat(line, "_");
+			strcat(line, define->name);
+			strcat(line, "            ");
+			sprintf(&line[strlen(line)], "%i\n\n", define->value);
+			strcat(dest, line);
+		}
+		else if (define->type == DB_DEFINE_ENUM) {
+			sprintf(line, "typedef enum {\n");
+			strcat(dest, line);
+			for (int32_t i = 0; i < define->child_count; i++) {
+				sprintf(line, "    %s_%s_%s",
+						nameupper, define->name, define->childs[i]);
+				if (i == 0) {
+					strcat(line, " = 0");
+				}
+				if (i < define->child_count - 1) {
+					strcat(line, ",");
+				}
+				strcat(line, "\n");
+				strcat(dest, line);
+			}
+			char n[128] = {};
+			for (int i = 0; i < strlen(define->name); i++) {
+					n[i] = tolower(define->name[i]);
+			}
+			sprintf(line, "} %s_%s_e;\n\n", name, n);
+			strcat(dest, line);
+		}
+		else {
+			printf("ERROR in export: Unknown define type\n");
+		}
 	}
 	strcat(dest, "\n\n\n\n");
 
