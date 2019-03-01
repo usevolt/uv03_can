@@ -35,7 +35,7 @@ bool get_header_objs(char *dest, const char *filename) {
 	strcpy(dest, "\n\n\n/// @file: UVCAN generated header file describing the object dictionary\n"
 			"/// of this device. DO NOT EDIT DIRECTLY\n\n");
 	strcat(dest, "#ifndef ");
-	char name[1024];
+	char name[1024] = {};
 	strcpy(name, filename);
 	char *basenam = basename(name);
 	strcat(dest, basenam);
@@ -46,14 +46,16 @@ bool get_header_objs(char *dest, const char *filename) {
 			"#include <string.h>\n\n");
 
 	// create symbol for node id
-	char nameupper[1024];
-	nameupper[0] = '\0';
+	char nameupper[1024] = {};
+	char namelower[1024] = {};
 	strcat(dest, "#define ");
 	for (int i = 0; i < strlen(db_get_dev_name(&dev.db)); i++) {
 		char c[2];
 		c[0] = toupper(db_get_dev_name(&dev.db)[i]);
 		c[1] = '\0';
 		strcat(nameupper, c);
+		c[0] = tolower(db_get_dev_name(&dev.db)[i]);
+		strcat(namelower, c);
 	}
 	strcat(dest, nameupper);
 	strcat(dest, "_NODEID");
@@ -113,7 +115,8 @@ bool get_header_objs(char *dest, const char *filename) {
 			for (int i = 0; i < strlen(define->name); i++) {
 					n[i] = tolower(define->name[i]);
 			}
-			sprintf(line, "} %s_%s_e;\n\n", name, n);
+
+			sprintf(line, "} %s_%s_e;\n\n", namelower, n);
 			strcat(dest, line);
 		}
 		else {

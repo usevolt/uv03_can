@@ -77,6 +77,33 @@ dbvalue_st dbvalue_set_string(char *str, uint32_t str_len) {
 				break;
 			}
 		}
+		else if (d->type == DB_DEFINE_ENUM) {
+			// check if the dbvalue string starts with the same substring as d
+			if (strstr(this.value_str, d->name) == this.value_str) {
+				if (strlen(this.value_str) < (strlen(d->name) + 1)) {
+					printf("**** ERROR **** Define with ENUM type not found with a name of '%s'\n",
+							this.value_str);
+				}
+				else {
+					bool m = false;
+					for (int32_t i = 0; i < d->child_count; i++) {
+						char *str = this.value_str + strlen(d->name) + 1;
+						if (strcmp(str, d->childs[i]) == 0) {
+							this.value_int = i;
+							m = true;
+							break;
+						}
+					}
+					if (!m) {
+						printf("**** ERROR **** No ENUM define found with name of '%s'\n",
+								this.value_str);
+					}
+					else {
+						match = true;
+					}
+				}
+			}
+		}
 	}
 	if (!match) {
 		this.value_int = 0;
