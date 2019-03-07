@@ -137,18 +137,22 @@ bool get_header_objs(char *dest, const char *filename) {
 		db_obj_st *obj = db_get_obj(&dev.db, i);
 		// *name* contains the object name in upper case letters
 		char name[1024];
+		char namel[1024];
 		int j = 0;
 		while (obj->name[j] != '\0') {
 			if (isspace(obj->name[j])) {
 				name[j] = '_';
+				namel[j] = '_';
 			}
 			else {
 				name[j] = toupper(obj->name[j]);
+				namel[j] = tolower(obj->name[j]);
 			}
 			j++;
 		}
 		name[j] = '\0';
-		char line[1024];
+		namel[j] = '\0';
+		char line[65536];
 		strcpy(line, "#define ");
 		strcat(line, nameupper);
 		strcat(line, "_");
@@ -213,9 +217,23 @@ bool get_header_objs(char *dest, const char *filename) {
 				strcat(line, "_INDEX            ");
 				sprintf(&line[strlen(line)], "%u\n", index + 1);
 
+				sprintf(line + strlen(line), "#define %s_%s_%s_MIN            %i\n",
+						nameupper, name, childname, child->min.value_int);
+
+				sprintf(line + strlen(line), "#define %s_%s_%s_MAX            %i\n",
+						nameupper, name, childname, child->max.value_int);
+
+				sprintf(line + strlen(line), "#define %s_%s_%s_DEFAULT            %i\n",
+						nameupper, name, childname, child->def.value_int);
+
 				index++;
 				child = child->next_sibling;
 			}
+			char type[128];
+			db_type_to_str(obj->obj.type, type);
+			sprintf(line + strlen(line), "extern const %s_TYPE %s_%s_defaults[%u];\n",
+					type, namelower, namel, obj->obj.array_max_size);
+
 		}
 		else if (CANOPEN_IS_INTEGER(obj->obj.type)) {
 			sprintf(&line[strlen(line)], "#define %s_%s_VALUE            %i\n",
@@ -445,6 +463,38 @@ bool get_source_objs(char *dest, const char *filename) {
 			"    return sizeof(obj_dict) / sizeof(canopen_object_st);\n"
 			"}\n"
 			"\n");
+
+
+	// array type object initializers
+	for (int i = 0; i < db_get_object_count(&dev.db); i++) {
+		db_obj_st *obj = db_get_obj(&dev.db, i);
+		char line[1024] = {};
+		char type[128];
+		char namel[1024] = {};
+		for (int i = 0; i < strlen(obj->name); i++) {
+			if (isspace(obj->name[i])) {
+				namel[i] = '_';
+			}
+			else {
+				namel[i] = tolower(obj->name[i]);
+			}
+		}
+		db_type_to_str(obj->obj.type, type);
+		if (CANOPEN_IS_ARRAY(obj->obj.type)) {
+			sprintf(line + strlen(line), "const %s_TYPE %s_%s_defaults[%u] = {\n",
+					type, name, namel, obj->obj.array_max_size);
+
+			db_array_child_st *child = obj->child_ptr;
+			while (child != NULL) {
+				sprintf(line + strlen(line), "    %i,\n",
+						child->def.value_int);
+				child = child->next_sibling;
+			}
+			strcat(line, "}\n\n");
+		}
+		strcat(dest, line);
+	}
+
 
 	return true;
 }
