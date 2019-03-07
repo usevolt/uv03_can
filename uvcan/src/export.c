@@ -97,7 +97,12 @@ bool get_header_objs(char *dest, const char *filename) {
 			strcat(dest, line);
 		}
 		else if (define->type == DB_DEFINE_ENUM) {
-			sprintf(line, "typedef enum {\n");
+			if (define->data_type == CANOPEN_UNDEFINED) {
+				sprintf(line, "typedef enum {\n");
+			}
+			else {
+				sprintf(line, "enum {\n");
+			}
 			strcat(dest, line);
 			for (int32_t i = 0; i < define->child_count; i++) {
 				sprintf(line, "    %s_%s_%s",
@@ -116,7 +121,15 @@ bool get_header_objs(char *dest, const char *filename) {
 					n[i] = tolower(define->name[i]);
 			}
 
-			sprintf(line, "} %s_%s_e;\n\n", namelower, n);
+			if (define->data_type == CANOPEN_UNDEFINED) {
+				sprintf(line, "} %s_%s_e;\n\n", namelower, n);
+			}
+			else {
+				char str[128];
+				db_type_to_stdint(define->data_type, str);
+				sprintf(line, "};\ntypedef %s %s_%s_e;\n\n",
+						str, namelower, n);
+			}
 			strcat(dest, line);
 		}
 		else {
@@ -214,7 +227,7 @@ bool get_header_objs(char *dest, const char *filename) {
 					c++;
 				}
 				strcat(line, childname);
-				strcat(line, "_INDEX            ");
+				strcat(line, "_SUBINDEX            ");
 				sprintf(&line[strlen(line)], "%u\n", index + 1);
 
 				sprintf(line + strlen(line), "#define %s_%s_%s_MIN            %i\n",

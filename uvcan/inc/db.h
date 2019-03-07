@@ -125,6 +125,7 @@ typedef struct {
 		struct {
 			// null-terminated array of pointer to strings. Used for enum type defines
 			char (*childs)[128];
+			canopen_object_type_e data_type;
 			int32_t child_count;
 		};
 	};

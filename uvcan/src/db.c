@@ -505,6 +505,18 @@ static bool parse_json(db_st *this, char *json) {
 							strcpy(define.childs[i], c);
 						}
 						strcpy(define.childs[define.child_count - 1], "COUNT");
+
+						// in case of array, search for a key "type" which specifies
+						// the data type of the enum
+						v = uv_jsonreader_find_child(d, "type", 1);
+						if (v != NULL) {
+							define.data_type = str_to_type(v);
+						}
+						else {
+							define.data_type = CANOPEN_UNDEFINED;
+						}
+
+
 						uv_vector_push_back(&this->defines, &define);
 					}
 					else {
