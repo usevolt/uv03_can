@@ -167,6 +167,43 @@ void db_type_to_str(canopen_object_type_e type, char *dest) {
 		strcpy(dest, "UNKNOWN");
 	}
 }
+void db_type_to_stdint(canopen_object_type_e type, char *dest) {
+	if (type == CANOPEN_UNSIGNED32) {
+		strcpy(dest, "uint32_t");
+	}
+	else if (type == CANOPEN_SIGNED32) {
+		strcpy(dest, "int32_t");
+	}
+	else if (type == CANOPEN_UNSIGNED16) {
+		strcpy(dest, "uint16_t");
+	}
+	else if (type == CANOPEN_SIGNED16) {
+		strcpy(dest, "int16_t");
+	}
+	else if (type == CANOPEN_UNSIGNED8) {
+		strcpy(dest, "uint8_t");
+	}
+	else if (type == CANOPEN_SIGNED8) {
+		strcpy(dest, "int8_t");
+	}
+	else if (type == CANOPEN_ARRAY32) {
+		strcpy(dest, "uint32_t");
+	}
+	else if (type == CANOPEN_ARRAY16) {
+		strcpy(dest, "uint16_t");
+	}
+	else if (type == CANOPEN_ARRAY8) {
+		strcpy(dest, "uint8_t");
+	}
+	else if (type == CANOPEN_STRING) {
+		strcpy(dest, "char *");
+	}
+	else {
+		strcpy(dest, "void");
+	}
+}
+
+
 void db_transmission_to_str(canopen_pdo_transmission_types_e transmission, char *dest) {
 	if (transmission == CANOPEN_PDO_TRANSMISSION_ASYNC) {
 		strcpy(dest, "CANOPEN_PDO_TRANSMISSION_ASYNC");

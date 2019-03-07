@@ -230,8 +230,8 @@ bool get_header_objs(char *dest, const char *filename) {
 				child = child->next_sibling;
 			}
 			char type[128];
-			db_type_to_str(obj->obj.type, type);
-			sprintf(line + strlen(line), "extern const %s_TYPE %s_%s_defaults[%u];\n",
+			db_type_to_stdint(obj->obj.type, type);
+			sprintf(line + strlen(line), "extern const %s %s_%s_defaults[%u];\n",
 					type, namelower, namel, obj->obj.array_max_size);
 
 		}
@@ -479,18 +479,22 @@ bool get_source_objs(char *dest, const char *filename) {
 				namel[i] = tolower(obj->name[i]);
 			}
 		}
-		db_type_to_str(obj->obj.type, type);
+		db_type_to_stdint(obj->obj.type, type);
 		if (CANOPEN_IS_ARRAY(obj->obj.type)) {
-			sprintf(line + strlen(line), "const %s_TYPE %s_%s_defaults[%u] = {\n",
+			sprintf(line + strlen(line), "const %s %s_%s_defaults[%u] = {\n",
 					type, name, namel, obj->obj.array_max_size);
 
 			db_array_child_st *child = obj->child_ptr;
 			while (child != NULL) {
-				sprintf(line + strlen(line), "    %i,\n",
+				sprintf(line + strlen(line), "    %i",
 						child->def.value_int);
+				if (child->next_sibling != NULL) {
+					strcat(line, ",");
+				}
+				strcat(line, "\n");
 				child = child->next_sibling;
 			}
-			strcat(line, "}\n\n");
+			strcat(line, "};\n\n");
 		}
 		strcat(dest, line);
 	}

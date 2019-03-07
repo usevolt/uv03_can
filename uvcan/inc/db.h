@@ -238,6 +238,7 @@ static inline db_txpdo_st *db_get_txpdo(db_st *this, uint16_t index) {
 void db_permission_to_str(canopen_permissions_e permissions, char *dest);
 void db_permission_to_longstr(canopen_permissions_e permissions, char *dest);
 void db_type_to_str(canopen_object_type_e type, char *dest);
+void db_type_to_stdint(canopen_object_type_e type, char *dest);
 void db_transmission_to_str(canopen_pdo_transmission_types_e transmission, char *dest);
 
 /// @brief: Deinitializes the database and frees all allocated memory
