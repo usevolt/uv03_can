@@ -481,8 +481,12 @@ bool get_source_objs(char *dest, const char *filename) {
 		}
 		db_type_to_stdint(obj->obj.type, type);
 		if (CANOPEN_IS_ARRAY(obj->obj.type)) {
+			char devname[1024] = {};
+			for (int i = 0; i < strlen(db_get_dev_name(&dev.db)); i++) {
+				devname[i] = tolower(db_get_dev_name(&dev.db)[i]);
+			}
 			sprintf(line + strlen(line), "const %s %s_%s_defaults[%u] = {\n",
-					type, name, namel, obj->obj.array_max_size);
+					type, devname, namel, obj->obj.array_max_size);
 
 			db_array_child_st *child = obj->child_ptr;
 			while (child != NULL) {
