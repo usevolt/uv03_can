@@ -45,6 +45,9 @@ bool cmd_loadmedia(const char *arg) {
 	else {
 		printf("Media file %s selected\n", arg);
 		strcpy(this->filename, arg);
+		if (this->filename[strlen(arg) - 1] == '/') {
+			this->filename[strlen(arg) - 1] = '\0';
+		}
 		add_task(loadmedia_step);
 		uv_can_set_up();
 	}
