@@ -169,6 +169,10 @@ typedef struct {
 	db_txpdo_st txpdo_buffer[128];
 	uv_vector_st txpdos;
 
+	uint32_t vendor_id;
+	uint32_t product_code;
+	uint32_t revision_number;
+
 } db_st;
 
 /// @brief: Database command provides uvcan with CANOpen device database file.
@@ -198,6 +202,18 @@ static inline uint8_t db_get_nodeid(db_st *this) {
 
 static inline void db_set_nodeid(db_st *this, uint8_t value) {
 	this->node_id = value;
+}
+
+static inline uint32_t db_get_vendor_id(db_st *this) {
+	return this->vendor_id;
+}
+
+static inline uint32_t db_get_product_code(db_st *this) {
+	return this->product_code;
+}
+
+static inline uint32_t db_get_revision_number(db_st *this) {
+	return this->revision_number;
 }
 
 static inline char *db_get_dev_name(db_st *this) {

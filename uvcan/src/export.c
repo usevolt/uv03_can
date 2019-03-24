@@ -61,6 +61,18 @@ bool get_header_objs(char *dest, const char *filename) {
 	strcat(dest, "_NODEID");
 	sprintf(&dest[strlen(dest)], "           0x%x\n\n\n\n", db_get_nodeid(&dev.db));
 
+	// create symbol for vendor id
+	sprintf(dest + strlen(dest), "#define %s_VENDOR_ID    0x%x\n\n\n",
+			nameupper, db_get_vendor_id(&dev.db));
+
+	// for product code
+	sprintf(dest + strlen(dest), "#define %s_PRODUCT_CODE    0x%x\n\n\n",
+			nameupper, db_get_product_code(&dev.db));
+
+	// for revision number
+	sprintf(dest + strlen(dest), "#define %s_REVISION_NUMBER    0x%x\n\n\n",
+			nameupper, db_get_revision_number(&dev.db));
+
 	// create symbols for EMCY messages
 	strcat(dest, "enum {\n");
 	for (int i = 0; i < db_get_emcy_count(&dev.db); i++) {
@@ -276,7 +288,6 @@ bool get_header_objs(char *dest, const char *filename) {
 }
 
 bool get_source_objs(char *dest, const char *filename) {
-	// create symbol for node id
 	char nameupper[1024] = { '\0' };
 	char namelower[1024] = { '\0' };
 	for (int i = 0; i < strlen(db_get_dev_name(&dev.db)); i++) {
@@ -317,6 +328,7 @@ bool get_source_objs(char *dest, const char *filename) {
 				transmission,
 				(i == db_get_rxpdo_count(&dev.db) - 1) ? "" : ",");
 	}
+
 	strcat(dest, "    },\n"
 			"    .rxpdo_maps = {\n");
 	for (uint32_t i = 0; i < db_get_rxpdo_count(&dev.db); i++) {
@@ -346,6 +358,8 @@ bool get_source_objs(char *dest, const char *filename) {
 				"        }%s\n",
 				(i == db_get_rxpdo_count(&dev.db) - 1) ? "" : ",");
 	}
+
+
 	strcat(dest,"    },\n"
 			"    .txpdo_coms = {\n");
 	for (uint32_t i = 0; i < db_get_txpdo_count(&dev.db); i++) {
@@ -364,6 +378,7 @@ bool get_source_objs(char *dest, const char *filename) {
 				pdo->event_timer,
 				(i == db_get_txpdo_count(&dev.db) - 1) ? "" : ",");
 	}
+
 	strcat(dest, "    },\n"
 			"    .txpdo_maps = {\n");
 	for (uint32_t i = 0; i < db_get_txpdo_count(&dev.db); i++) {

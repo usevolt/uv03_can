@@ -437,6 +437,33 @@ static bool parse_json(db_st *this, char *json) {
 		printf("*** ERROR *** 'DEV' object not found in the JSON\n");
 	}
 
+	// vendor id
+	obj = uv_jsonreader_find_child(data, "VENDORID", 1);
+	if (obj != NULL) {
+		this->vendor_id = uv_jsonreader_get_int(obj);
+	}
+	else {
+		this->vendor_id = CANOPEN_USEVOLT_VENDOR_ID;
+	}
+
+	// product code
+	obj = uv_jsonreader_find_child(data, "PRODUCTCODE", 1);
+	if (obj != NULL) {
+		this->product_code = uv_jsonreader_get_int(obj);
+	}
+	else {
+		this->product_code = 0;
+	}
+
+	// revision number
+	obj = uv_jsonreader_find_child(data, "REVISIONNUMBER", 1);
+	if (obj != NULL) {
+		this->revision_number = uv_jsonreader_get_int(obj);
+	}
+	else {
+		this->revision_number = 0;
+	}
+
 	// nodeid
 	obj = uv_jsonreader_find_child(data, "NODEID", 1);
 	if (obj != NULL) {
