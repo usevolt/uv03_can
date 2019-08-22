@@ -209,7 +209,7 @@ static void can_callb(void * ptr, uv_can_msg_st *msg) {
 	if ((msg->id == CANOPEN_HEARTBEAT_ID + this->nodeid) &&
 			(msg->type == CAN_STD) &&
 			(msg->data_length == 1) &&
-			(msg->data_8bit[0] == CANOPEN_BOOT_UP)) {
+			((msg->data_8bit[0] == CANOPEN_BOOT_UP))) {
 		// canopen boot up message received, node found.
 		this->response = true;
 		printf("done\n");

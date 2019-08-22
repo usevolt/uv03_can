@@ -88,7 +88,15 @@ dbvalue_st dbvalue_set_string(char *str, uint32_t str_len) {
 					bool m = false;
 					for (int32_t i = 0; i < d->child_count; i++) {
 						char *str = this.value_str + strlen(d->name) + 1;
-						if (strcmp(str, d->childs[i]) == 0) {
+						char childname[256];
+						strcpy(childname, d->childs[i]);
+						// remove possible '=' characters from the name, as well as trailing space
+						char *c = strstr(childname, "=");
+						while (c != NULL && c != childname && (isspace(*c) || *c == '=')) {
+							*c = '\0';
+							c--;
+						}
+						if (strcmp(str, childname) == 0) {
 							this.value_int = i;
 							m = true;
 							break;
@@ -359,6 +367,7 @@ static bool pdo_parse_mappings(char *mappingsjson, canopen_pdo_mapping_parameter
 			else {
 				char name[128];
 				uv_jsonreader_get_string(data, name, sizeof(name));
+				str_to_upper_nonspace(name);
 				bool match = false;
 				for (int32_t i = 0; i < db_get_object_count(&dev.db); i++) {
 					db_obj_st *obj = db_get_obj(&dev.db, i);
@@ -579,6 +588,7 @@ static bool parse_json(db_st *this, char *json) {
 				char *data = uv_jsonreader_find_child(child, "name", 1);
 				CHECK_OBJ(data, "name", obj.name);
 				uv_jsonreader_get_string(data, obj.name, 128);
+				str_to_upper_nonspace(obj.name);
 
 				data = uv_jsonreader_find_child(child, "index", 1);
 				CHECK_OBJ(data, "index", obj.name);
@@ -745,6 +755,7 @@ static bool parse_json(db_st *this, char *json) {
 				data = uv_jsonreader_find_child(child, "dataptr", 1);
 				CHECK_OBJ(data, "dataptr", obj.name);
 				uv_jsonreader_get_string(data, obj.dataptr, sizeof(obj.dataptr));
+				str_to_upper_nonspace(obj.name);
 
 
 
@@ -778,6 +789,7 @@ static bool parse_json(db_st *this, char *json) {
 							data = uv_jsonreader_find_child(str, "name", 1);
 							CHECK_OBJ(data, "name", obj.name);
 							uv_jsonreader_get_string(data, thischild->name, sizeof(thischild->name));
+							str_to_upper_nonspace(thischild->name);
 
 							data = uv_jsonreader_find_child(str, "min", 1);
 							CHECK_OBJ(data, "min", obj.name);

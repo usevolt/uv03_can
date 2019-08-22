@@ -74,6 +74,8 @@ bool get_header_objs(char *dest, const char *filename) {
 			nameupper, db_get_revision_number(&dev.db));
 
 	// create symbols for EMCY messages
+	printf("Creating header symbols for EMCY messages\n");
+	fflush(stdout);
 	strcat(dest, "enum {\n");
 	for (int i = 0; i < db_get_emcy_count(&dev.db); i++) {
 		db_emcy_st *emcy = db_get_emcy(&dev.db, i);
@@ -94,6 +96,8 @@ bool get_header_objs(char *dest, const char *filename) {
 	strcat(dest, "\n\n\n\n");
 
 	// create symbols for defines
+	printf("Creating header symbols for defines\n");
+	fflush(stdout);
 	for (int i = 0; i < db_get_define_count(&dev.db); i++) {
 		db_define_st *define = db_get_define(&dev.db, i);
 
@@ -116,11 +120,23 @@ bool get_header_objs(char *dest, const char *filename) {
 				sprintf(line, "enum {\n");
 			}
 			strcat(dest, line);
+			bool value_given = false;
 			for (int32_t i = 0; i < define->child_count; i++) {
 				sprintf(line, "    %s_%s_%s",
 						nameupper, define->name, define->childs[i]);
-				if (i == 0) {
+				// only write the value is it is not defined
+				if (strstr(define->childs[i], "=") != NULL) {
+					value_given = true;
+				}
+				else if (i == 0) {
 					strcat(line, " = 0");
+				}
+				else {
+
+				}
+				if ((i == define->child_count - 1) &&
+						value_given) {
+					sprintf(line + strlen(line), " = %u", i);
 				}
 				if (i < define->child_count - 1) {
 					strcat(line, ",");
@@ -151,6 +167,8 @@ bool get_header_objs(char *dest, const char *filename) {
 	strcat(dest, "\n\n\n\n");
 
 	// create symbols for PDO counts
+	printf("Creating header symbols for PDO counts\n");
+	fflush(stdout);
 	sprintf(&dest[strlen(dest)], "#define %s_RXPDO_COUNT            %u\n",
 			nameupper, db_get_rxpdo_count(&dev.db));
 	sprintf(&dest[strlen(dest)], "#define %s_TXPDO_COUNT            %u\n\n\n",
@@ -158,6 +176,8 @@ bool get_header_objs(char *dest, const char *filename) {
 
 
 	// create header objects from object dictionary objects
+	printf("Creating header symbols from object dictionary entries\n");
+	fflush(stdout);
 	for (int i = 0; i < db_get_object_count(&dev.db); i++) {
 		db_obj_st *obj = db_get_obj(&dev.db, i);
 		// *name* contains the object name in upper case letters
@@ -242,14 +262,32 @@ bool get_header_objs(char *dest, const char *filename) {
 				strcat(line, "_SUBINDEX            ");
 				sprintf(&line[strlen(line)], "%u\n", index + 1);
 
-				sprintf(line + strlen(line), "#define %s_%s_%s_MIN            %i\n",
-						nameupper, name, childname, child->min.value_int);
+				sprintf(line + strlen(line), "#define %s_%s_%s_MIN            ",
+						nameupper, name, childname);
+				if (child->min.type == DBVALUE_STRING) {
+					sprintf(line + strlen(line), "%s_%s\n", nameupper, child->min.value_str);
+				}
+				else {
+					sprintf(line + strlen(line), "%i\n", child->min.value_int);
+				}
 
-				sprintf(line + strlen(line), "#define %s_%s_%s_MAX            %i\n",
-						nameupper, name, childname, child->max.value_int);
+				sprintf(line + strlen(line), "#define %s_%s_%s_MAX            ",
+						nameupper, name, childname);
+				if (child->max.type == DBVALUE_STRING) {
+					sprintf(line + strlen(line), "%s_%s\n", nameupper, child->max.value_str);
+				}
+				else {
+					sprintf(line + strlen(line), "%i\n", child->max.value_int);
+				}
 
-				sprintf(line + strlen(line), "#define %s_%s_%s_DEFAULT            %i\n",
-						nameupper, name, childname, child->def.value_int);
+				sprintf(line + strlen(line), "#define %s_%s_%s_DEFAULT            ",
+						nameupper, name, childname);
+				if (child->def.type == DBVALUE_STRING) {
+					sprintf(line + strlen(line), "%s_%s\n", nameupper, child->def.value_str);
+				}
+				else {
+					sprintf(line + strlen(line), "%i\n", child->def.value_int);
+				}
 
 				index++;
 				child = child->next_sibling;
@@ -279,6 +317,9 @@ bool get_header_objs(char *dest, const char *filename) {
 		strcat(dest, "\n\n");
 
 	}
+	printf("Object dictionary symbols created\n");
+	fflush(stdout);
+
 	strcat(dest, "\n/// @brief: returns the length of object dictionary in objects.\n"
 			"uint32_t obj_dict_len(void);\n\n");
 
@@ -311,6 +352,8 @@ bool get_source_objs(char *dest, const char *filename) {
 	strcat(dest, ".h\"\n\n\n");
 
 	// CANopen initializer structure
+	printf("Creating source objects for CANopen initializer structure\n");
+	fflush(stdout);
 	sprintf(&dest[strlen(dest)], "const uv_canopen_non_volatile_st %s_canopen_init = {\n"
 			"    .producer_heartbeat_time_ms = %u,\n"
 			"    .rxpdo_coms = {\n",
@@ -414,6 +457,8 @@ bool get_source_objs(char *dest, const char *filename) {
 
 
 	// Object dictionary
+	printf("Creating source objects for object dictionary\n");
+	fflush(stdout);
 	strcat(dest, "\n"
 			"\n"
 			"\n"
@@ -494,9 +539,11 @@ bool get_source_objs(char *dest, const char *filename) {
 
 
 	// array type object initializers
+	printf("Creating source objects for array initializers\n");
+	fflush(stdout);
 	for (int i = 0; i < db_get_object_count(&dev.db); i++) {
 		db_obj_st *obj = db_get_obj(&dev.db, i);
-		char line[1024] = {};
+		char line[65536] = {};
 		char type[128];
 		char namel[1024] = {};
 		for (int i = 0; i < strlen(obj->name); i++) {
@@ -518,8 +565,8 @@ bool get_source_objs(char *dest, const char *filename) {
 
 			db_array_child_st *child = obj->child_ptr;
 			while (child != NULL) {
-				sprintf(line + strlen(line), "    %i",
-						child->def.value_int);
+				sprintf(line + strlen(line), "    %s_%s_%s_DEFAULT",
+						nameupper, obj->name, child->name);
 				if (child->next_sibling != NULL) {
 					strcat(line, ",");
 				}
@@ -564,7 +611,7 @@ bool cmd_export(const char *arg) {
 			printf("Failed to open source file '%s'.\n", filename);
 		}
 		else {
-			char objs[65536] = "";
+			char objs[655360] = "";
 			get_header_objs(objs, arg);
 			fwrite(objs, sizeof(char), strlen(objs), headerfile);
 	//		printf("header objects: \n%s\n", objs);
