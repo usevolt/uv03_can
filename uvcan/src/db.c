@@ -417,7 +417,7 @@ static bool pdo_parse_mappings(char *mappingsjson, canopen_pdo_mapping_parameter
 				}
 				if (!match) {
 					printf("*** ERROR *** PDO mapping parameter refers to a parameter \"%s\" "
-							"which doesn exist in object dictionary\n", name);
+							"which doesn't exist in object dictionary\n", name);
 					ret = false;
 					return ret;
 				}

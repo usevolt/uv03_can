@@ -582,7 +582,18 @@ bool get_source_objs(char *dest, const char *filename) {
 	return true;
 }
 
+
+
 bool cmd_export(const char *arg) {
+	bool ret = false;
+	if (cmd_exporth(arg)) {
+		ret = cmd_exportc(arg);
+	}
+	return ret;
+}
+
+
+bool cmd_exporth(const char *arg) {
 	bool ret = false;
 
 	char filename[1024];
@@ -598,32 +609,12 @@ bool cmd_export(const char *arg) {
 		printf("Failed to open header file '%s'.\n", filename);
 	}
 	else {
-		strcpy(filename, dev.srcdest);
-		if (dev.srcdest[strlen(dev.srcdest) - 1] != '/') {
-			strcat(filename, "/");
-		}
-		strcat(filename, arg);
-		strcat(filename, ".c");
-		FILE *sourcefile = fopen(filename, "w");
+		char objs[655360] = "";
+		get_header_objs(objs, arg);
+		fwrite(objs, sizeof(char), strlen(objs), headerfile);
+//		printf("header objects: \n%s\n", objs);
 
-		if (sourcefile == NULL) {
-			// failed to open source file
-			printf("Failed to open source file '%s'.\n", filename);
-		}
-		else {
-			char objs[655360] = "";
-			get_header_objs(objs, arg);
-			fwrite(objs, sizeof(char), strlen(objs), headerfile);
-	//		printf("header objects: \n%s\n", objs);
-
-			get_source_objs(objs, arg);
-			fwrite(objs, sizeof(char), strlen(objs), sourcefile);
-	//		printf("source objects: \n %s\n", objs);
-
-
-			fclose(headerfile);
-			fclose(sourcefile);
-		}
+		fclose(headerfile);
 
 	}
 
@@ -632,4 +623,34 @@ bool cmd_export(const char *arg) {
 	return ret;
 }
 
+
+bool cmd_exportc(const char *arg) {
+	bool ret = false;
+
+	char filename[1024];
+	strcpy(filename, dev.srcdest);
+	if (dev.srcdest[strlen(dev.srcdest) - 1] != '/') {
+		strcat(filename, "/");
+	}
+	strcat(filename, arg);
+	strcat(filename, ".c");
+	FILE *sourcefile = fopen(filename, "w");
+
+	if (sourcefile == NULL) {
+		// failed to open source file
+		printf("Failed to open source file '%s'.\n", filename);
+	}
+	else {
+		char objs[655360] = "";
+
+		get_source_objs(objs, arg);
+		fwrite(objs, sizeof(char), strlen(objs), sourcefile);
+//		printf("source objects: \n %s\n", objs);
+
+		fclose(sourcefile);
+	}
+
+	ret = true;
+	return ret;
+}
 

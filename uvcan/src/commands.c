@@ -153,9 +153,22 @@ commands_st commands[] = {
 				.callback = &cmd_db
 		},
 		{
+				.cmd = "exporth",
+				.str = "Exports database given with --db to UV embedded header with a given name.\n"
+						"The header file will be rewritten if it exists.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_exporth
+		},
+		{
+				.cmd = "exportc",
+				.str = "Exports database given with --db to UV embedded source file with a given name.\n"
+						"The source file will be rewritten if it exists.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_exportc
+		},
+		{
 				.cmd = "export",
-				.str = "Exports database given with --db to UV embedded header and source files with a given name.\n"
-						"Both files should not exists, or they will be rewritten.",
+				.str = "Combination of commands *exporth* and *exportc*.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_export
 		},

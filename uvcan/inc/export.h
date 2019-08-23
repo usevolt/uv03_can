@@ -35,7 +35,11 @@ typedef struct {
 /// Also works as an initializer.
 bool cmd_export(const char *arg);
 
+/// @brief: Exports the header file only
+bool cmd_exporth(const char *arg);
 
+/// @brief: Exports the source file only
+bool cmd_exportc(const char *arg);
 
 
 #endif /* EXPORT_H_ */
