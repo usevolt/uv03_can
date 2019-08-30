@@ -104,51 +104,54 @@ int main(int argc, char *argv[]) {
 
 	init(this);
 
-	struct option opts[50];
-	char optstr[256] = "";
+	struct option opts[50] = {};
+	char optstr[512] = "";
 	int i;
 	for (i = 0; i < commands_count(); i++) {
-		opts[i].name = commands[i].cmd;
+		opts[i].name = commands[i].cmd_long;
 		opts[i].has_arg = commands[i].args;
 		opts[i].flag = 0;
-		opts[i].val = i;
-		char str[2];
-		str[0] = (char) opts[i].val;
-		str[1] = '\0';
-		strcat(optstr, str);
-		if (opts[i].has_arg == ARG_REQUIRE) {
-			strcat(optstr, ":");
-		}
-		else if (opts[i].has_arg == ARG_OPTIONAL) {
-			strcat(optstr, "::");
-		}
-		else {
+		opts[i].val = commands[i].cmd_short ? commands[i].cmd_short : i;
+		if (opts[i].val >= 'a') {
+			sprintf(optstr + strlen(optstr), "%c", opts[i].val);
+			if (opts[i].has_arg == ARG_REQUIRE) {
+				strcat(optstr, ":");
+			}
+			else if (opts[i].has_arg == ARG_OPTIONAL) {
+				strcat(optstr, "::");
+			}
+			else {
 
+			}
 		}
 	}
-	opts[i + 1].name = NULL;
-	opts[i + 1].has_arg = 0;
-	opts[i + 1].flag = NULL;
-	opts[i + 1].val = 0;
 
 	bool error = false;
 	char c = 'c';
 	bool none_args = true;
-	while ((c = getopt_long(argc, argv, "", opts, NULL)) != -1) {
+	while ((c = getopt_long(argc, argv, optstr, opts, NULL)) != -1) {
 		if (c != '?') {
 			// execute command callback
-			if (!commands[(unsigned int) c].callback(optarg)) {
-				printf("command '%s' returned with FALSE, terminating.\n",
-						commands[(unsigned int) c].cmd);
-				error = true;
-				break;
+			for (int i = 0; i < commands_count(); i++) {
+				if (commands[i].cmd_short == c ||
+						(commands[i].cmd_short == 0 && i == c)) {
+					if (!commands[i].callback(optarg)) {
+						printf("command '%s' returned with FALSE, terminating.\n",
+								commands[(unsigned int) c].cmd_long);
+						error = true;
+						break;
+					}
+					none_args = false;
+				}
 			}
-			none_args = false;
+		}
+		if (error) {
+			break;
 		}
 	}
 	// if none arguments were given,
 	// uvcan starts with --ui command
-	if (none_args) {
+	if (none_args && !error) {
 		cmd_ui("");
 	}
 

@@ -35,7 +35,8 @@ typedef enum {
 typedef struct {
 	/// @brief: Name of the command. Name also works as a
 	/// GNU option name.
-	const char *cmd;
+	const char *cmd_long;
+	const char cmd_short;
 	/// @brief: A string introducing the command
 	const char *str;
 	argument_e args;

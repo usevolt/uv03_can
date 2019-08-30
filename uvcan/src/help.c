@@ -27,7 +27,12 @@ bool cmd_help(const char *arg) {
 			"*****************************\n"
 			"\n\nCommands:\n");
 	for (int i = 0; i < commands_count(); i++) {
-		printf("--%s: %s\n\n", commands[i].cmd, commands[i].str);
+		if (commands[i].cmd_short >= 'a') {
+			printf("--%s -%c: %s\n\n", commands[i].cmd_long, commands[i].cmd_short, commands[i].str);
+		}
+		else {
+			printf("--%s: %s\n\n", commands[i].cmd_long, commands[i].str);
+		}
 	}
 
 	return true;

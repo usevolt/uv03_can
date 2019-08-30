@@ -42,52 +42,57 @@ bool cmd_incdest(const char *arg);
 
 commands_st commands[] = {
 		{
-				.cmd = "help",
+				.cmd_long = "help",
+				.cmd_short = 'h',
 				.str = "Displays application info and help.",
 				.args = ARG_NONE,
 				.callback = &cmd_help
 		},
 		{
-				.cmd = "can",
+				.cmd_long = "can",
+				.cmd_short = 'c',
 				.str = "Selects the CAN-USB hardware for communication. Defaults to can0.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_can
 		},
 		{
-				.cmd = "baud",
+				.cmd_long = "baud",
+				.cmd_short = 'b',
 				.str = "Sets the baudrate for the CAN-bus. Refer to CiA specification for valid values. "
 						"Defaults to 250 kbaud.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_baud
 		},
 		{
-				.cmd = "srcdest",
+				.cmd_long = "srcdest",
 				.str = "Sets the source destination file path. This is used by various commands which output data.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_srcdest
 		},
 		{
-				.cmd = "incdest",
+				.cmd_long = "incdest",
 				.str = "Sets the include destination file path. This is used by various commands which output data.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_incdest
 		},
 		{
-				.cmd = "nodeid",
+				.cmd_long = "nodeid",
+				.cmd_short = 'n',
 				.str = "Selecs the CANopen Node via Node ID. This should be called prior to commands which "
 						"Operate on CANopen nodes, such as *loadbin*.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_node
 		},
 		{
-				.cmd = "loadbin",
+				.cmd_long = "loadbin",
+				.cmd_short = 'L',
 				.str = "Loads firmware to UV device with a CANopen 302 compatible bootloader. "
 						"The device node id should be selected with 'node' option prior to this command.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_load
 		},
 		{
-				.cmd = "loadbinwfr",
+				.cmd_long = "loadbinwfr",
 				.str = "Loads firmware to UV device with a CANopen 302 compatible bootloader"
 						" by waiting for NMT boot up message."
 						"The device node id should be selected with 'node' option prior to this command.",
@@ -95,7 +100,7 @@ commands_st commands[] = {
 				.callback = &cmd_loadwfr
 		},
 		{
-				.cmd = "segloadbin",
+				.cmd_long = "segloadbin",
 				.str = "Loads firmware to UV device with a CANopen 302 compatible bootloader. "
 						"The device node id should be selected with 'node' option prior to this command. "
 						"Uses the SDO segmented transfer to load the binary. Note that this is more "
@@ -104,7 +109,7 @@ commands_st commands[] = {
 				.callback = &cmd_segload
 		},
 		{
-				.cmd = "segloadbinwfr",
+				.cmd_long = "segloadbinwfr",
 				.str = "Loads firmware to UV device with a CANopen 302 compatible bootloader"
 						" by waiting for NMT boot up message."
 						"The device node id should be selected with 'node' option prior to this command. "
@@ -114,14 +119,14 @@ commands_st commands[] = {
 				.callback = &cmd_segloadwfr
 		},
 		{
-				.cmd = "uvloadbin",
+				.cmd_long = "uvloadbin",
 				.str = "Loads firmware to UV device with an UV compatible bootloader. "
 						"The device node id should be selected with 'node' option prior to this command.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_uvload
 		},
 		{
-				.cmd = "uvloadbinwfr",
+				.cmd_long = "uvloadbinwfr",
 				.str = "Loads firmware to UV device with an UV compatible bootloader "
 						"by waiting for NMT boot up message."
 						"The device node id should be selected with 'node' option prior to this command.",
@@ -129,57 +134,55 @@ commands_st commands[] = {
 				.callback = &cmd_uvloadwfr
 		},
 		{
-				.cmd = "listen",
+				.cmd_long = "listen",
+				.cmd_short = 'l',
 				.str = "Listens the CAN bus for x seconds, listing all messages received.",
 				.args = ARG_NONE,
 				.callback = &cmd_listen
 		},
 		{
-				.cmd = "terminal",
+				.cmd_long = "terminal",
+				.cmd_short = 't',
 				.str = "Communicates with the device chosen with **nodeid** via Usevolt SDO reply protocol.",
 				.args = ARG_NONE,
 				.callback = &cmd_terminal
 		},
 		{
-				.cmd = "uwterminal",
+				.cmd_long = "uwterminal",
 				.str = "Communicates with the uw device chosen with **nodeid** via deprecated UW terminal protocol.",
 				.args = ARG_NONE,
 				.callback = &cmd_uwterminal
 		},
 		{
-				.cmd = "db",
+				.cmd_long = "db",
+				.cmd_short = 'd',
 				.str = "Provides uvcan a CANOpen device database file as an argument.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_db
 		},
 		{
-				.cmd = "exporth",
-				.str = "Exports database given with --db to UV embedded header with a given name.\n"
-						"The header file will be rewritten if it exists.",
-				.args = ARG_REQUIRE,
-				.callback = &cmd_exporth
-		},
-		{
-				.cmd = "exportc",
+				.cmd_long = "exportc",
 				.str = "Exports database given with --db to UV embedded source file with a given name.\n"
 						"The source file will be rewritten if it exists.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_exportc
 		},
 		{
-				.cmd = "export",
-				.str = "Combination of commands *exporth* and *exportc*.",
+				.cmd_long = "export",
+				.cmd_short = 'e',
+				.str = "Exports the database loaded with --db into a C .h and .c files. \n"
+						"The export location is defined with --srcdest and --incdest.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_export
 		},
 		{
-				.cmd = "ui",
+				.cmd_long = "ui",
 				.str = "Opens the GUI configuration tool with this argument.",
 				.args = ARG_NONE,
 				.callback = &cmd_ui
 		},
 		{
-				.cmd = "loadmedia",
+				.cmd_long = "loadmedia",
 				.str = "Loads a media file with UV media download protocol. Note that the media file is loaded\n"
 						"with the same file path as what is given to this command. In most cases this means\n"
 						"that the media should be in the same directory where uvcan is run or in a subdirectory.\n"
@@ -189,7 +192,7 @@ commands_st commands[] = {
 				.callback = &cmd_loadmedia
 		},
 		{
-				.cmd = "clearmedia",
+				.cmd_long = "clearmedia",
 				.str = "Clears the all media in the device specified by the Node-ID.",
 				.args = ARG_NONE,
 				.callback = &cmd_clearmedia
