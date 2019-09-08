@@ -428,12 +428,9 @@ bool get_source_objs(char *dest, const char *filename) {
 		db_txpdo_st *pdo = db_get_txpdo(&dev.db, i);
 		strcat(dest, "        {\n"
 				"            .mappings = {\n");
-		int32_t mi = 0;
-			canopen_pdo_mapping_st *mapping = &pdo->mappings.mappings[mi];
-			while (true) {
-				if (mapping->length == 0) {
-					break;
-				}
+			for (int32_t i = 0; i < CONFIG_CANOPEN_PDO_MAPPING_COUNT; i++) {
+				canopen_pdo_mapping_st *mapping = &pdo->mappings.mappings[i];
+
 				sprintf(&dest[strlen(dest)], "                {\n"
 						"                    .main_index = 0x%x,\n"
 						"                    .sub_index = %u,\n"
@@ -442,9 +439,6 @@ bool get_source_objs(char *dest, const char *filename) {
 						mapping->main_index,
 						mapping->sub_index,
 						mapping->length);
-
-				mi++;
-				mapping = &pdo->mappings.mappings[mi];
 			}
 
 		sprintf(&dest[strlen(dest)], "            }\n"
