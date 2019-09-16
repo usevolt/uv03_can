@@ -308,6 +308,10 @@ bool get_header_objs(char *dest, const char *filename) {
 			sprintf(&line[strlen(line)], "#define %s_%s_MAX            %i\n",
 					nameupper, name, obj->max.value_int);
 		}
+		else if (CANOPEN_IS_STRING(obj->obj.type)) {
+			sprintf(&line[strlen(line)], "#define %s_%s_DEFAULT				\"%s\"\n",
+					nameupper, name, obj->string_def);
+		}
 		else {
 
 		}
