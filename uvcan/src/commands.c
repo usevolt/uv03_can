@@ -208,6 +208,10 @@ unsigned int commands_count(void) {
 bool cmd_can(const char *arg) {
 	printf("selecting '%s' as CAN dev\n", arg);
 	strcpy(this->can_channel, arg);
+
+	printf("Setting CAN dev name and baudrate: %u\n", arg, this->baudrate);
+	uv_can_set_baudrate(this->can_channel, this->baudrate);
+
 	return true;
 }
 
