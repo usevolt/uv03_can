@@ -227,7 +227,7 @@ bool get_header_objs(char *dest, const char *filename) {
 		strcat(line, "_");
 		strcat(line, name);
 		strcat(line, "_TYPE            ");
-		db_type_to_str(obj->obj.type, &line[strlen(line)]);
+		strcat(line, obj->type_str);
 		strcat(line, "\n");
 
 		strcat(line, "#define ");

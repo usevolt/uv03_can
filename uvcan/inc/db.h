@@ -75,6 +75,8 @@ typedef struct {
 	canopen_object_st obj;
 	// data pointer as a string for embedded system
 	char dataptr[128];
+	// the object data type as a string. This holds information about signed/unsigned
+	char type_str[32];
 	union {
 		// for integer objects
 		struct {

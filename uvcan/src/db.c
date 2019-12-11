@@ -162,6 +162,9 @@ void db_type_to_str(canopen_object_type_e type, char *dest) {
 	else if (type == CANOPEN_ARRAY32) {
 		strcpy(dest, "CANOPEN_ARRAY32");
 	}
+	else if (type == CANOPEN_ARRAYSIGNED32) {
+		strcpy(dest, "CANOPEN_ARRAYSIGNED32");
+	}
 	else if (type == CANOPEN_ARRAY16) {
 		strcpy(dest, "CANOPEN_ARRAY16");
 	}
@@ -256,7 +259,7 @@ void db_permission_to_longstr(canopen_permissions_e permissions, char *dest) {
 static canopen_object_type_e str_to_type(char *json_child) {
 	char str[128];
 	canopen_object_type_e ret;
-	uv_jsonreader_get_string(json_child, str, 128);
+	uv_jsonreader_get_string(json_child, str, sizeof(str));
 	if (strcmp(str, "CANOPEN_UNSIGNED32") == 0 || strcmp(str, "CANOPEN_SIGNED32") == 0) {
 		ret = CANOPEN_UNSIGNED32;
 	}
@@ -266,13 +269,19 @@ static canopen_object_type_e str_to_type(char *json_child) {
 	else if (strcmp(str, "CANOPEN_UNSIGNED8") == 0 || strcmp(str, "CANOPEN_SIGNED8") == 0) {
 		ret = CANOPEN_UNSIGNED8;
 	}
-	else if (strcmp(str, "CANOPEN_ARRAY32") == 0) {
+	else if (strcmp(str, "CANOPEN_ARRAY32") == 0 ||
+			strcmp(str, "CANOPEN_ARRAYUNSIGNED32") == 0 ||
+			strcmp(str, "CANOPEN_ARRAYSIGNED32") == 0) {
 		ret = CANOPEN_ARRAY32;
 	}
-	else if (strcmp(str, "CANOPEN_ARRAY16") == 0) {
+	else if (strcmp(str, "CANOPEN_ARRAY16") == 0 ||
+			strcmp(str, "CANOPEN_ARRAYUNSIGNED16") == 0 ||
+			strcmp(str, "CANOPEN_ARRAYSIGNED16") == 0) {
 		ret = CANOPEN_ARRAY16;
 	}
-	else if (strcmp(str, "CANOPEN_ARRAY8") == 0) {
+	else if (strcmp(str, "CANOPEN_ARRAY8") == 0 ||
+			strcmp(str, "CANOPEN_ARRAYUNSIGNED8") == 0 ||
+			strcmp(str, "CANOPEN_ARRAYSIGNED8") == 0) {
 		ret = CANOPEN_ARRAY8;
 	}
 	else if (strcmp(str, "CANOPEN_STRING") == 0) {
@@ -597,6 +606,7 @@ static bool parse_json(db_st *this, char *json) {
 				data = uv_jsonreader_find_child(child, "type", 1);
 				CHECK_OBJ(data, "type", obj.name);
 				obj.obj.type = str_to_type(data);
+				uv_jsonreader_get_string(data, obj.type_str, sizeof(obj.type_str));
 
 				data = uv_jsonreader_find_child(child, "permissions", 1);
 				CHECK_OBJ(data, "permissions", obj.name);
