@@ -31,6 +31,7 @@
 static char rx_buffer[1024];
 static uv_ring_buffer_st rx;
 static bool uw_terminal = false;
+static uv_mutex_st mutex;
 
 
 static void command_step(void *ptr);
@@ -56,6 +57,7 @@ bool cmd_uwterminal(const char *arg) {
 
 
 static void can_callb(void *ptr, uv_can_message_st *msg) {
+	uv_mutex_lock(&mutex);
 	if (uw_terminal) {
 		if ((msg->type == CAN_EXT) &&
 				(msg->id == (UW_TERMINAL_CAN_PREFIX + db_get_nodeid(&dev.db)))) {
@@ -77,6 +79,7 @@ static void can_callb(void *ptr, uv_can_message_st *msg) {
 			}
 		}
 	}
+	uv_mutex_unlock(&mutex);
 }
 
 
@@ -127,6 +130,7 @@ static void command_tx(void *ptr) {
 static void command_step(void *ptr) {
 	printf("Terminal opened for node ID 0x%x\n", db_get_nodeid(&dev.db));
 	uv_canopen_set_can_callback(&can_callb);
+	uv_mutex_unlock(&mutex);
 	uv_ring_buffer_init(&rx, rx_buffer,
 			sizeof(rx_buffer) / sizeof(rx_buffer[0]), sizeof(rx_buffer[0]));
 
@@ -134,9 +138,13 @@ static void command_step(void *ptr) {
 
 		char c;
 
-		while (uv_ring_buffer_pop(&rx, &c) == ERR_NONE) {
-			printf("%c", c);
-			if (c == '\n') {
+		uv_errors_e e = ERR_NONE;
+		while (e == ERR_NONE) {
+			uv_mutex_lock(&mutex);
+			e = uv_ring_buffer_pop(&rx, &c);
+			uv_mutex_unlock(&mutex);
+			if (e == ERR_NONE) {
+				printf("%c", c);
 				fflush(stdout);
 			}
 		}
