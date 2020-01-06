@@ -57,6 +57,9 @@ void load_firmware_init(load_firmware_st *this, GtkBuilder *builder) {
 	obj = gtk_builder_get_object(builder, "infolabel");
 	this->infolabel = GTK_WIDGET(obj);
 
+	obj = gtk_builder_get_object(builder, "olduv");
+	this->olduvprotocol = GTK_WIDGET(obj);
+
 	this->update_id = -1;
 	this->nodeid_count = 0;
 }
@@ -90,7 +93,7 @@ static void flash(GtkButton *button, gpointer user_data) {
 			loadbin(filename,
 					nodeid,
 					gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(this->wfr)),
-					false,
+					gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(this->olduvprotocol)),
 					gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(this->blocktransfer)));
 
 			this->update_id = g_timeout_add(20, update, NULL);
@@ -111,6 +114,28 @@ void bin_set (GtkFileChooserButton *widget, gpointer user_data) {
 				GTK_MESSAGE_WARNING, GTK_BUTTONS_OK, "The selected file has to be a firmware binary.");
 		gtk_dialog_run(GTK_DIALOG(d));
 		gtk_widget_destroy(GTK_WIDGET(d));
+	}
+	char *n = strstr(name, "0x");
+	if (n != NULL) {
+		uint8_t nid = strtol(n, NULL, 0);
+		ui_add_nodeid(nid);
+		if (this->nodeid_count == ui_get_nodeid_count(&dev.ui)) {
+			// no new nodeid added. Cycle through them and find the active one
+			for (uint8_t i = 0; i < ui_get_nodeid_count(&dev.ui); i++) {
+				if (nid == ui_get_nodeid(&dev.ui, i)) {
+					gtk_combo_box_set_active(GTK_COMBO_BOX(this->nodeid), i);
+					break;
+				}
+			}
+		}
+		else {
+			// new nodeid added
+			char id[64];
+			sprintf(id, "0x%x", nid);
+			gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(this->nodeid), id);
+			gtk_combo_box_set_active(GTK_COMBO_BOX(this->nodeid), this->nodeid_count);
+			this->nodeid_count++;
+		}
 	}
 	g_free(name);
 }

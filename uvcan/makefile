@@ -129,10 +129,18 @@ $(BINARY): $(OBJECTS)
 	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJECTS) -pthread -o "$(BINARY)" -lncurses $(shell pkg-config --libs gtk+-3.0) $(LIB_DIRS) $(LIBS)
 
 
+ifeq ($(CORE), CORE_WIN)
+post-build:
+	-@echo ""
+	-@echo 'Performing post-build steps'
+	-@echo 'Copying uvcan.exe to install directory'
+	cp uvcan.exe install/
+else
 post-build:
 	-@echo ""
 	-@echo 'Performing post-build steps'
 	-@echo ""
+endif
 
 clean:
 	@rm -rf $(BUILDDIR)

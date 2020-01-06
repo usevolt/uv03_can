@@ -31,7 +31,6 @@ static void ui_main(void *ptr);
 
 
 static gboolean update(gpointer data);
-static void add_nodeid(uint8_t nodeid);
 
 
 #define this (&dev.ui)
@@ -44,14 +43,14 @@ void uican_callb(void *ptr, uv_can_message_st *msg) {
 			(msg->id & ~CANOPEN_NODE_ID_MASK) == CANOPEN_SDO_REQUEST_ID ||
 			(msg->id & ~CANOPEN_NODE_ID_MASK) == CANOPEN_HEARTBEAT_ID) {
 		uint8_t nodeid = (msg->id & 0xFF);
-		add_nodeid(nodeid);
+		ui_add_nodeid(nodeid);
 	}
 	terminal_can_rx(&this->terminal, msg);
 	cantrace_rx(&this->cantrace, msg);
 	uv_mutex_unlock(&this->mutex);
 }
 
-static void add_nodeid(uint8_t nodeid) {
+void ui_add_nodeid(uint8_t nodeid) {
 	if (nodeid != 0) {
 		bool found = false;
 		for (uint8_t i = 0; i < uv_vector_size(&this->nodeids); i++) {
@@ -249,7 +248,7 @@ static gboolean update(gpointer data) {
 	uv_mutex_lock(&this->mutex);
 
 
-	add_nodeid(db_get_nodeid(&dev.db));
+	ui_add_nodeid(db_get_nodeid(&dev.db));
 
 	terminal_step(&this->terminal, step_ms);
 	cantrace_step(&this->cantrace, step_ms);

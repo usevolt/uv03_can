@@ -38,6 +38,7 @@ typedef struct {
 	GtkWidget *flash;
 	GtkWidget *wfr;
 	GtkWidget *blocktransfer;
+	GtkWidget *olduvprotocol;
 	GtkWidget *infolabel;
 	int update_id;
 	int16_t nodeid_count;

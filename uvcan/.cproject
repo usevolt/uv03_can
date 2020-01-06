@@ -62,6 +62,9 @@
 									<listOptionValue builtIn="false" value="CORE_LINUX=1"/>
 									<listOptionValue builtIn="false" value="CONFIG_TARGET_LINUX=1"/>
 								</option>
+								<option id="gnu.c.compiler.option.include.paths.1293990008" superClass="gnu.c.compiler.option.include.paths" valueType="includePath">
+									<listOptionValue builtIn="false" value="/usr/include/gtk-3.0"/>
+								</option>
 								<inputType id="cdt.managedbuild.tool.gnu.c.compiler.input.527279993" superClass="cdt.managedbuild.tool.gnu.c.compiler.input"/>
 							</tool>
 							<tool id="cdt.managedbuild.tool.gnu.c.linker.exe.debug.1196211610" name="GCC C Linker" superClass="cdt.managedbuild.tool.gnu.c.linker.exe.debug">

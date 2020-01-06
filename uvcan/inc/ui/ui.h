@@ -74,6 +74,9 @@ static inline uint8_t ui_get_nodeid(ui_st *this, uint16_t index) {
 }
 
 
+void ui_add_nodeid(uint8_t nodeid);
+
+
 void uican_callb(void *ptr, uv_can_message_st *msg);
 
 
