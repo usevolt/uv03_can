@@ -21,7 +21,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <uv_terminal.h>
-#include <ncurses.h>
 #include <uv_json.h>
 #include <ctype.h>
 #include "main.h"
