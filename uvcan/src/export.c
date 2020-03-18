@@ -31,6 +31,7 @@
 #define this (&dev)
 
 
+
 bool get_header_objs(char *dest, const char *filename) {
 	strcpy(dest, "\n\n\n/// @file: UVCAN generated header file describing the object dictionary\n"
 			"/// of this device. DO NOT EDIT DIRECTLY\n\n");
@@ -73,14 +74,30 @@ bool get_header_objs(char *dest, const char *filename) {
 	sprintf(dest + strlen(dest), "#define %s_REVISION_NUMBER    0x%x\n\n\n",
 			nameupper, db_get_revision_number(&dev.db));
 
+	char line[65536];
+
 	// create symbols for EMCY messages
 	printf("Creating header symbols for EMCY messages\n");
 	fflush(stdout);
+
+	// create symbol for EMCY start index
+	sprintf(dest + strlen(dest), "#define %s_EMCY_START_INDEX    0x%x\n\n",
+			nameupper, db_get_emcy_index(&dev.db));
+
+	// create symbol for emcy str language count
+	uint8_t str_count;
+	for (str_count = 0;
+			db_get_emcy(&dev.db, 0)->info_strs[str_count][0] != '\0';
+			str_count++) { };
+	sprintf(&dest[strlen(dest)], "#define %s_EMCYSTR_INFO_STR_COUNT    %u\n\n",
+			nameupper,
+			str_count);
+
+	// create enum for emcy err codes
 	strcat(dest, "enum {\n");
 	for (int i = 0; i < db_get_emcy_count(&dev.db); i++) {
 		db_emcy_st *emcy = db_get_emcy(&dev.db, i);
 
-		char line[1024];
 		line[0] = '\0';
 		strcat(line, "    ");
 		strcat(line, nameupper);
@@ -91,8 +108,11 @@ bool get_header_objs(char *dest, const char *filename) {
 
 		strcat(dest, line);
 	}
-	sprintf(&(dest[strlen(dest)]), "    %s_EMCY_COUNT =            %u\n};",
-			nameupper, db_get_emcy_count(&dev.db));
+	sprintf(&(dest[strlen(dest)]),
+			"    %s_EMCY_COUNT =            %u\n} %s_emcy_err_codes_e;\n\n",
+			nameupper, db_get_emcy_count(&dev.db), namelower);
+
+
 	strcat(dest, "\n\n\n\n");
 
 	// create symbols for defines
@@ -101,7 +121,6 @@ bool get_header_objs(char *dest, const char *filename) {
 	for (int i = 0; i < db_get_define_count(&dev.db); i++) {
 		db_define_st *define = db_get_define(&dev.db, i);
 
-		char line[1024];
 		if (define->type == DB_DEFINE_INT) {
 			line[0] = '\0';
 			strcat(line, "#define ");
@@ -197,7 +216,6 @@ bool get_header_objs(char *dest, const char *filename) {
 		}
 		name[j] = '\0';
 		namel[j] = '\0';
-		char line[65536];
 		strcpy(line, "#define ");
 		strcat(line, nameupper);
 		strcat(line, "_");
@@ -354,6 +372,8 @@ bool get_source_objs(char *dest, const char *filename) {
 	char *basenam = basename(name);
 	strcat(dest, basenam);
 	strcat(dest, ".h\"\n\n\n");
+
+
 
 	// CANopen initializer structure
 	printf("Creating source objects for CANopen initializer structure\n");
@@ -526,8 +546,8 @@ bool get_source_objs(char *dest, const char *filename) {
 		strcat(line, "\n    }");
 
 		strcat(dest, line);
-
 	}
+
 	strcat(dest, "\n};\n"
 			"\n"
 			"uint32_t obj_dict_len(void) {\n"
@@ -575,6 +595,7 @@ bool get_source_objs(char *dest, const char *filename) {
 		}
 		strcat(dest, line);
 	}
+
 
 
 	return true;

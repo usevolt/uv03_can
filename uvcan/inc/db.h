@@ -110,6 +110,7 @@ typedef struct {
 /// @brief: A single EMCY object
 typedef struct {
 	char name[128 - sizeof(int32_t)];
+	char info_strs[8][128];
 	int32_t value;
 } db_emcy_st;
 
@@ -162,6 +163,7 @@ typedef struct {
 
 	db_emcy_st emcys_buffer[128];
 	uv_vector_st emcys;
+	uint16_t emcys_index;
 
 	db_define_st defines_buffer[128];
 	uv_vector_st defines;
@@ -220,6 +222,10 @@ static inline uint32_t db_get_revision_number(db_st *this) {
 
 static inline char *db_get_dev_name(db_st *this) {
 	return this->dev_name;
+}
+
+static inline uint16_t db_get_emcy_index(db_st *this) {
+	return this->emcys_index;
 }
 
 static inline uint32_t db_get_emcy_count(db_st *this) {
