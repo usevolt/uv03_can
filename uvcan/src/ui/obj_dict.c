@@ -358,7 +358,8 @@ static void obj_dict_par_selected (GtkListBox *box, GtkListBoxRow *row, gpointer
 
 
 static void reset(GtkButton *button, gpointer user_data) {
-	uv_canopen_nmt_master_reset_node(db_get_nodeid(&dev.db));
+	uv_canopen_nmt_master_send_cmd(db_get_nodeid(&dev.db),
+			CANOPEN_NMT_CMD_RESET_NODE);
 }
 
 
@@ -372,7 +373,8 @@ static void revert(GtkButton *button, gpointer user_data) {
 	if (result == GTK_RESPONSE_YES) {
 		uv_canopen_sdo_write(db_get_nodeid(&dev.db), CONFIG_CANOPEN_RESTORE_PARAMS_INDEX, 1, 4, "load");
 
-		uv_canopen_nmt_master_reset_node(db_get_nodeid(&dev.db));
+		uv_canopen_nmt_master_send_cmd(db_get_nodeid(&dev.db),
+				CANOPEN_NMT_CMD_RESET_NODE);
 
 		if (this->selected_par >= 0) {
 			par_compress(&this->obj_dict_params[this->selected_par]);

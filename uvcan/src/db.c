@@ -916,6 +916,7 @@ static bool parse_json(db_st *this, char *json) {
 	}
 
 	// append EMCY STR entries into object dictionary parameters
+	bool br = false;
 	for (uint32_t i = 0; i < db_get_emcy_count(this); i++) {
 		db_emcy_st *emcy = db_get_emcy(this, i);
 		uint8_t j = 0;
@@ -934,8 +935,17 @@ static bool parse_json(db_st *this, char *json) {
 			obj.obj.string_len = strlen(emcy->info_strs[j]) + 1;
 			obj.obj.main_index = db_get_emcy_index(this) + emcy->value + j;
 
-			uv_vector_push_back(&dev.db.objects, &obj);
+			uv_errors_e e = uv_vector_push_back(&dev.db.objects, &obj);
+			if (e != ERR_NONE) {
+				printf("**** Error adding a new object to object dictionary. \n"
+						"Object dictionary full. ***\n");
+				br = true;
+				break;
+			}
 			j++;
+		}
+		if (br) {
+			break;
 		}
 	}
 

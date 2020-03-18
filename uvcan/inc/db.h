@@ -24,7 +24,7 @@
 #include <uv_canopen.h>
 
 
-#define DB_OBJ_MAX_COUNT	128
+#define DB_OBJ_MAX_COUNT	256
 #define DB_MAX_FILE_SIZE	65536
 
 

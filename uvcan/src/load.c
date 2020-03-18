@@ -251,7 +251,8 @@ void load_step(void *ptr) {
 			if (!this->wfr) {
 				printf("Resetting node 0x%x\n", this->nodeid);
 				fflush(stdout);
-				uv_canopen_nmt_master_reset_node(this->nodeid);
+				uv_canopen_nmt_master_send_cmd(this->nodeid,
+						CANOPEN_NMT_CMD_RESET_NODE);
 			}
 
 			// wait for a response to NMT reset command
@@ -407,7 +408,8 @@ void load_step(void *ptr) {
 		if (success) {
 			printf("Loading done. Resetting device... OK!\n");
 			fflush(stdout);
-			uv_canopen_nmt_master_reset_node(this->nodeid);
+			uv_canopen_nmt_master_send_cmd(this->nodeid,
+					CANOPEN_NMT_CMD_RESET_NODE);
 			printf("Binary file closed.\n");
 			fflush(stdout);
 		}
