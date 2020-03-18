@@ -5,13 +5,14 @@ UVcan CAN tool for flashing the firmware to Usevolt devices
 The uvcan tool uses the following libraries underneath:
 
 * GTK3
+* GDK3
 * ncurses
 * pthread
 * SocketCAN
 
 Especially the GTK3 libraries have to be installed to compile the uvcan. On Ubuntu Linux, run the following commands to install the prerequisites:
 
-`sudo apt-get install git build-essential libncurses5 libgtk-3-0 libgtk-3-dev libgtk-3-common`
+`sudo apt-get install git build-essential libncurses5 libncurses5-dev libgtk-3-0 libgtk-3-dev libgtk-3-common libxml2-utils`
 
 #Compiling the uvcan
 The uvcan makefile detects the operating system automatically. Compiling on Linux & Windows is supported.
