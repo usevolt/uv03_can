@@ -30,6 +30,7 @@
 #include "export.h"
 #include "ui.h"
 #include "loadmedia.h"
+#include "sdo.h"
 
 
 
@@ -65,6 +66,7 @@ struct _dev_st {
 	export_st export;
 	ui_st ui;
 	loadmedia_st loadmedia;
+	sdo_st sdo;
 
 	uv_data_start_t data_start;
 

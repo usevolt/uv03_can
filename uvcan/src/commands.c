@@ -30,6 +30,7 @@
 #include "ui.h"
 #include "loadmedia.h"
 #include "clearmedia.h"
+#include "sdo.h"
 
 #define this (&dev)
 
@@ -196,6 +197,36 @@ commands_st commands[] = {
 				.str = "Clears the all media in the device specified by the Node-ID.",
 				.args = ARG_NONE,
 				.callback = &cmd_clearmedia
+		},
+		{
+				.cmd_long = "mindex",
+				.str = "Sets the CANOpen Main index for SDO data transfer.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_mindex
+		},
+		{
+				.cmd_long = "sindex",
+				.str = "Sets the CANOpen Sub index for SDO data transfer.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_sindex
+		},
+		{
+				.cmd_long = "datalen",
+				.str = "Sets the data length for the CANOpen SDO read/write request.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_datalen
+		},
+		{
+				.cmd_long = "sdoread",
+				.str = "Reads data from a device with CANOpen SDO request",
+				.args = ARG_NONE,
+				.callback = &cmd_sdoread
+		},
+		{
+				.cmd_long = "sdowrite",
+				.str = "Writes data to a device with CANOpen SDO request",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_sdowrite
 		}
 };
 
