@@ -31,6 +31,8 @@
 #include "ui.h"
 #include "loadmedia.h"
 #include "sdo.h"
+#include "loadparam.h"
+#include "saveparam.h"
 
 
 
@@ -67,6 +69,8 @@ struct _dev_st {
 	ui_st ui;
 	loadmedia_st loadmedia;
 	sdo_st sdo;
+	loadparam_st loadparam;
+	saveparam_st saveparam;
 
 	uv_data_start_t data_start;
 

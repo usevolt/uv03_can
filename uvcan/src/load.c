@@ -38,7 +38,9 @@ static void update(void *ptr) {
 	int32_t data_index = 0;
 	while (true) {
 		if (_canopen.sdo.client.data_index != data_index) {
-			int32_t percent = (_canopen.sdo.client.data_index) * 100 / _canopen.sdo.client.data_count;
+			int32_t percent = (_canopen.sdo.client.data_index * 100 +
+					_canopen.sdo.client.data_count / 2) /
+							_canopen.sdo.client.data_count;
 			printf("downloaded %u / %u bytes (%u %%)\n",
 					_canopen.sdo.client.data_index,
 					_canopen.sdo.client.data_count,
