@@ -34,6 +34,8 @@ void loadparam_step(void *dev);
 // The parameter should be of type ARRAY8, where the first index
 // defines the parameter size.
 #define PARAM_INDEX			0x2004
+#define OP_INDEX			0x2002
+#define LOADOP_SUBINDEX		1
 
 
 static void update(void *ptr) {
@@ -131,18 +133,36 @@ void loadparam_step(void *ptr) {
 
 		fclose(fptr);
 		if (success) {
-			printf("Loading done. Saving the parameters... ");
-			fflush(stdout);
-			uv_errors_e e = uv_canopen_sdo_write(this->nodeid, CONFIG_CANOPEN_STORE_PARAMS_INDEX,
-					CONFIG_CANOPEN_STORE_ALL_PARAMS_SUBINDEX, 4, "save");
+			// loadup the current op
+			uint8_t value = 1;
+			uv_errors_e e = uv_canopen_sdo_write(this->nodeid,
+					OP_INDEX, LOADOP_SUBINDEX, sizeof(value), &value);
+
 			if (e == ERR_NONE) {
-				printf("Done!\n");
+				fflush(stdout);
+				uv_rtos_task_delay(1000);
+				printf("Saving the parameters...\n");
+				e = uv_canopen_sdo_store_params(this->nodeid, MEMORY_ALL_PARAMS);
+				fflush(stdout);
+				uv_rtos_task_delay(1000);
+				printf("Resetting the device...\n");
+				uv_canopen_nmt_master_send_cmd(this->nodeid, CANOPEN_NMT_CMD_RESET_NODE);
+				if (e == ERR_NONE) {
+					printf("Done!\n");
+					fflush(stdout);
+				}
+				else {
+					printf("\n**** ERROR: Saving the parameters failed ****\n");
+					fflush(stdout);
+				}
+				printf("Binary file closed.\n");
+				fflush(stdout);
 			}
 			else {
-				printf("\n**** ERROR: Saving the parameters failed ****\n");
+				printf("Error when fetching operator settings: %u. \n"
+						"Loading the parameters failed\n", e);
+				fflush(stdout);
 			}
-			printf("Binary file closed.\n");
-			fflush(stdout);
 		}
 	}
 
