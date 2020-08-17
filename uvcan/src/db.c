@@ -44,13 +44,21 @@ static void str_to_upper_nonspace(char *str) {
 void dbvalue_init(dbvalue_st *this) {
 	this->type = DBVALUE_INT;
 	this->value_int = 0;
+	this->value_str = "\0";
 }
 
 
 dbvalue_st dbvalue_set_int(int32_t value) {
+	// all dbvalues are stored as string. Integer has to be converted to a string
+
 	dbvalue_st this;
-	this.type = DBVALUE_INT;
+	this.type = DBVALUE_STRING;
 	this.value_int = value;
+	char str[1000] = {};
+	snprintf(str, sizeof(str) - 1, "%i", value);
+	this.value_str = malloc(strlen(str) + 1);
+	strcpy(this.value_str, str);
+
 	return this;
 }
 
@@ -63,7 +71,7 @@ dbvalue_st dbvalue_set_string(char *str, uint32_t str_len) {
 
 	str_to_upper_nonspace(this.value_str);
 
-	// if string value was set, search defines and assign the value which
+	// if string value was set, search defines and assign the value that
 	// matches by name. Otherwise report an error.
 	bool match = false;
 	for (uint32_t i = 0; i < uv_vector_size(&dev.db.defines); i++) {
@@ -114,7 +122,15 @@ dbvalue_st dbvalue_set_string(char *str, uint32_t str_len) {
 	}
 	if (!match) {
 		this.value_int = 0;
-		printf("**** ERROR **** Cannot find '%s' definition from the database.\n", this.value_str);
+	}
+	else {
+		// match found, update the dbvalue string to contain the device name
+		if (strncmp(dev.db.dev_name_upper, this.value_str, strlen(dev.db.dev_name_upper)) != 0) {
+			free(this.value_str);
+			this.value_str = malloc(str_len + 1 + strlen(dev.db.dev_name_upper) + 1);
+			sprintf(this.value_str, "%s_", dev.db.dev_name_upper);
+			memcpy(this.value_str + strlen(this.value_str), str, str_len);
+		}
 	}
 	return this;
 }
@@ -460,6 +476,15 @@ static bool parse_json(db_st *this, char *json) {
 	}
 	else {
 		printf("*** ERROR *** 'DEV' object not found in the JSON\n");
+		strcpy(this->dev_name, "");
+	}
+	for (int i = 0; i < strlen(this->dev_name) + 1; i++) {
+		if (isspace(this->dev_name[i])) {
+			this->dev_name_upper[i] = '_';
+		}
+		else {
+			this->dev_name_upper[i] = toupper(this->dev_name[i]);
+		}
 	}
 
 	char nameupper[1024] = { '\0' };
@@ -837,7 +862,7 @@ static bool parse_json(db_st *this, char *json) {
 					if (children == NULL || uv_jsonreader_get_type(children) != JSON_ARRAY) {
 						printf("children array not an array in object %s\n", obj.name);
 					}
-					for (uint8_t i = 0; i < obj.obj.array_max_size; i++) {
+					for (uint8_t i = 0; i < uv_jsonreader_array_get_size(children); i++) {
 						thischild = malloc(sizeof(db_array_child_st));
 						db_array_child_init(thischild);
 

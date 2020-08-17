@@ -228,12 +228,12 @@ bool get_header_objs(char *dest, const char *filename) {
 		strcat(line, name);
 		if (uv_canopen_is_array(&obj->obj)) {
 			strcat(line, "_ARRAY_MAX_SIZE            ");
-			sprintf(&line[strlen(line)], "%u\n", obj->obj.array_max_size);
+			sprintf(&line[strlen(line)], "%s\n", dbvalue_get_string(&obj->array_max_size));
 		}
 		else {
 			if (CANOPEN_IS_STRING(obj->obj.type)) {
 				strcat(line, "_STRING_LEN            ");
-				sprintf(&line[strlen(line)], "%u\n", obj->obj.string_len);
+				sprintf(&line[strlen(line)], "%s\n", dbvalue_get_string(&obj->string_len));
 			}
 			else {
 				strcat(line, "_SUBINDEX            ");
@@ -282,49 +282,39 @@ bool get_header_objs(char *dest, const char *filename) {
 
 				sprintf(line + strlen(line), "#define %s_%s_%s_MIN            ",
 						nameupper, name, childname);
-				if (child->min.type == DBVALUE_STRING) {
-					sprintf(line + strlen(line), "%s_%s\n", nameupper, child->min.value_str);
-				}
-				else {
-					sprintf(line + strlen(line), "%i\n", child->min.value_int);
-				}
+				sprintf(line + strlen(line), "%s\n",
+						dbvalue_get_string(&child->min));
 
 				sprintf(line + strlen(line), "#define %s_%s_%s_MAX            ",
 						nameupper, name, childname);
-				if (child->max.type == DBVALUE_STRING) {
-					sprintf(line + strlen(line), "%s_%s\n", nameupper, child->max.value_str);
-				}
-				else {
-					sprintf(line + strlen(line), "%i\n", child->max.value_int);
-				}
+				sprintf(line + strlen(line), "%s\n",
+						dbvalue_get_string(&child->max));
 
 				sprintf(line + strlen(line), "#define %s_%s_%s_DEFAULT            ",
 						nameupper, name, childname);
-				if (child->def.type == DBVALUE_STRING) {
-					sprintf(line + strlen(line), "%s_%s\n", nameupper, child->def.value_str);
-				}
-				else {
-					sprintf(line + strlen(line), "%i\n", child->def.value_int);
-				}
+				sprintf(line + strlen(line), "%s\n",
+						dbvalue_get_string(&child->def));
 
 				index++;
 				child = child->next_sibling;
 			}
 			char type[128];
 			db_type_to_stdint(obj->obj.type, type);
-			sprintf(line + strlen(line), "extern const %s %s_%s_defaults[%u];\n",
-					type, namelower, namel, obj->obj.array_max_size);
+			sprintf(line + strlen(line), "extern const %s %s_%s_defaults[];\n",
+					type, namelower, namel);
+			sprintf(line + strlen(line), "uint32_t %s_%s_defaults_size(void);\n",
+					namelower, namel);
 
 		}
 		else if (CANOPEN_IS_INTEGER(obj->obj.type)) {
-			sprintf(&line[strlen(line)], "#define %s_%s_VALUE            %i\n",
-					nameupper, name, obj->value.value_int);
-			sprintf(&line[strlen(line)], "#define %s_%s_DEFAULT            %i\n",
-					nameupper, name, obj->def.value_int);
-			sprintf(&line[strlen(line)], "#define %s_%s_MIN            %i\n",
-					nameupper, name, obj->min.value_int);
-			sprintf(&line[strlen(line)], "#define %s_%s_MAX            %i\n",
-					nameupper, name, obj->max.value_int);
+			sprintf(&line[strlen(line)], "#define %s_%s_VALUE            %s\n",
+					nameupper, name, dbvalue_get_string(&obj->value));
+			sprintf(&line[strlen(line)], "#define %s_%s_DEFAULT            %s\n",
+					nameupper, name, dbvalue_get_string(&obj->def));
+			sprintf(&line[strlen(line)], "#define %s_%s_MIN            %s\n",
+					nameupper, name, dbvalue_get_string(&obj->min));
+			sprintf(&line[strlen(line)], "#define %s_%s_MAX            %s\n",
+					nameupper, name, dbvalue_get_string(&obj->max));
 		}
 		else if (CANOPEN_IS_STRING(obj->obj.type)) {
 			sprintf(&line[strlen(line)], "#define %s_%s_DEFAULT				\"%s\"\n",
@@ -578,8 +568,8 @@ bool get_source_objs(char *dest, const char *filename) {
 			for (int i = 0; i < strlen(db_get_dev_name(&dev.db)); i++) {
 				devname[i] = tolower(db_get_dev_name(&dev.db)[i]);
 			}
-			sprintf(line + strlen(line), "const %s %s_%s_defaults[%u] = {\n",
-					type, devname, namel, obj->obj.array_max_size);
+			sprintf(line + strlen(line), "const %s %s_%s_defaults[] = {\n",
+					type, devname, namel);
 
 			db_array_child_st *child = obj->child_ptr;
 			while (child != NULL) {
@@ -591,12 +581,20 @@ bool get_source_objs(char *dest, const char *filename) {
 				strcat(line, "\n");
 				child = child->next_sibling;
 			}
-			strcat(line, "};\n\n");
+			strcat(line, "};\n");
+
+			sprintf(line + strlen(line), "uint32_t %s_%s_defaults_size(void) {\n",
+					namelower, namel);
+			sprintf(line + strlen(line),
+					"    return sizeof(%s_%s_defaults) / sizeof(%s_%s_defaults[0]);\n",
+					namelower, namel, namelower, namel);
+			strcat(line, "}\n\n");
 		}
 		strcat(dest, line);
 	}
 
-
+	printf("Exporting done.\n");
+	fflush(stdout);
 
 	return true;
 }

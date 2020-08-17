@@ -50,6 +50,21 @@ dbvalue_st dbvalue_set_int(int32_t value);
 /// calling this
 dbvalue_st dbvalue_set_string(char *str, uint32_t str_len);
 
+static inline int32_t dbvalue_get_int(dbvalue_st *this) {
+	return this->value_int;
+}
+
+/// @brief: Returns a pointer to the dbvalue's string component. In case if integer value
+/// was given to the dbvalue, it was converted to 10-base string and a pointer to that
+/// strin is returned. Otherwise pointer to empty string is returned.
+static inline char *dbvalue_get_string(dbvalue_st *this) {
+	return this->value_str;
+}
+
+static inline dbvalue_type_e dbvalue_get_type(dbvalue_st *this) {
+	return this->type;
+}
+
 void dbvalue_free(dbvalue_st *this);
 
 
@@ -91,14 +106,14 @@ typedef struct {
 			// maximum value for integer objects
 			dbvalue_st max;
 		};
-
+		// for array objects
 		struct {
 			// array object's children object pointer.
 			// this points to dynamically allocated array of children.
 			db_array_child_st *child_ptr;
 			dbvalue_st array_max_size;
 		};
-		// string type parameters
+		// for string objects
 		struct {
 			dbvalue_st string_len;
 			char string_def[512];
@@ -158,6 +173,8 @@ typedef struct {
 	uint8_t node_id;
 	// name of dev which is used to create a pre-processor macros
 	char dev_name[128];
+	// the name of the device in uppercase
+	char dev_name_upper[128];
 
 	char filepath[128];
 
