@@ -940,7 +940,8 @@ static bool parse_json(db_st *this, char *json) {
 		ret = false;
 	}
 
-	// append EMCY STR entries into object dictionary parameters
+	// append EMCY STR entries into object dictionary parameters. Note
+	// that the EMCY STRING_LEN symbol includes the null-termination character.
 	bool br = false;
 	for (uint32_t i = 0; i < db_get_emcy_count(this); i++) {
 		db_emcy_st *emcy = db_get_emcy(this, i);
@@ -954,7 +955,7 @@ static bool parse_json(db_st *this, char *json) {
 			snprintf(obj.dataptr, sizeof(obj.dataptr) - 1,
 					"%s_%s_DEFAULT", nameupper, obj.name);
 			strcpy(obj.type_str, "CANOPEN_STRING");
-			obj.string_len = dbvalue_set_int(strlen(emcy->info_strs[j]));
+			obj.string_len = dbvalue_set_int(strlen(emcy->info_strs[j]) + 1);
 			strcpy(obj.string_def, emcy->info_strs[j]);
 			obj.obj.type = CANOPEN_STRING;
 			obj.obj.string_len = strlen(emcy->info_strs[j]) + 1;
