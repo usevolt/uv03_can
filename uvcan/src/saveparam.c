@@ -19,8 +19,10 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <uv_json.h>
 #include "saveparam.h"
 #include "main.h"
+#include "db.h"
 
 #define this (&dev.saveparam)
 
@@ -28,36 +30,6 @@
 void saveparam_step(void *dev);
 
 
-#define BLOCK_SIZE			256
-#define RESPONSE_DELAY_MS	2000
-// saves the parameters into this CANOpen index.
-// The parameter should be of type ARRAY8, where the first index
-// defines the parameter size.
-#define PARAM_INDEX			0x2004
-#define PARAM_SIZE			0x1000
-
-
-static void update(void *ptr) {
-	int32_t data_index = 0;
-	while (true) {
-		if (_canopen.sdo.client.data_index != data_index) {
-			int32_t percent = (_canopen.sdo.client.data_index * 100 +
-					_canopen.sdo.client.data_count / 2) /
-					_canopen.sdo.client.data_count;
-			printf("uploaded %u / %u bytes (%u %%)\n",
-					_canopen.sdo.client.data_index,
-					_canopen.sdo.client.data_count,
-					percent);
-			fflush(stdout);
-			this->progress = percent;
-			if (percent == 100) {
-				break;
-			}
-		}
-		data_index = _canopen.sdo.client.data_index;
-		uv_rtos_task_delay(20);
-	}
-}
 
 
 
@@ -65,13 +37,15 @@ bool cmd_saveparam(const char *arg) {
 	bool ret = true;
 
 	if (!arg) {
-		printf("ERROR: Give destination file as a file path to binary file.\n");
+		printf("ERROR: Give filepath to the file where the parameters are stored.\n");
+	}
+	else if (!db_is_loaded(&dev.db)) {
+		printf("ERROR: Database has to be loaded with --db in order to use --saveparam command.\n");
 	}
 	else {
 		printf("Parameter file '%s' selected\n", arg);
-		strcpy(this->params, arg);
+		strcpy(this->file, arg);
 		this->nodeid = db_get_nodeid(&dev.db);
-		uv_delay_init(&this->delay, RESPONSE_DELAY_MS);
 		add_task(saveparam_step);
 		uv_can_set_up();
 	}
@@ -80,32 +54,176 @@ bool cmd_saveparam(const char *arg) {
 }
 
 
+/// @brief: fetches the CANopen parameter from the device and writes it into the json
+static uv_errors_e json_add_obj(uv_json_st *json, db_obj_st *obj) {
+	uv_errors_e ret = ERR_NONE;
+
+	static uint32_t i = 0;
+
+	char name[64];
+	sprintf(name, "obj %u", i++);
+	uv_jsonwriter_begin_object(json, name);
+	uv_jsonwriter_add_int(json, "MAININDEX", obj->obj.main_index);
+	uv_jsonwriter_add_int(json, "SUBINDEX", obj->obj.sub_index);
+	char type[64];
+	db_type_to_str(obj->obj.type, type);
+	uv_jsonwriter_add_string(json, "TYPE", type);
+
+	printf("Reading parameter 0x%x, type: %s, data: ",
+			obj->obj.main_index,
+			type);
+	fflush(stdout);
+
+	if (CANOPEN_IS_ARRAY(obj->obj.type)) {
+		uint32_t arr_len = 0;
+		// fetch the array length
+		ret = uv_canopen_sdo_read(db_get_nodeid(&dev.db),
+				obj->obj.main_index, 0, CANOPEN_SIZEOF(obj->obj.type), &arr_len);
+		if (ret == ERR_NONE) {
+			// fetch all the elements
+			uv_jsonwriter_begin_array(json, "DATA");
+			for (uint32_t i = 0; i < arr_len; i++) {
+				uint32_t data = 0;
+				ret = uv_canopen_sdo_read(db_get_nodeid(&dev.db),
+						obj->obj.main_index, i, CANOPEN_SIZEOF(obj->obj.type), &data);
+				if (ret != ERR_NONE) {
+					break;
+				}
+				else {
+					printf("0x%x ", data);
+					fflush(stdout);
+					uv_jsonwriter_array_add_int(json, data);
+				}
+			}
+			uv_jsonwriter_end_array(json);
+		}
+		printf(", array length: %u\n", arr_len);
+		fflush(stdout);
+	}
+	else if (CANOPEN_IS_STRING(obj->obj.type)) {
+		// string type objects are of variable length. Try to read the maximum length,
+		// The INITIATE_DOMAIN_UPLOAD request should scale the read length
+		// to the string size.
+		char str[65536] = {};
+		ret = uv_canopen_sdo_read(db_get_nodeid(&dev.db), obj->obj.main_index,
+				0, sizeof(str), str);
+		if (ret == ERR_NONE) {
+			uv_jsonwriter_add_string(json, "DATA", str);
+		}
+		printf("%s\n", str);
+		fflush(stdout);
+	}
+	else {
+		// expedited objects
+		int32_t data = 0;
+		ret = uv_canopen_sdo_read(db_get_nodeid(&dev.db), obj->obj.main_index,
+				obj->obj.sub_index, CANOPEN_SIZEOF(obj->obj.type), &data);
+		if (ret == ERR_NONE) {
+			// write the received data to the json
+			uv_jsonwriter_add_int(json, "DATA", data);
+		}
+		printf("0x%x\n", data);
+		fflush(stdout);
+	}
+	uv_jsonwriter_end_object(json);
+
+	return ret;
+}
+
 
 void saveparam_step(void *ptr) {
 	this->finished = false;
 	this->progress = 0;
+	fflush(stdout);
 
-	printf("Reading the parameters as a SDO block transfer\n");
-	uint8_t data[PARAM_SIZE] = {};
-	// create task which will update the screen with the saveing process
-	uv_rtos_task_create(&update, "segsave update", UV_RTOS_MIN_STACK_SIZE,
-			NULL, UV_RTOS_IDLE_PRIORITY + 100, NULL);
-
-	uv_errors_e e = uv_canopen_sdo_read(this->nodeid, PARAM_INDEX, 0, PARAM_SIZE, data);
-	if (e == ERR_NONE) {
-		printf("Read the parameters succesfully. Saving them to file '%s'\n", this->params);
-
-		FILE *dest = fopen(this->params, "wb");
-		if (dest == NULL) {
-			printf("Failed creating the output file '%s'\n", this->params);
-		}
-		else {
-			fwrite(data, 1, sizeof(data), dest);
-			fclose(dest);
-		}
+	FILE *dest = fopen(this->file, "wb");
+	if (dest == NULL) {
+		printf("Failed creating the output file '%s'\n", this->file);
+		fflush(stdout);
 	}
 	else {
-		printf("*** ERROR: reading the parameters from the device failed ***\n");
+		char json_buffer[65536] = {};
+		uv_json_st json;
+		uv_jsonwriter_init(&json, json_buffer, sizeof(json_buffer));
+
+		uv_errors_e e = ERR_NONE;
+
+		// CANopen fields that are not found from the database file
+		// nodeid
+		db_obj_st obj;
+		obj.obj.main_index = CONFIG_CANOPEN_NODEID_INDEX;
+		obj.obj.sub_index = 0;
+		obj.obj.type = CANOPEN_UNSIGNED8;
+		e = json_add_obj(&json, &obj);
+
+		// heartbeat producer time ms
+		obj.obj.main_index = CONFIG_CANOPEN_PRODUCER_HEARTBEAT_INDEX;
+		obj.obj.sub_index = 0;
+		obj.obj.type = CANOPEN_UNSIGNED16;
+		e = json_add_obj(&json, &obj);
+
+		// heartbeat consumer
+		obj.obj.main_index = CONFIG_CANOPEN_CONSUMER_HEARTBEAT_INDEX;
+		obj.obj.type = CANOPEN_ARRAY32;
+		// note: error checking disabled for heartbeat consumer since
+		// it is not mandatory field on the device
+		e = json_add_obj(&json, &obj);
+		e = ERR_NONE;
+
+		// rxpdo's
+		for (uint32_t i = 0; i < db_get_rxpdo_count(&dev.db); i++) {
+			obj.obj.main_index = CONFIG_CANOPEN_RXPDO_COM_INDEX + i;
+			obj.obj.type = CANOPEN_ARRAY32;
+			json_add_obj(&json, &obj);
+
+			obj.obj.main_index = CONFIG_CANOPEN_RXPDO_MAP_INDEX + i;
+			obj.obj.type = CANOPEN_ARRAY32;
+			json_add_obj(&json, &obj);
+		}
+
+		// txpdo's
+		for (uint32_t i = 0; i < db_get_txpdo_count(&dev.db); i++) {
+			obj.obj.main_index = CONFIG_CANOPEN_TXPDO_COM_INDEX + i;
+			obj.obj.type = CANOPEN_ARRAY32;
+			json_add_obj(&json, &obj);
+
+			obj.obj.main_index = CONFIG_CANOPEN_TXPDO_MAP_INDEX + i;
+			obj.obj.type = CANOPEN_ARRAY32;
+			json_add_obj(&json, &obj);
+		}
+
+		int32_t i;
+		for (i = 0; i < db_get_object_count(&dev.db); i++) {
+			obj = *db_get_obj(&dev.db, i);
+			if (obj.obj_type == DB_OBJ_TYPE_NONVOL_PARAM) {
+				e = json_add_obj(&json, &obj);
+
+				if (e != ERR_NONE) {
+					break;
+				}
+			}
+		}
+		if (e != ERR_NONE) {
+			printf("**** ERROR *****\n"
+					"Reading the parameters from the device was suspended since\n"
+					"errors were encountered. \n"
+					"Parameter Main index: 0x%x, subindex: %u.\n"
+					"Error code: %u, last SDO error code: 0x%08x\n"
+					"parameter %u of %u\n\n",
+					obj.obj.main_index,
+					obj.obj.sub_index,
+					e,
+					uv_canopen_sdo_get_error(),
+					i,
+					db_get_object_count(&dev.db));
+			fflush(stdout);
+		}
+		else {
+			fwrite(json_buffer, 1, strlen(json_buffer), dest);
+			fclose(dest);
+			printf("All parameters stored successfully to '%s'\n", this->file);
+			fflush(stdout);
+		}
 	}
 	this->finished = true;
 }

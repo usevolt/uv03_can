@@ -26,9 +26,7 @@
 
 
 typedef struct {
-	char params[256];
-	uv_delay_st delay;
-
+	char file[256];
 	uint8_t nodeid;
 	uint8_t progress;
 	// true if the saving has finished

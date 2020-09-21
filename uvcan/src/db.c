@@ -230,6 +230,9 @@ void db_type_to_stdint(canopen_object_type_e type, char *dest) {
 }
 
 
+
+
+
 void db_transmission_to_str(canopen_pdo_transmission_types_e transmission, char *dest) {
 	if (transmission == CANOPEN_PDO_TRANSMISSION_ASYNC) {
 		strcpy(dest, "CANOPEN_PDO_TRANSMISSION_ASYNC");
@@ -339,6 +342,30 @@ static canopen_pdo_transmission_types_e str_to_transmission(char *json_child) {
 	}
 	return ret;
 }
+
+
+static db_obj_type_e str_to_objtype(char *json_child) {
+	char str[64];
+	db_obj_type_e ret = DB_OBJ_TYPE_UNDEFINED;
+	if (json_child != NULL) {
+		uv_jsonreader_get_string(json_child, str, sizeof(str));
+		if (strcmp(str, "NONVOL_PARAM") == 0 ||
+				strcmp(str, "NONVOL PARAM") == 0 ||
+				strcmp(str, "nonvol_param") == 0 ||
+				strcmp(str, "nonvol param") == 0) {
+			ret = DB_OBJ_TYPE_NONVOL_PARAM;
+		}
+		else if (strcmp(str, "EMCY") == 0 ||
+				strcmp(str, "emcy") == 0) {
+			ret = DB_OBJ_TYPE_EMCY;
+		}
+		else {
+			ret = DB_OBJ_TYPE_UNDEFINED;
+		}
+	}
+	return ret;
+}
+
 
 
 
@@ -692,6 +719,9 @@ static bool parse_json(db_st *this, char *json) {
 				CHECK_OBJ(data, "permissions", obj.name);
 				obj.obj.permissions = str_to_permissions(data);
 
+				data = uv_jsonreader_find_child(child, "param_type");
+				obj.obj_type = str_to_objtype(data);
+
 				if (!CANOPEN_IS_ARRAY(obj.obj.type)) {
 					// string parameters
 					if (CANOPEN_IS_STRING(obj.obj.type)) {
@@ -948,6 +978,7 @@ static bool parse_json(db_st *this, char *json) {
 		uint8_t j = 0;
 		while (strlen(emcy->info_strs[j]) != 0) {
 			db_obj_st obj;
+			obj.obj_type = DB_OBJ_TYPE_EMCY;
 			strcpy(obj.name, "EMCY_");
 			strcat(obj.name, emcy->name);
 			sprintf(obj.name + strlen(obj.name),

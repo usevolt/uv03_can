@@ -28,7 +28,6 @@
 void loadparam_step(void *dev);
 
 
-#define BLOCK_SIZE			256
 #define RESPONSE_DELAY_MS	2000
 // loads the parameters into this CANOpen index.
 // The parameter should be of type ARRAY8, where the first index

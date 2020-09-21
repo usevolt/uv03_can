@@ -82,6 +82,16 @@ void db_array_child_init(db_array_child_st *this);
 
 
 
+/// @brief: Defines the type of the database object. NONVOL_PARAM types
+/// should be Read/write data stored in the non-volatile flash memory. These
+/// can be read and written with *loadparam* & *saveparam* commands.
+typedef enum {
+	DB_OBJ_TYPE_UNDEFINED = 0,
+	DB_OBJ_TYPE_NONVOL_PARAM,
+	DB_OBJ_TYPE_EMCY,
+	DB_OBJ_TYPE_COUNT
+} db_obj_type_e;
+
 /// @brief: A single object structure
 typedef struct {
 	// Descriptive name of the object
@@ -92,6 +102,8 @@ typedef struct {
 	char dataptr[128];
 	// the object data type as a string. This holds information about signed/unsigned
 	char type_str[32];
+	// the object type. Undefined, nonvol_param or something else.
+	db_obj_type_e obj_type;
 	union {
 		// for integer objects
 		struct {
