@@ -19,6 +19,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <uv_json.h>
 #include "loadparam.h"
 #include "main.h"
 
@@ -26,38 +27,6 @@
 
 
 void loadparam_step(void *dev);
-
-
-#define RESPONSE_DELAY_MS	2000
-// loads the parameters into this CANOpen index.
-// The parameter should be of type ARRAY8, where the first index
-// defines the parameter size.
-#define PARAM_INDEX			0x2004
-#define OP_INDEX			0x2002
-#define LOADOP_SUBINDEX		1
-
-
-static void update(void *ptr) {
-	int32_t data_index = 0;
-	while (true) {
-		if (_canopen.sdo.client.data_index != data_index) {
-			int32_t percent = (_canopen.sdo.client.data_index * 100 +
-					_canopen.sdo.client.data_count / 2) /
-					_canopen.sdo.client.data_count;
-			printf("downloaded %u / %u bytes (%u %%)\n",
-					_canopen.sdo.client.data_index,
-					_canopen.sdo.client.data_count,
-					percent);
-			fflush(stdout);
-			this->progress = percent;
-			if (percent == 100) {
-				break;
-			}
-		}
-		data_index = _canopen.sdo.client.data_index;
-		uv_rtos_task_delay(20);
-	}
-}
 
 
 
@@ -71,9 +40,7 @@ bool cmd_loadparam(const char *arg) {
 	}
 	else {
 		printf("Parameter file '%s' selected\n", arg);
-		strcpy(this->params, arg);
-		this->nodeid = db_get_nodeid(&dev.db);
-		uv_delay_init(&this->delay, RESPONSE_DELAY_MS);
+		strcpy(this->file, arg);
 		add_task(loadparam_step);
 		uv_can_set_up();
 	}
@@ -85,29 +52,30 @@ bool cmd_loadparam(const char *arg) {
 
 void loadparam_step(void *ptr) {
 	this->finished = false;
-	this->progress = 0;
 
-
-	FILE *fptr = fopen(this->params, "rb");
+	FILE *fptr = fopen(this->file, "rb");
 
 	if (fptr == NULL) {
 		// failed to open the file, exit this task
-		printf("Failed to open parameter file '%s'.\n", this->params);
+		printf("Failed to open parameter file '%s'.\n", this->file);
 		fflush(stdout);
+	}
+	else if (!db_is_loaded(&dev.db)) {
+		printf("*** ERROR ****\n"
+				"The database has to be loaded with --db in order to load params.\n");
 	}
 	else {
 		int32_t size;
 		fseek(fptr, 0, SEEK_END);
 		size = ftell(fptr);
 		rewind(fptr);
-		bool success = false;
 
-		printf("Opened file '%s'. Size: %i bytes.\n", this->params, size);
+		printf("Opened file '%s'. Size: %i bytes.\n", this->file, size);
 		fflush(stdout);
 
-		printf("Downloading the parameters as a SDO block transfer\n");
-		uint8_t data[size];
-		size_t ret = fread(data, size, 1, fptr);
+		char json[size];
+		size_t ret = fread(json, size, 1, fptr);
+		fclose(fptr);
 
 		if (!ret) {
 			printf("ERROR: Reading file failed. "
@@ -115,37 +83,36 @@ void loadparam_step(void *ptr) {
 			fflush(stdout);
 		}
 		else {
-			// create task which will update the screen with the loading process
-			uv_rtos_task_create(&update, "segload update", UV_RTOS_MIN_STACK_SIZE,
-					NULL, UV_RTOS_IDLE_PRIORITY + 100, NULL);
+			uv_errors_e e = ERR_NONE;
 
-			uv_errors_e e = uv_canopen_sdo_write(this->nodeid,
-					PARAM_INDEX, 0, size, data);
-			if (e != ERR_NONE) {
-				printf("Downloading the parameters failed. Error code: %u\n", e);
-				success = false;
+			uv_jsonreader_init(json, strlen(json));
+			char *obj = uv_jsonreader_find_child(json, "obj 0");
+			if (obj != NULL) {
+				while (obj != NULL) {
+
+
+					if (!uv_jsonreader_get_next_sibling(obj, &obj)) {
+						break;
+					}
+				}
 			}
 			else {
-				success = true;
+				printf("*** ERROR ****\n"
+						"Couldn't find 'obj 0' from the json file.\n");
+				e = ERR_ABORTED;
 			}
-		}
-
-		fclose(fptr);
-		if (success) {
-			// loadup the current op
-			uint8_t value = 1;
-			uv_errors_e e = uv_canopen_sdo_write(this->nodeid,
-					OP_INDEX, LOADOP_SUBINDEX, sizeof(value), &value);
 
 			if (e == ERR_NONE) {
 				fflush(stdout);
 				uv_rtos_task_delay(1000);
 				printf("Saving the parameters...\n");
-				e = uv_canopen_sdo_store_params(this->nodeid, MEMORY_ALL_PARAMS);
+				e = uv_canopen_sdo_store_params(db_get_nodeid(&dev.db),
+						MEMORY_ALL_PARAMS);
 				fflush(stdout);
 				uv_rtos_task_delay(1000);
 				printf("Resetting the device...\n");
-				uv_canopen_nmt_master_send_cmd(this->nodeid, CANOPEN_NMT_CMD_RESET_NODE);
+				uv_canopen_nmt_master_send_cmd(db_get_nodeid(&dev.db),
+						CANOPEN_NMT_CMD_RESET_NODE);
 				if (e == ERR_NONE) {
 					printf("Done!\n");
 					fflush(stdout);
@@ -158,8 +125,8 @@ void loadparam_step(void *ptr) {
 				fflush(stdout);
 			}
 			else {
-				printf("Error when fetching operator settings: %u. \n"
-						"Loading the parameters failed\n", e);
+				printf("Error when fetching operator settings: 0x%x. \n"
+						"Loading the parameters failed\n", uv_canopen_sdo_get_error());
 				fflush(stdout);
 			}
 		}

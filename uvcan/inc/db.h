@@ -87,7 +87,16 @@ void db_array_child_init(db_array_child_st *this);
 /// can be read and written with *loadparam* & *saveparam* commands.
 typedef enum {
 	DB_OBJ_TYPE_UNDEFINED = 0,
+	// nonvolatile data paramter that is read / written with saveparam / loadparam commands
 	DB_OBJ_TYPE_NONVOL_PARAM,
+	// The operator database request object. CANOPEN_ARRAY8 type parameter,
+	// with load, delete & copy commands as subindexes
+	DB_OBJ_TYPE_OPDB,
+	// the operator count parameter
+	DB_OBJ_TYPE_OP_COUNT,
+	// the current operator parameter
+	DB_OBJ_TYPE_CURRENT_OP,
+	// EMCY STR entires
 	DB_OBJ_TYPE_EMCY,
 	DB_OBJ_TYPE_COUNT
 } db_obj_type_e;

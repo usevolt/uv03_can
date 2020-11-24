@@ -26,11 +26,8 @@
 
 
 typedef struct {
-	char params[256];
-	uv_delay_st delay;
+	char file[256];
 
-	uint8_t nodeid;
-	uint8_t progress;
 	// true if the loading has finished
 	bool finished;
 } loadparam_st;
@@ -41,11 +38,6 @@ typedef struct {
 /// successful and failure loading from each other
 static inline bool loadparam_is_finished(loadparam_st *this) {
 	return this->finished;
-}
-
-/// @brief: Returns the progress percent while downloading
-static inline uint8_t loadparam_get_progress(loadparam_st *this) {
-	return this->progress;
 }
 
 

@@ -350,13 +350,27 @@ static db_obj_type_e str_to_objtype(char *json_child) {
 	if (json_child != NULL) {
 		uv_jsonreader_get_string(json_child, str, sizeof(str));
 		if (strcmp(str, "NONVOL_PARAM") == 0 ||
-				strcmp(str, "NONVOL PARAM") == 0 ||
-				strcmp(str, "nonvol_param") == 0 ||
-				strcmp(str, "nonvol param") == 0) {
+				strcmp(str, "NONVOL PARAM") == 0) {
 			ret = DB_OBJ_TYPE_NONVOL_PARAM;
 		}
+		else if (strcmp(str, "OPDB") == 0 ||
+				strcmp(str, "OPERATOR DATABASE") == 0) {
+			ret = DB_OBJ_TYPE_OPDB;
+		}
+		else if (strcmp(str, "OP_COUNT") == 0 ||
+				strcmp(str, "OP COUNT") == 0 ||
+				strcmp(str, "OPERATOR COUNT") == 0 ||
+				strcmp(str, "OPERATOR_COUNT") == 0) {
+			ret = DB_OBJ_TYPE_OP_COUNT;
+		}
+		else if (strcmp(str, "CURRENT_OP") == 0 ||
+				strcmp(str, "CURRENT OP") == 0 ||
+				strcmp(str, "CURRENT OPERATOR") == 0 ||
+				strcmp(str, "CURRENT_OPERATOR") == 0) {
+			ret = DB_OBJ_TYPE_CURRENT_OP;
+		}
 		else if (strcmp(str, "EMCY") == 0 ||
-				strcmp(str, "emcy") == 0) {
+				strcmp(str, "EMERGENCY") == 0) {
 			ret = DB_OBJ_TYPE_EMCY;
 		}
 		else {
@@ -719,7 +733,7 @@ static bool parse_json(db_st *this, char *json) {
 				CHECK_OBJ(data, "permissions", obj.name);
 				obj.obj.permissions = str_to_permissions(data);
 
-				data = uv_jsonreader_find_child(child, "param_type");
+				data = uv_jsonreader_find_child(child, "data_type");
 				obj.obj_type = str_to_objtype(data);
 
 				if (!CANOPEN_IS_ARRAY(obj.obj.type)) {

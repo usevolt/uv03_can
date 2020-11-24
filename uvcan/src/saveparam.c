@@ -27,6 +27,8 @@
 #define this (&dev.saveparam)
 
 
+
+
 void saveparam_step(void *dev);
 
 
@@ -55,21 +57,22 @@ bool cmd_saveparam(const char *arg) {
 
 
 /// @brief: fetches the CANopen parameter from the device and writes it into the json
-static uv_errors_e json_add_obj(uv_json_st *json, db_obj_st *obj) {
+static uv_errors_e json_add_obj(uv_json_st *json, db_obj_st *obj, char *info_str) {
 	uv_errors_e ret = ERR_NONE;
 
-	static uint32_t i = 0;
-
-	char name[64];
-	sprintf(name, "obj %u", i++);
-	uv_jsonwriter_begin_object(json, name);
+	uv_jsonwriter_begin_object(json);
+	if (info_str != NULL && strlen(info_str) != 0) {
+		uv_jsonwriter_add_string(json, "INFO", info_str);
+	}
 	uv_jsonwriter_add_int(json, "MAININDEX", obj->obj.main_index);
 	uv_jsonwriter_add_int(json, "SUBINDEX", obj->obj.sub_index);
 	char type[64];
 	db_type_to_str(obj->obj.type, type);
 	uv_jsonwriter_add_string(json, "TYPE", type);
 
-	printf("Reading parameter 0x%x, type: %s, data: ",
+	printf("Reading parameter %s 0x%x, type: %s\n"
+			"data: ",
+			info_str,
 			obj->obj.main_index,
 			type);
 	fflush(stdout);
@@ -85,7 +88,7 @@ static uv_errors_e json_add_obj(uv_json_st *json, db_obj_st *obj) {
 			for (uint32_t i = 0; i < arr_len; i++) {
 				uint32_t data = 0;
 				ret = uv_canopen_sdo_read(db_get_nodeid(&dev.db),
-						obj->obj.main_index, i, CANOPEN_SIZEOF(obj->obj.type), &data);
+						obj->obj.main_index, i + 1, CANOPEN_SIZEOF(obj->obj.type), &data);
 				if (ret != ERR_NONE) {
 					break;
 				}
@@ -97,7 +100,7 @@ static uv_errors_e json_add_obj(uv_json_st *json, db_obj_st *obj) {
 			}
 			uv_jsonwriter_end_array(json);
 		}
-		printf(", array length: %u\n", arr_len);
+		printf("\narray length: %u\n", arr_len);
 		fflush(stdout);
 	}
 	else if (CANOPEN_IS_STRING(obj->obj.type)) {
@@ -131,6 +134,7 @@ static uv_errors_e json_add_obj(uv_json_st *json, db_obj_st *obj) {
 }
 
 
+
 void saveparam_step(void *ptr) {
 	this->finished = false;
 	this->progress = 0;
@@ -145,85 +149,183 @@ void saveparam_step(void *ptr) {
 		char json_buffer[65536] = {};
 		uv_json_st json;
 		uv_jsonwriter_init(&json, json_buffer, sizeof(json_buffer));
+		uv_jsonwriter_begin_array(&json, "PARAMS");
 
 		uv_errors_e e = ERR_NONE;
+		db_obj_st obj;
 
 		// CANopen fields that are not found from the database file
 		// nodeid
-		db_obj_st obj;
 		obj.obj.main_index = CONFIG_CANOPEN_NODEID_INDEX;
 		obj.obj.sub_index = 0;
 		obj.obj.type = CANOPEN_UNSIGNED8;
-		e = json_add_obj(&json, &obj);
+		e |= json_add_obj(&json, &obj, "nodeid");
 
 		// heartbeat producer time ms
 		obj.obj.main_index = CONFIG_CANOPEN_PRODUCER_HEARTBEAT_INDEX;
 		obj.obj.sub_index = 0;
 		obj.obj.type = CANOPEN_UNSIGNED16;
-		e = json_add_obj(&json, &obj);
+		e |= json_add_obj(&json, &obj, "heartbeat producer");
 
 		// heartbeat consumer
 		obj.obj.main_index = CONFIG_CANOPEN_CONSUMER_HEARTBEAT_INDEX;
 		obj.obj.type = CANOPEN_ARRAY32;
 		// note: error checking disabled for heartbeat consumer since
 		// it is not mandatory field on the device
-		e = json_add_obj(&json, &obj);
-		e = ERR_NONE;
+		json_add_obj(&json, &obj, "heartbeat consumer");
 
 		// rxpdo's
 		for (uint32_t i = 0; i < db_get_rxpdo_count(&dev.db); i++) {
 			obj.obj.main_index = CONFIG_CANOPEN_RXPDO_COM_INDEX + i;
 			obj.obj.type = CANOPEN_ARRAY32;
-			json_add_obj(&json, &obj);
+			char str[64];
+			sprintf(str, "rxpdo %i com", i);
+			e |= json_add_obj(&json, &obj, str);
 
 			obj.obj.main_index = CONFIG_CANOPEN_RXPDO_MAP_INDEX + i;
 			obj.obj.type = CANOPEN_ARRAY32;
-			json_add_obj(&json, &obj);
+			sprintf(str, "rxpdo %i map", i);
+			e |= json_add_obj(&json, &obj, str);
 		}
 
 		// txpdo's
 		for (uint32_t i = 0; i < db_get_txpdo_count(&dev.db); i++) {
 			obj.obj.main_index = CONFIG_CANOPEN_TXPDO_COM_INDEX + i;
 			obj.obj.type = CANOPEN_ARRAY32;
-			json_add_obj(&json, &obj);
+			char str[64];
+			sprintf(str, "txpdo %i com", i);
+			e |= json_add_obj(&json, &obj, str);
 
 			obj.obj.main_index = CONFIG_CANOPEN_TXPDO_MAP_INDEX + i;
 			obj.obj.type = CANOPEN_ARRAY32;
-			json_add_obj(&json, &obj);
+			sprintf(str, "txpdo %i map", i);
+			e |= json_add_obj(&json, &obj, str);
 		}
 
-		int32_t i;
-		for (i = 0; i < db_get_object_count(&dev.db); i++) {
-			obj = *db_get_obj(&dev.db, i);
-			if (obj.obj_type == DB_OBJ_TYPE_NONVOL_PARAM) {
-				e = json_add_obj(&json, &obj);
 
-				if (e != ERR_NONE) {
-					break;
-				}
+		// fetch the active operator and the operator count
+		uint32_t current_op = 0;
+		uint32_t op_count = 0;
+		db_obj_st *opdb_obj = NULL;
+		for (uint32_t i = 0; i < db_get_object_count(&dev.db); i++) {
+			db_obj_st *o = db_get_obj(&dev.db, i);
+			if (o->obj_type == DB_OBJ_TYPE_CURRENT_OP) {
+				e |= uv_canopen_sdo_read(db_get_nodeid(&dev.db), o->obj.main_index,
+						o->obj.sub_index, CANOPEN_SIZEOF(o->obj.type), &current_op);
+				uv_jsonwriter_begin_object(&json);
+				uv_jsonwriter_add_string(&json, "INFO", "CURRENT_OP");
+				uv_jsonwriter_add_int(&json, "MAININDEX", o->obj.main_index);
+				uv_jsonwriter_add_int(&json, "SUBINDEX", o->obj.sub_index);
+				char type[64];
+				db_type_to_str(o->obj.type, type);
+				uv_jsonwriter_add_string(&json, "TYPE", type);
+				uv_jsonwriter_add_int(&json, "DATA", current_op);
+				uv_jsonwriter_end_object(&json);
+			}
+			else if (o->obj_type == DB_OBJ_TYPE_OP_COUNT) {
+				e |= uv_canopen_sdo_read(db_get_nodeid(&dev.db), o->obj.main_index,
+						o->obj.sub_index, CANOPEN_SIZEOF(o->obj.type), &op_count);
+				uv_jsonwriter_begin_object(&json);
+				uv_jsonwriter_add_string(&json, "INFO", "OP_COUNT");
+				uv_jsonwriter_add_int(&json, "MAININDEX", o->obj.main_index);
+				uv_jsonwriter_add_int(&json, "SUBINDEX", o->obj.sub_index);
+				char type[64];
+				db_type_to_str(o->obj.type, type);
+				uv_jsonwriter_add_string(&json, "TYPE", type);
+				uv_jsonwriter_add_int(&json, "DATA", op_count);
+				uv_jsonwriter_end_object(&json);
+			}
+			else if (o->obj_type == DB_OBJ_TYPE_OPDB) {
+				opdb_obj = o;
+			}
+			else {
+
 			}
 		}
-		if (e != ERR_NONE) {
-			printf("**** ERROR *****\n"
-					"Reading the parameters from the device was suspended since\n"
-					"errors were encountered. \n"
-					"Parameter Main index: 0x%x, subindex: %u.\n"
-					"Error code: %u, last SDO error code: 0x%08x\n"
-					"parameter %u of %u\n\n",
-					obj.obj.main_index,
-					obj.obj.sub_index,
-					e,
-					uv_canopen_sdo_get_error(),
-					i,
-					db_get_object_count(&dev.db));
-			fflush(stdout);
+
+		if (op_count > 0 && opdb_obj != NULL) {
+			// end PARAMS array
+			uv_jsonwriter_end_array(&json);
+
+			// multiple operators found on the device. group all the parameters
+			// operator-wise in an array of objects.
+			uv_jsonwriter_begin_array(&json, "OPERATORS");
+
+			for (uint32_t i = 0; i < op_count; i++) {
+				// change the operator on the device
+				uint32_t val = i + 1;
+				e |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), opdb_obj->obj.main_index,
+						1, CANOPEN_SIZEOF(opdb_obj->obj.type), &val);
+				// wait for the device to switch the operator
+				uv_rtos_task_delay(100);
+
+				uv_jsonwriter_begin_array(&json, "");
+				for (int32_t i = 0; i < db_get_object_count(&dev.db); i++) {
+					obj = *db_get_obj(&dev.db, i);
+					if (obj.obj_type == DB_OBJ_TYPE_NONVOL_PARAM) {
+						e |= json_add_obj(&json, &obj, obj.name);
+					}
+				}
+				// end PARAMS array
+				uv_jsonwriter_end_array(&json);
+			}
+			// end OPERATORS array
+			uv_jsonwriter_end_array(&json);
+
+			// lastly set the current operator back to the default one on the device
+			uint32_t val = current_op + 1;
+			e |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), opdb_obj->obj.main_index,
+					1, CANOPEN_SIZEOF(opdb_obj->obj.type), &val);
 		}
 		else {
-			fwrite(json_buffer, 1, strlen(json_buffer), dest);
-			fclose(dest);
-			printf("All parameters stored successfully to '%s'\n", this->file);
+			// current_op and op_count parameters could not be found.
+			// Thus just load all the parameters as-is.
+			for (int32_t i = 0; i < db_get_object_count(&dev.db); i++) {
+				obj = *db_get_obj(&dev.db, i);
+				if (obj.obj_type == DB_OBJ_TYPE_NONVOL_PARAM) {
+					e |= json_add_obj(&json, &obj, obj.name);
+				}
+			}
+			// end PARAMS array
+			uv_jsonwriter_end_array(&json);
+		}
+
+
+		// end the whole JSON file
+		uv_jsonwriter_end(&json, NULL);
+
+		if (e != ERR_NONE) {
+			printf("\n**** ERROR *****\n"
+					"Some or all of the parameters returned an error. Some parameters\n"
+					"might not be stored correctly.\n\n");
 			fflush(stdout);
 		}
+		if (opdb_obj == NULL || op_count == 0) {
+			printf("\n**** WARNING *****\n"
+					"Operator database parameter or operator count parameter not\n"
+					"found on the device. All parameters were saved in PARAMS array.\n\n");
+			fflush(stdout);
+		}
+		fwrite(json_buffer, 1, strlen(json_buffer), dest);
+		fclose(dest);
+		printf("Refactoring the JSON file\n");
+		fflush(stdout);
+		char cmd[1024];
+		char tempname[270];
+		sprintf(tempname, "__%s_temp", this->file);
+		sprintf(cmd, "jq '.' %s > %s", this->file, tempname);
+		printf("Running the command: %s\n", cmd);
+		fflush(stdout);
+		if (system(cmd) == 0) {
+			// copy the refactored output to the actual file and remove the temp file
+			sprintf(cmd, "cp %s %s", tempname, this->file);
+			if (system(cmd));
+		}
+		sprintf(cmd, "rm %s", tempname);
+		if (system(cmd));
+
+		printf("All parameters stored successfully to '%s'\n", this->file);
+		fflush(stdout);
 	}
 	this->finished = true;
 }
