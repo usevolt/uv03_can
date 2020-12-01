@@ -57,18 +57,23 @@ bool cmd_saveparam(const char *arg) {
 
 
 /// @brief: fetches the CANopen parameter from the device and writes it into the json
-static uv_errors_e json_add_obj(uv_json_st *json, db_obj_st *obj, char *info_str) {
+static uv_errors_e json_add_obj(uv_json_st *dest_json, db_obj_st *obj, char *info_str) {
 	uv_errors_e ret = ERR_NONE;
-
-	uv_jsonwriter_begin_object(json);
+	char bfr[1024] = {};
+	uv_json_st json;
+	// we create object on an own json file. Since JSON file itself wraps the data
+	// inside an object, we dont need to create additional object for the data
+	uv_jsonwriter_init(&json, bfr, sizeof(bfr));
 	if (info_str != NULL && strlen(info_str) != 0) {
-		uv_jsonwriter_add_string(json, "INFO", info_str);
+		uv_jsonwriter_add_string(&json, "INFO", info_str);
 	}
-	uv_jsonwriter_add_int(json, "MAININDEX", obj->obj.main_index);
-	uv_jsonwriter_add_int(json, "SUBINDEX", obj->obj.sub_index);
+	uv_jsonwriter_add_int(&json, "MAININDEX", obj->obj.main_index);
+	if (CANOPEN_IS_INTEGER(obj->obj.type)) {
+		uv_jsonwriter_add_int(&json, "SUBINDEX", obj->obj.sub_index);
+	}
 	char type[64];
 	db_type_to_str(obj->obj.type, type);
-	uv_jsonwriter_add_string(json, "TYPE", type);
+	uv_jsonwriter_add_string(&json, "TYPE", type);
 
 	printf("Reading parameter %s 0x%x, type: %s\n"
 			"data: ",
@@ -84,7 +89,7 @@ static uv_errors_e json_add_obj(uv_json_st *json, db_obj_st *obj, char *info_str
 				obj->obj.main_index, 0, CANOPEN_SIZEOF(obj->obj.type), &arr_len);
 		if (ret == ERR_NONE) {
 			// fetch all the elements
-			uv_jsonwriter_begin_array(json, "DATA");
+			uv_jsonwriter_begin_array(&json, "DATA");
 			for (uint32_t i = 0; i < arr_len; i++) {
 				uint32_t data = 0;
 				ret = uv_canopen_sdo_read(db_get_nodeid(&dev.db),
@@ -95,10 +100,10 @@ static uv_errors_e json_add_obj(uv_json_st *json, db_obj_st *obj, char *info_str
 				else {
 					printf("0x%x ", data);
 					fflush(stdout);
-					uv_jsonwriter_array_add_int(json, data);
+					uv_jsonwriter_array_add_int(&json, data);
 				}
 			}
-			uv_jsonwriter_end_array(json);
+			uv_jsonwriter_end_array(&json);
 		}
 		printf("\narray length: %u\n", arr_len);
 		fflush(stdout);
@@ -111,7 +116,7 @@ static uv_errors_e json_add_obj(uv_json_st *json, db_obj_st *obj, char *info_str
 		ret = uv_canopen_sdo_read(db_get_nodeid(&dev.db), obj->obj.main_index,
 				0, sizeof(str), str);
 		if (ret == ERR_NONE) {
-			uv_jsonwriter_add_string(json, "DATA", str);
+			uv_jsonwriter_add_string(&json, "DATA", str);
 		}
 		printf("%s\n", str);
 		fflush(stdout);
@@ -123,12 +128,20 @@ static uv_errors_e json_add_obj(uv_json_st *json, db_obj_st *obj, char *info_str
 				obj->obj.sub_index, CANOPEN_SIZEOF(obj->obj.type), &data);
 		if (ret == ERR_NONE) {
 			// write the received data to the json
-			uv_jsonwriter_add_int(json, "DATA", data);
+			uv_jsonwriter_add_int(&json, "DATA", data);
 		}
 		printf("0x%x\n", data);
 		fflush(stdout);
 	}
-	uv_jsonwriter_end_object(json);
+	uv_json_errors_e e = ERR_NONE;
+	uv_jsonwriter_end(&json, &e);
+	ret |= e;
+	// append the temp json file to the dest_json if everything was successful
+	if (ret == ERR_NONE) {
+		if (!uv_jsonwriter_append_json(dest_json, bfr)) {
+			ret |= ERR_ABORTED;
+		}
+	}
 
 	return ret;
 }
@@ -212,28 +225,10 @@ void saveparam_step(void *ptr) {
 			if (o->obj_type == DB_OBJ_TYPE_CURRENT_OP) {
 				e |= uv_canopen_sdo_read(db_get_nodeid(&dev.db), o->obj.main_index,
 						o->obj.sub_index, CANOPEN_SIZEOF(o->obj.type), &current_op);
-				uv_jsonwriter_begin_object(&json);
-				uv_jsonwriter_add_string(&json, "INFO", "CURRENT_OP");
-				uv_jsonwriter_add_int(&json, "MAININDEX", o->obj.main_index);
-				uv_jsonwriter_add_int(&json, "SUBINDEX", o->obj.sub_index);
-				char type[64];
-				db_type_to_str(o->obj.type, type);
-				uv_jsonwriter_add_string(&json, "TYPE", type);
-				uv_jsonwriter_add_int(&json, "DATA", current_op);
-				uv_jsonwriter_end_object(&json);
 			}
 			else if (o->obj_type == DB_OBJ_TYPE_OP_COUNT) {
 				e |= uv_canopen_sdo_read(db_get_nodeid(&dev.db), o->obj.main_index,
 						o->obj.sub_index, CANOPEN_SIZEOF(o->obj.type), &op_count);
-				uv_jsonwriter_begin_object(&json);
-				uv_jsonwriter_add_string(&json, "INFO", "OP_COUNT");
-				uv_jsonwriter_add_int(&json, "MAININDEX", o->obj.main_index);
-				uv_jsonwriter_add_int(&json, "SUBINDEX", o->obj.sub_index);
-				char type[64];
-				db_type_to_str(o->obj.type, type);
-				uv_jsonwriter_add_string(&json, "TYPE", type);
-				uv_jsonwriter_add_int(&json, "DATA", op_count);
-				uv_jsonwriter_end_object(&json);
 			}
 			else if (o->obj_type == DB_OBJ_TYPE_OPDB) {
 				opdb_obj = o;
@@ -266,11 +261,20 @@ void saveparam_step(void *ptr) {
 						e |= json_add_obj(&json, &obj, obj.name);
 					}
 				}
-				// end PARAMS array
+				// end PARAMS array on OP
 				uv_jsonwriter_end_array(&json);
 			}
 			// end OPERATORS array
 			uv_jsonwriter_end_array(&json);
+
+			// add current op field
+			uv_jsonwriter_add_int(&json, "CURRENT_OP", current_op);
+
+			// add opdb information
+			uv_jsonwriter_add_int(&json, "OPDB_MAININDEX", opdb_obj->obj.main_index);
+			char str[128];
+			db_type_to_str(opdb_obj->obj.type, str);
+			uv_jsonwriter_add_string(&json, "OPDB_TYPE", str);
 
 			// lastly set the current operator back to the default one on the device
 			uint32_t val = current_op + 1;
@@ -289,6 +293,7 @@ void saveparam_step(void *ptr) {
 			// end PARAMS array
 			uv_jsonwriter_end_array(&json);
 		}
+
 
 
 		// end the whole JSON file

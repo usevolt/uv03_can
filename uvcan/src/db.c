@@ -274,7 +274,7 @@ void db_permission_to_longstr(canopen_permissions_e permissions, char *dest) {
 }
 
 
-static canopen_object_type_e str_to_type(char *json_child) {
+canopen_object_type_e db_jsonval_to_type(char *json_child) {
 	char str[128];
 	canopen_object_type_e ret;
 	uv_jsonreader_get_string(json_child, str, sizeof(str));
@@ -676,7 +676,7 @@ static bool parse_json(db_st *this, char *json) {
 						// the data type of the enum
 						v = uv_jsonreader_find_child(d, "type");
 						if (v != NULL) {
-							define.data_type = str_to_type(v);
+							define.data_type = db_jsonval_to_type(v);
 						}
 						else {
 							define.data_type = CANOPEN_UNDEFINED;
@@ -726,7 +726,7 @@ static bool parse_json(db_st *this, char *json) {
 
 				data = uv_jsonreader_find_child(child, "type");
 				CHECK_OBJ(data, "type", obj.name);
-				obj.obj.type = str_to_type(data);
+				obj.obj.type = db_jsonval_to_type(data);
 				uv_jsonreader_get_string(data, obj.type_str, sizeof(obj.type_str));
 
 				data = uv_jsonreader_find_child(child, "permissions");
