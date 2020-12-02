@@ -149,6 +149,13 @@ int main(int argc, char *argv[]) {
 			break;
 		}
 	}
+	if (optind < argc) {
+		this->argv_count = argc - optind;
+		this->nonopt_argv = &(argv[optind]);
+	}
+	else {
+		this->argv_count = 0;
+	}
 	// if none arguments were given,
 	// uvcan starts with --ui command
 	if (none_args && !error) {

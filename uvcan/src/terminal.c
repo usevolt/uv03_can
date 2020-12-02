@@ -32,7 +32,9 @@ static char rx_buffer[1024];
 static uv_ring_buffer_st rx;
 static bool uw_terminal = false;
 static uv_mutex_st mutex;
-
+#define END_DELAY_MS	300
+uv_delay_st end_delay;
+static uint32_t arg_count = 0;
 
 static void command_step(void *ptr);
 static void command_tx(void *ptr);
@@ -41,8 +43,13 @@ bool cmd_terminal(const char *arg) {
 
 	add_task(&command_step);
 
+	uv_delay_init(&end_delay, END_DELAY_MS);
+
 	uv_rtos_task_create(&command_tx, "tx",
 			UV_RTOS_MIN_STACK_SIZE, NULL, UV_RTOS_IDLE_PRIORITY, NULL);
+
+	arg_count = 0;
+
 
 	return true;
 }
@@ -85,8 +92,24 @@ static void can_callb(void *ptr, uv_can_message_st *msg) {
 
 static void command_tx(void *ptr) {
 	while (true) {
-		char str[256];
-		char * ret = fgets(str, sizeof(str), stdin);
+		char str[1024];
+		char *ret;
+		if (dev.argv_count != 0) {
+			if (arg_count >= dev.argv_count) {
+				// all arguments have been written and we can quit
+				break;
+			}
+			else {
+				// argument was given. Write the argument to the device
+				strcpy(str, dev.nonopt_argv[arg_count]);
+				arg_count++;
+				strcat(str, "\n");
+				ret = str;
+			}
+		}
+		else {
+			ret = fgets(str, sizeof(str), stdin);
+		}
 		if (ret != NULL) {
 
 			uint8_t len = 0;
@@ -108,6 +131,11 @@ static void command_tx(void *ptr) {
 				msg.data_8bit[2] = UV_TERMINAL_CAN_INDEX / 256;
 				msg.data_8bit[3] = UV_TERMINAL_CAN_SUBINDEX;
 				for (int i = 0; i < strlen(str); i++) {
+					// backslashes
+					if (str[i] == '\\' &&
+							i < strlen(str) - 1) {
+
+					}
 					msg.data_8bit[4 + len++] = str[i];
 					if (len == 4) {
 						msg.data_length = 8;
@@ -122,7 +150,7 @@ static void command_tx(void *ptr) {
 			}
 		}
 
-		uv_rtos_task_delay(20);
+		uv_rtos_task_delay(100);
 	}
 }
 
@@ -137,6 +165,8 @@ static void command_step(void *ptr) {
 	while (true) {
 
 		char c;
+		bool br = false;
+		uint16_t step_ms = 20;
 
 		uv_errors_e e = ERR_NONE;
 		while (e == ERR_NONE) {
@@ -144,11 +174,22 @@ static void command_step(void *ptr) {
 			e = uv_ring_buffer_pop(&rx, &c);
 			uv_mutex_unlock(&mutex);
 			if (e == ERR_NONE) {
+				uv_delay_init(&end_delay, END_DELAY_MS);
 				printf("%c", c);
 				fflush(stdout);
 			}
+			if (dev.argv_count != 0 && uv_delay(&end_delay, step_ms)) {
+				printf("Done\n");
+				fflush(stdout);
+				br = true;
+				break;
+			}
 		}
 
-		uv_rtos_task_delay(20);
+		if (br) {
+			break;
+		}
+
+		uv_rtos_task_delay(step_ms);
 	}
 }
