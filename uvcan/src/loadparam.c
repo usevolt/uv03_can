@@ -92,7 +92,7 @@ static uv_errors_e load_param(char *json_obj) {
 		uv_jsonreader_get_string(val, info, sizeof(info));
 	}
 
-	if (ret != ERR_ABORTED) {
+	if (ret == ERR_NONE) {
 		char t[64];
 		db_type_to_str(type, t);
 		printf("Writing object '%s'\n"
@@ -100,10 +100,13 @@ static uv_errors_e load_param(char *json_obj) {
 		fflush(stdout);
 		if (CANOPEN_IS_ARRAY(type)) {
 			for (uint32_t i = 0; i < uv_jsonreader_array_get_size(data); i++) {
-				char *s = uv_jsonreader_array_at(data, i);
-				uint32_t d = uv_jsonreader_get_int(s);
+				uint32_t d = uv_jsonreader_array_get_int(data, i);
 				ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), mindex, i + 1,
 						CANOPEN_SIZEOF(type), &d);
+				if (ret != ERR_NONE) {
+					printf("*** ERROR ***\n"
+							"Array loading failed for subindex %u\n", sindex);
+				}
 			}
 		}
 		else if (CANOPEN_IS_STRING(type)) {
@@ -111,12 +114,20 @@ static uv_errors_e load_param(char *json_obj) {
 			uv_jsonreader_get_string(data, str, sizeof(str));
 			ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
 					mindex, 0, strlen(str) + 1, str);
+			if (ret != ERR_NONE) {
+				printf("*** ERROR ***\n"
+						"Loading the string '%s' failed.\n", str);
+			}
 		}
 		else {
 			// data is integer data
 			uint32_t d = uv_jsonreader_get_int(data);
 			ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
 					mindex, sindex, CANOPEN_SIZEOF(type), &d);
+			if (ret != ERR_NONE) {
+				printf("*** ERROR ***\n"
+						"Parameter loading failed for sub index %u\n", sindex);
+			}
 		}
 	}
 	else {
@@ -258,6 +269,10 @@ void loadparam_step(void *ptr) {
 					fflush(stdout);
 					e |= uv_canopen_sdo_store_params(db_get_nodeid(&dev.db),
 							MEMORY_ALL_PARAMS);
+					if (e != ERR_NONE) {
+						printf("*** ERROR ***\n"
+								"Error encountered when storing the parameters for op %u\n", i + 1);
+					}
 					// wait for the parameters to be saved
 					uv_rtos_task_delay(100);
 				}
@@ -266,7 +281,7 @@ void loadparam_step(void *ptr) {
 				uint32_t data = uv_jsonreader_get_int(current_op_json);
 				printf("Setting the current operator to op %i\n", data + 1);
 				fflush(stdout);
-				uv_canopen_sdo_write(db_get_nodeid(&dev.db), opdb_mindex, 1,
+				e |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), opdb_mindex, 1,
 						 CANOPEN_SIZEOF(opdb_type), &data);
 				uv_rtos_task_delay(300);
 			}

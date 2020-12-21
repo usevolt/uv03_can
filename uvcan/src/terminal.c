@@ -35,6 +35,8 @@ static uv_mutex_st mutex;
 #define END_DELAY_MS	300
 uv_delay_st end_delay;
 static uint32_t arg_count = 0;
+bool responded = true;
+#define WAIT_FOR_RESPONSE_MS	500
 
 static void command_step(void *ptr);
 static void command_tx(void *ptr);
@@ -84,11 +86,34 @@ static void can_callb(void *ptr, uv_can_message_st *msg) {
 			for (int i = 4; i < msg->data_length; i++) {
 				uv_ring_buffer_push(&rx, &msg->data_8bit[i]);
 			}
+			responded = true;
 		}
 	}
 	uv_mutex_unlock(&mutex);
 }
 
+
+static bool wait_for_response(void) {
+	bool ret = false;
+
+	uint32_t step_ms = 20;
+	for (uint32_t i = 0; i < WAIT_FOR_RESPONSE_MS; i += step_ms) {
+		if (responded) {
+			responded = false;
+			ret = true;
+			break;
+		}
+		uv_rtos_task_delay(step_ms);
+	}
+	if (ret == false) {
+		uv_mutex_lock(&mutex);
+		printf("\n*** NO RESPONSE ***\n");
+		responded = true;
+		fflush(stdout);
+		uv_mutex_unlock(&mutex);
+	}
+	return ret;
+}
 
 static void command_tx(void *ptr) {
 	while (true) {
@@ -139,13 +164,17 @@ static void command_tx(void *ptr) {
 					msg.data_8bit[4 + len++] = str[i];
 					if (len == 4) {
 						msg.data_length = 8;
-						uv_can_send(this->can_channel, &msg);
+						if (wait_for_response()) {
+							uv_can_send(this->can_channel, &msg);
+						}
 						len = 0;
 					}
 				}
 				if (len != 0) {
 					msg.data_length = 4 + len;
-					uv_can_send(this->can_channel, &msg);
+					if (wait_for_response()) {
+						uv_can_send(this->can_channel, &msg);
+					}
 				}
 			}
 		}
