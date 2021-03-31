@@ -157,9 +157,11 @@ void loadparam_step(void *ptr) {
 		printf("Failed to open parameter file '%s'.\n", this->file);
 		fflush(stdout);
 	}
-	else if (!db_is_loaded(&dev.db)) {
+	// todo: if the nodeid is not given, parse the file name and try to find
+	// the nodeid that should be used instead
+	else if (db_get_nodeid(&dev.db) == 0) {
 		printf("*** ERROR ****\n"
-				"The database has to be loaded with --db in order to load params.\n");
+				"The Node ID has to be set either with --db or with --nodeid.\n");
 	}
 	else {
 		int32_t size;

@@ -25,7 +25,7 @@
 
 
 #define DB_OBJ_MAX_COUNT	256
-#define DB_MAX_FILE_SIZE	65536
+#define DB_MAX_FILE_SIZE	(65536 * 2)
 
 
 enum {
@@ -239,13 +239,9 @@ static inline db_obj_st *db_get_obj(db_st *this, uint32_t index) {
 	return ((db_obj_st*) uv_vector_at(&this->objects, index));
 }
 
-static inline uint8_t db_get_nodeid(db_st *this) {
-	return this->node_id;
-}
+uint8_t db_get_nodeid(db_st *this);
 
-static inline void db_set_nodeid(db_st *this, uint8_t value) {
-	this->node_id = value;
-}
+void db_set_nodeid(db_st *this, uint8_t value);
 
 static inline uint32_t db_get_vendor_id(db_st *this) {
 	return this->vendor_id;

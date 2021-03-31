@@ -27,6 +27,7 @@
 
 
 static bool is_loaded = false;
+static bool is_nodeid_set = false;
 
 static void str_to_upper_nonspace(char *str) {
 	while (*str != '\0') {
@@ -1108,6 +1109,22 @@ static bool parse_json(db_st *this, char *json) {
 }
 
 
+uint8_t db_get_nodeid(db_st *this) {
+	uint8_t ret = 0;
+	if (db_is_loaded(this) || is_nodeid_set) {
+		ret = this->node_id;
+	}
+	return ret;
+}
+
+
+void db_set_nodeid(db_st *this, uint8_t value) {
+	this->node_id = value;
+	is_nodeid_set = true;
+}
+
+
+
 #define this (&dev.db)
 
 
@@ -1269,4 +1286,5 @@ void db_deinit(void) {
 		}
 	}
 }
+
 
