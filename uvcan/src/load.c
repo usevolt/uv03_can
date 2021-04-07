@@ -60,7 +60,7 @@ static void update(void *ptr) {
 void loadbin(char *filepath, uint8_t nodeid, bool wfr, bool uv, bool block_transfer) {
 	strcpy(this->firmware, filepath);
 	this->wfr = wfr;
-	this->uv = this->uv;
+	this->uv = uv;
 	this->block_transfer = block_transfer;
 	this->nodeid = nodeid;
 	uv_delay_init(&this->delay, RESPONSE_DELAY_MS);
@@ -225,7 +225,6 @@ void load_step(void *ptr) {
 	this->finished = false;
 	this->progress = 0;
 
-
 	FILE *fptr = fopen(this->firmware, "rb");
 
 	if (fptr == NULL) {
@@ -310,8 +309,12 @@ void load_step(void *ptr) {
 							break;
 						}
 						else {
-							printf("Block %u downloaded, %u / %u bytes (%u %%)\n", block, index + data_length, size,
-									(index + data_length) * 100 / size);
+							this->progress = (index + data_length) * 100 / size;
+							printf("Block %u downloaded, %u / %u bytes (%u %%)\n",
+									block,
+									index + data_length,
+									size,
+									this->progress);
 							fflush(stdout);
 						}
 					}

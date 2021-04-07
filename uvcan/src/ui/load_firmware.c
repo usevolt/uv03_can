@@ -89,7 +89,8 @@ static void flash(GtkButton *button, gpointer user_data) {
 		if (filename != NULL) {
 			gtk_widget_set_sensitive(this->flash, false);
 
-			uint8_t nodeid = strtol(gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(this->nodeid)), NULL, 0);
+			uint8_t nodeid = strtol(
+					gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(this->nodeid)), NULL, 0);
 			loadbin(filename,
 					nodeid,
 					gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(this->wfr)),
@@ -152,7 +153,8 @@ static gboolean update(gpointer data) {
 
 	}
 	else {
-		gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(this->progressbar), loadbin_get_progress(&dev.load) / 100.0f);
+		gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(this->progressbar),
+				loadbin_get_progress(&dev.load) / 100.0f);
 	}
 	return TRUE;
 }
