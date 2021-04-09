@@ -1,6 +1,7 @@
 build-uv_can-Desktop_Qt_5_7_1_GCC_64bit-Debug/
 uvcan/release
 uvcan/uvcan.exe
+uvcan/uvcan
 uvcan/install
 uvcan/src/ui/gresources.c
 uvcan/src/ui/gresources.h
