@@ -112,6 +112,7 @@ DEPS := $(OBJECTS:.o=.d)
 all: $(GRESOURCE) $(BINARY)
 	$(MAKE) post-build
 
+
 $(GRESOURCE): $(UIFILES)
 	glib-compile-resources $(GRESOURCE) --generate-header --target $(GRESOURCE_DIR)$(GRESOURCE_FILE).h
 	glib-compile-resources $(GRESOURCE) --generate-source --target $(GRESOURCE_DIR)$(GRESOURCE_FILE).c
