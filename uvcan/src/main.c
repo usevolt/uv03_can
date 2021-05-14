@@ -34,6 +34,7 @@ unsigned int obj_dict_len(void) {
 
 void init(void *me) {
 	// initialize the default settings
+
 	strcpy(this->can_channel, "can0");
 	char cmd[128];
 #if CONFIG_TARGET_LINUX
@@ -50,6 +51,7 @@ void init(void *me) {
 	}
 	strcpy(this->srcdest, ".");
 	strcpy(this->incdest, ".");
+
 
 	uv_can_set_baudrate(this->can_channel, this->baudrate);
 	uv_vector_init(&this->tasks, this->task_buffer, TASKS_LEN, sizeof(task_st));
@@ -80,7 +82,6 @@ void add_task(void (*step_callback)(void*)) {
 
 
 void step(void *me) {
-
 	// cycle trough tasks and give each of them execution turn
 	for (int i = 0; i < uv_vector_size(&this->tasks); i++) {
 		uv_mutex_unlock(&((task_st*) uv_vector_at(&this->tasks, i))->mutex);
@@ -96,6 +97,10 @@ void step(void *me) {
 		db_deinit();
 		printf("Finished\n");
 		exit(0);
+	}
+	printf("step done\n");
+	while(1) {
+		uv_rtos_task_delay(1);
 	}
 }
 

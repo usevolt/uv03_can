@@ -37,6 +37,9 @@ INCLUDEDIRS := 	-I"inc/" \
 				-I"inc/ui" \
 				-I"uw_can/" \
 				-I"hal/uv_hal/inc" \
+				-I"hal/uv_hal/freertos/include" \
+				-I"hal/uv_hal/freertos/portable/ThirdParty/GCC/Posix" \
+				-I"hal/uv_hal/freertos/portable/ThirdParty/GCC/Posix/utils" \
 				-I"hal/uv_hal/inc/canopen"
 				
 ifeq ($(CORE), CORE_WIN)
@@ -57,6 +60,9 @@ endif
 SOURCEDIRS := src \
 				src/ui \
 				hal/uv_hal/src \
+				hal/uv_hal/freertos \
+				hal/uv_hal/freertos/portable/ThirdParty/GCC/Posix \
+				hal/uv_hal/freertos/portable/ThirdParty/GCC/Posix/utils \
 				hal/uv_hal/src/canopen
 				
 ifeq ($(CORE), CORE_LINUX)
@@ -109,7 +115,7 @@ OBJECTS := $(addprefix $(BUILDDIR)/,$(SOURCES:%.c=%.o))
 DEPS := $(OBJECTS:.o=.d)
 
 
-all: $(GRESOURCE) $(BINARY)
+all: $(BINARY)
 	$(MAKE) post-build
 
 
@@ -118,7 +124,7 @@ $(GRESOURCE): $(UIFILES)
 	glib-compile-resources $(GRESOURCE) --generate-source --target $(GRESOURCE_DIR)$(GRESOURCE_FILE).c
 	@touch $(GRESOURCE)
 
-$(BUILDDIR)/%.o: %.c
+$(BUILDDIR)/%.o: %.c | $(GRESOURCE)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -I$(HEADERDIR) -I$(dir $<) -MMD -MT $@ -c $< -o $@
 

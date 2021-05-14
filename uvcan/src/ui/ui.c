@@ -70,7 +70,7 @@ void ui_add_nodeid(uint8_t nodeid) {
 bool cmd_ui(const char *arg) {
 	bool ret = false;
 
-	uv_rtos_add_idle_task(&ui_main);
+	ui_main(NULL);
 
 	ret = true;
 
@@ -262,11 +262,13 @@ static gboolean update(gpointer data) {
 static void ui_main(void *ptr) {
 	GtkApplication *app;
 
+	printf("GTK starting\n");
 	app = gtk_application_new("org.gtk.uvcan", G_APPLICATION_FLAGS_NONE);
 	g_signal_connect(app, "activate", G_CALLBACK(activate), NULL);
 	g_signal_connect (app, "window-removed", G_CALLBACK (window_closed), NULL);
 	g_application_run(G_APPLICATION(app), 0, NULL);
 	g_object_unref(app);
 
+	printf("GTK returned, terminating.\n");
 	exit(0);
 }
