@@ -44,7 +44,6 @@ INCLUDEDIRS := 	-I"inc/" \
 				-I"hal/uv_hal/freertos/include" \
 				-I"hal/uv_hal/freertos/portable/ThirdParty/GCC/Posix" \
 				-I"hal/uv_hal/freertos/portable/ThirdParty/GCC/Posix/utils"
-
 ifeq ($(CORE), CORE_WIN)
 INCLUDEDIRS := $(INCLUDEDIRS) \
 	-IC:/msys64/mingw64/include/ncurses
@@ -118,7 +117,7 @@ OBJECTS := $(addprefix $(BUILDDIR)/,$(SOURCES:%.c=%.o))
 DEPS := $(OBJECTS:.o=.d)
 
 
-all: $(GRESOURCE) $(BINARY)
+all: $(BINARY)
 	$(MAKE) post-build
 
 
@@ -127,7 +126,7 @@ $(GRESOURCE): $(UIFILES)
 	glib-compile-resources $(GRESOURCE) --generate-source --target $(GRESOURCE_DIR)$(GRESOURCE_FILE).c
 	@touch $(GRESOURCE)
 
-$(BUILDDIR)/%.o: %.c
+$(BUILDDIR)/%.o: %.c | $(GRESOURCE)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -I$(HEADERDIR) -I$(dir $<) -MMD -MT $@ -c $< -o $@
 
