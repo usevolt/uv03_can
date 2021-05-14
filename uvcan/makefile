@@ -17,6 +17,9 @@ UNAME := $(shell uname)
 ifeq ($(UNAME), MINGW64_NT-6.1)
 CORE := CORE_WIN
 TARGET := CONFIG_TARGET_WIN
+else ifeq ($(UNAME), MINGW32_NT-6.1-7601)
+CORE := CORE_WIN
+TARGET := CONFIG_TARGET_WIN
 else
 CORE := CORE_LINUX
 TARGET := CONFIG_TARGET_LINUX
@@ -37,8 +40,11 @@ INCLUDEDIRS := 	-I"inc/" \
 				-I"inc/ui" \
 				-I"uw_can/" \
 				-I"hal/uv_hal/inc" \
-				-I"hal/uv_hal/inc/canopen"
-				
+				-I"hal/uv_hal/inc/canopen" \
+				-I"hal/uv_hal/freertos/include" \
+				-I"hal/uv_hal/freertos/portable/ThirdParty/GCC/Posix" \
+				-I"hal/uv_hal/freertos/portable/ThirdParty/GCC/Posix/utils"
+
 ifeq ($(CORE), CORE_WIN)
 INCLUDEDIRS := $(INCLUDEDIRS) \
 	-IC:/msys64/mingw64/include/ncurses
@@ -57,7 +63,10 @@ endif
 SOURCEDIRS := src \
 				src/ui \
 				hal/uv_hal/src \
-				hal/uv_hal/src/canopen
+				hal/uv_hal/src/canopen \
+				hal/uv_hal/freertos \
+				hal/uv_hal/freertos/portable/ThirdParty/GCC/Posix \
+				hal/uv_hal/freertos/portable/ThirdParty/GCC/Posix/utils
 				
 ifeq ($(CORE), CORE_LINUX)
 SOURCEDIRS := $(SOURCEDIRS) \

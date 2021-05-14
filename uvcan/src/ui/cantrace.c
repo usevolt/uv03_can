@@ -22,7 +22,7 @@
 #include <uv_can.h>
 #include <uv_terminal.h>
 #include <gtk/gtk.h>
-#include <time.h>
+#include <sys/time.h>
 
 static void adj_changed(GtkAdjustment *adjustment, gpointer user_data);
 
