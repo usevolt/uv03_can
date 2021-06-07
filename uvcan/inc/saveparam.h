@@ -31,6 +31,9 @@ typedef struct {
 	uint8_t progress;
 	// true if the saving has finished
 	bool finished;
+	// if set, also CANopen parameters that might not be
+	// in the JSON file, such as NodeID, PDO maps & coms, are stored
+	bool all;
 } saveparam_st;
 
 
@@ -52,6 +55,8 @@ static inline uint8_t saveparam_get_progress(saveparam_st *this) {
 /// previously with command *nodeid*.
 bool cmd_saveparam(const char *arg);
 
+
+bool cmd_saveparamall(const char *arg);
 
 
 #endif /* SAVE_H_ */

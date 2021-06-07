@@ -26,7 +26,8 @@
 
 
 typedef struct {
-	char file[256];
+	char files[64][256];
+	unsigned int current_file;
 
 	// true if the loading has finished
 	bool finished;

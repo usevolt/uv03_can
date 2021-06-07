@@ -34,9 +34,16 @@ void saveparam_step(void *dev);
 
 
 
+bool cmd_saveparamall(const char *arg) {
+	bool ret = cmd_saveparam(arg);
+	this->all = true;
+	return ret;
+}
+
 
 bool cmd_saveparam(const char *arg) {
 	bool ret = true;
+	this->all = false;
 
 	if (!arg) {
 		printf("ERROR: Give filepath to the file where the parameters are stored.\n");
@@ -168,51 +175,53 @@ void saveparam_step(void *ptr) {
 		db_obj_st obj;
 
 		// CANopen fields that are not found from the database file
-		// nodeid
-		obj.obj.main_index = CONFIG_CANOPEN_NODEID_INDEX;
-		obj.obj.sub_index = 0;
-		obj.obj.type = CANOPEN_UNSIGNED8;
-		e |= json_add_obj(&json, &obj, "nodeid");
+		if (this->all) {
+			// nodeid
+			obj.obj.main_index = CONFIG_CANOPEN_NODEID_INDEX;
+			obj.obj.sub_index = 0;
+			obj.obj.type = CANOPEN_UNSIGNED8;
+			e |= json_add_obj(&json, &obj, "nodeid");
 
-		// heartbeat producer time ms
-		obj.obj.main_index = CONFIG_CANOPEN_PRODUCER_HEARTBEAT_INDEX;
-		obj.obj.sub_index = 0;
-		obj.obj.type = CANOPEN_UNSIGNED16;
-		e |= json_add_obj(&json, &obj, "heartbeat producer");
+			// heartbeat producer time ms
+			obj.obj.main_index = CONFIG_CANOPEN_PRODUCER_HEARTBEAT_INDEX;
+			obj.obj.sub_index = 0;
+			obj.obj.type = CANOPEN_UNSIGNED16;
+			e |= json_add_obj(&json, &obj, "heartbeat producer");
 
-		// heartbeat consumer
-		obj.obj.main_index = CONFIG_CANOPEN_CONSUMER_HEARTBEAT_INDEX;
-		obj.obj.type = CANOPEN_ARRAY32;
-		// note: error checking disabled for heartbeat consumer since
-		// it is not mandatory field on the device
-		json_add_obj(&json, &obj, "heartbeat consumer");
-
-		// rxpdo's
-		for (uint32_t i = 0; i < db_get_rxpdo_count(&dev.db); i++) {
-			obj.obj.main_index = CONFIG_CANOPEN_RXPDO_COM_INDEX + i;
+			// heartbeat consumer
+			obj.obj.main_index = CONFIG_CANOPEN_CONSUMER_HEARTBEAT_INDEX;
 			obj.obj.type = CANOPEN_ARRAY32;
-			char str[64];
-			sprintf(str, "rxpdo %i com", i);
-			e |= json_add_obj(&json, &obj, str);
+			// note: error checking disabled for heartbeat consumer since
+			// it is not mandatory field on the device
+			json_add_obj(&json, &obj, "heartbeat consumer");
 
-			obj.obj.main_index = CONFIG_CANOPEN_RXPDO_MAP_INDEX + i;
-			obj.obj.type = CANOPEN_ARRAY32;
-			sprintf(str, "rxpdo %i map", i);
-			e |= json_add_obj(&json, &obj, str);
-		}
+			// rxpdo's
+			for (uint32_t i = 0; i < db_get_rxpdo_count(&dev.db); i++) {
+				obj.obj.main_index = CONFIG_CANOPEN_RXPDO_COM_INDEX + i;
+				obj.obj.type = CANOPEN_ARRAY32;
+				char str[64];
+				sprintf(str, "rxpdo %i com", i);
+				e |= json_add_obj(&json, &obj, str);
 
-		// txpdo's
-		for (uint32_t i = 0; i < db_get_txpdo_count(&dev.db); i++) {
-			obj.obj.main_index = CONFIG_CANOPEN_TXPDO_COM_INDEX + i;
-			obj.obj.type = CANOPEN_ARRAY32;
-			char str[64];
-			sprintf(str, "txpdo %i com", i);
-			e |= json_add_obj(&json, &obj, str);
+				obj.obj.main_index = CONFIG_CANOPEN_RXPDO_MAP_INDEX + i;
+				obj.obj.type = CANOPEN_ARRAY32;
+				sprintf(str, "rxpdo %i map", i);
+				e |= json_add_obj(&json, &obj, str);
+			}
 
-			obj.obj.main_index = CONFIG_CANOPEN_TXPDO_MAP_INDEX + i;
-			obj.obj.type = CANOPEN_ARRAY32;
-			sprintf(str, "txpdo %i map", i);
-			e |= json_add_obj(&json, &obj, str);
+			// txpdo's
+			for (uint32_t i = 0; i < db_get_txpdo_count(&dev.db); i++) {
+				obj.obj.main_index = CONFIG_CANOPEN_TXPDO_COM_INDEX + i;
+				obj.obj.type = CANOPEN_ARRAY32;
+				char str[64];
+				sprintf(str, "txpdo %i com", i);
+				e |= json_add_obj(&json, &obj, str);
+
+				obj.obj.main_index = CONFIG_CANOPEN_TXPDO_MAP_INDEX + i;
+				obj.obj.type = CANOPEN_ARRAY32;
+				sprintf(str, "txpdo %i map", i);
+				e |= json_add_obj(&json, &obj, str);
+			}
 		}
 
 

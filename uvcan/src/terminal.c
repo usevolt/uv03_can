@@ -181,12 +181,14 @@ static void command_tx(void *ptr) {
 
 		uv_rtos_task_delay(100);
 	}
+	uv_rtos_task_delete(NULL);
 }
 
 
 static void command_step(void *ptr) {
 	printf("Terminal opened for node ID 0x%x\n", db_get_nodeid(&dev.db));
 	uv_canopen_set_can_callback(&can_callb);
+	uv_mutex_init(&mutex);
 	uv_mutex_unlock(&mutex);
 	uv_ring_buffer_init(&rx, rx_buffer,
 			sizeof(rx_buffer) / sizeof(rx_buffer[0]), sizeof(rx_buffer[0]));

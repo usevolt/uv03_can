@@ -235,6 +235,7 @@ static void activate (GtkApplication* app, gpointer user_data)
 					sizeof(this->nodeid_buffer) / sizeof(this->nodeid_buffer[0]),
 					sizeof(this->nodeid_buffer[0]));
 			uv_canopen_set_can_callback(&uican_callb);
+
 			g_timeout_add(20, update, NULL);
 		}
 		else {

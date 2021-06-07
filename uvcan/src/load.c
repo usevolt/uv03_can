@@ -48,12 +48,15 @@ static void update(void *ptr) {
 			fflush(stdout);
 			this->progress = percent;
 			if (percent == 100) {
+				printf("Loading done!\n");
+				uv_rtos_task_delete(NULL);
 				break;
 			}
 		}
 		data_index = _canopen.sdo.client.data_index;
 		uv_rtos_task_delay(20);
 	}
+	uv_rtos_task_delete(NULL);
 }
 
 
@@ -322,7 +325,7 @@ void load_step(void *ptr) {
 				}
 			}
 		}
-		// new 302 compatible protocol download
+		// new CiA 302 compatible protocol download
 		else {
 			if (this->wfr) {
 				this->response = false;
