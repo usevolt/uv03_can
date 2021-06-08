@@ -119,14 +119,17 @@ static uv_errors_e json_add_obj(uv_json_st *dest_json, db_obj_st *obj, char *inf
 		// string type objects are of variable length. Try to read the maximum length,
 		// The INITIATE_DOMAIN_UPLOAD request should scale the read length
 		// to the string size.
-		char str[65536] = {};
+		unsigned int size = 65536;
+		char *str = malloc(size);
+		memset(str, 0, size);
 		ret = uv_canopen_sdo_read(db_get_nodeid(&dev.db), obj->obj.main_index,
-				0, sizeof(str), str);
+				0, size, str);
 		if (ret == ERR_NONE) {
 			uv_jsonwriter_add_string(&json, "DATA", str);
 		}
 		printf("%s\n", str);
 		fflush(stdout);
+		free(str);
 	}
 	else {
 		// expedited objects
