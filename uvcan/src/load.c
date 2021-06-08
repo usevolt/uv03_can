@@ -357,8 +357,8 @@ void load_step(void *ptr) {
 
 				// download with block transfer
 				if (this->block_transfer) {
-					printf("Downloading the firmware as SDO block transfer\n");
-					uint8_t data[size];
+					printf("Downloading the firmware as SDO block transfer.\n");
+					uint8_t *data = malloc(size);
 					size_t ret = fread(data, size, 1, fptr);
 
 					if (!ret) {
@@ -381,6 +381,7 @@ void load_step(void *ptr) {
 							success = true;
 						}
 					}
+					free(data);
 				}
 				// download with segmented transfer
 				else {
