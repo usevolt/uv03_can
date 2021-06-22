@@ -112,8 +112,9 @@ static uv_errors_e load_param(char *json_obj) {
 			}
 		}
 		else if (CANOPEN_IS_STRING(type)) {
-			char *str = malloc(uv_jsonreader_get_string_len(data) + 1);
-			uv_jsonreader_get_string(data, str, sizeof(str));
+			unsigned int len = uv_jsonreader_get_string_len(data) + 1;
+			char *str = malloc(len);
+			uv_jsonreader_get_string(data, str, len);
 			ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
 					mindex, 0, strlen(str) + 1, str);
 			free(str);
@@ -155,6 +156,13 @@ static uv_errors_e parse_dev(char *json) {
 	char *obj = uv_jsonreader_find_child(json, "NODEID");
 	if (obj != NULL) {
 		uint8_t nodeid = uv_jsonreader_get_int(obj);
+		if (db_get_nodeid(&dev.db) != 0 &&
+				db_get_nodeid(&dev.db) != nodeid) {
+			// update the device's nodeid
+			ret |= uv_canopen_sdo_write(nodeid,
+					CONFIG_CANOPEN_NODEID_INDEX, 0,
+					CANOPEN_SIZEOF(CANOPEN_UNSIGNED8), &nodeid);
+		}
 		printf("The NODEID set to 0x%x from the param file\n", nodeid);
 		db_set_nodeid(&dev.db, nodeid);
 	}

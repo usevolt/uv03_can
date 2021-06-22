@@ -270,7 +270,23 @@ void saveparam_step(void *ptr) {
 				for (int32_t i = 0; i < db_get_object_count(&dev.db); i++) {
 					obj = *db_get_obj(&dev.db, i);
 					if (obj.obj_type == DB_OBJ_TYPE_NONVOL_PARAM) {
-						e |= json_add_obj(&json, &obj, obj.name);
+						if (dev.argv_count != 0) {
+							// if additional arguments are given, these are parsed as main indexes or names
+							// for the parameters that are saved
+							for (uint16_t i = 0; i < dev.argv_count; i++) {
+								uint16_t mindex = strtol(dev.nonopt_argv[i], NULL, 0);
+								char *name = dev.nonopt_argv[i];
+								if ((strcmp(obj.name, name) == 0) ||
+										(mindex == obj.obj.main_index)) {
+									e |= json_add_obj(&json, &obj, obj.name);
+									break;
+								}
+							}
+						}
+						else {
+							// no additional arguments given, just save all nonvol parameters
+							e |= json_add_obj(&json, &obj, obj.name);
+						}
 					}
 				}
 				// end PARAMS array on OP
@@ -298,8 +314,22 @@ void saveparam_step(void *ptr) {
 			// Thus just load all the parameters as-is.
 			for (int32_t i = 0; i < db_get_object_count(&dev.db); i++) {
 				obj = *db_get_obj(&dev.db, i);
+
 				if (obj.obj_type == DB_OBJ_TYPE_NONVOL_PARAM) {
-					e |= json_add_obj(&json, &obj, obj.name);
+					if (dev.argv_count != 0) {
+						// if additional arguments are given, these are parsed as main indexes or names
+						// for the parameters that are saved
+						for (uint16_t i = 0; i < dev.argv_count; i++) {
+							if ((strcmp(obj.name, dev.nonopt_argv[i]) == 0) ||
+									(strtol(dev.nonopt_argv[i], NULL, 0) == obj.obj.main_index)) {
+								e |= json_add_obj(&json, &obj, obj.name);
+							}
+						}
+					}
+					else {
+						// no additional arguments given, just save all nonvol parameters
+						e |= json_add_obj(&json, &obj, obj.name);
+					}
 				}
 			}
 			// end PARAMS array
