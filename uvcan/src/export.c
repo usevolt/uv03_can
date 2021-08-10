@@ -94,7 +94,7 @@ bool get_header_objs(char *dest, const char *filename) {
 			str_count);
 
 	// create enum for emcy err codes
-	strcat(dest, "enum {\n");
+	strcat(dest, "typedef enum {\n");
 	for (int i = 0; i < db_get_emcy_count(&dev.db); i++) {
 		db_emcy_st *emcy = db_get_emcy(&dev.db, i);
 

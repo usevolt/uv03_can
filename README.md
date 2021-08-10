@@ -27,3 +27,10 @@ The uvcan makefile detects the operating system automatically. Compiling on Linu
 When running the *uvcan*, if no arguments are given, the GUI mode is started. If any arguments are given, the program will run on command-line mode. Run `uvcan --help` for more information or what kind of commands are available.
 
 
+#Using without root permissions
+To connect to the CAN-bus without root permissions, append these to the end of /etc/sudoers file with command `sudo visudo`:
+
+```
+<user> <comp_name> = (root) NOPASSWD: /sbin/ip
+```
+Where `<user>` is the logged in user's name and `<com_name>` is the computer's name.
