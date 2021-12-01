@@ -100,7 +100,7 @@ dbvalue_st dbvalue_set_string(char *str, uint32_t str_len) {
 		}
 		else if (d->type == DB_DEFINE_ENUM) {
 			// check if the dbvalue string starts with the same substring as d
-			if (strstr(s, d->name) == this.value_str) {
+			if (strstr(s, d->name) == s) {
 				if (strlen(s) < (strlen(d->name) + 1)) {
 					printf("**** ERROR **** Define with ENUM type not found with a name of '%s'\n",
 							s);
