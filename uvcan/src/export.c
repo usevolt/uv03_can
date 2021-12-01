@@ -131,6 +131,13 @@ bool get_header_objs(char *dest, const char *filename) {
 			sprintf(&line[strlen(line)], "%i\n\n", define->value);
 			strcat(dest, line);
 		}
+		else if (define->type == DB_DEFINE_STRING) {
+			sprintf(line, "#define %s_%s            %s\n",
+					nameupper,
+					define->name,
+					define->str);
+			strcat(dest, line);
+		}
 		else if (define->type == DB_DEFINE_ENUM) {
 			if (define->data_type == CANOPEN_UNDEFINED) {
 				sprintf(line, "typedef enum {\n");

@@ -153,7 +153,8 @@ typedef struct {
 
 typedef enum {
 	DB_DEFINE_INT = 0,
-	DB_DEFINE_ENUM
+	DB_DEFINE_ENUM,
+	DB_DEFINE_STRING
 } db_define_types_e;
 
 /// @brief: Additional database defines have the same variables as emcy objects
@@ -168,6 +169,7 @@ typedef struct {
 			canopen_object_type_e data_type;
 			int32_t child_count;
 		};
+		char str[1024];
 	};
 } db_define_st;
 

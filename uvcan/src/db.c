@@ -70,7 +70,9 @@ dbvalue_st dbvalue_set_string(char *str, uint32_t str_len) {
 	memcpy(this.value_str, str, str_len);
 	this.value_str[str_len] = '\0';
 
-	str_to_upper_nonspace(this.value_str);
+	char *s = malloc(strlen(this.value_str) + 1);
+	strcpy(s, this.value_str);
+	str_to_upper_nonspace(s);
 
 	// if string value was set, search defines and assign the value that
 	// matches by name. Otherwise report an error.
@@ -79,23 +81,34 @@ dbvalue_st dbvalue_set_string(char *str, uint32_t str_len) {
 		db_define_st *d = uv_vector_at(&dev.db.defines, i);
 
 		if (d->type == DB_DEFINE_INT) {
-			if (strcmp(d->name, this.value_str) == 0) {
-				match = true;
+			if (strcmp(d->name, s) == 0) {
 				this.value_int = d->value;
+				strcpy(this.value_str, s);
+				match = true;
+				break;
+			}
+		}
+		else if (d->type == DB_DEFINE_STRING) {
+			// append the string as is
+			if (strcmp(d->name, s) == 0) {
+				strcpy(this.value_str, d->str);
+				// note: match has to be set to false, otherwise
+				// the dev name would be appended to the string
+				match = false;
 				break;
 			}
 		}
 		else if (d->type == DB_DEFINE_ENUM) {
 			// check if the dbvalue string starts with the same substring as d
-			if (strstr(this.value_str, d->name) == this.value_str) {
-				if (strlen(this.value_str) < (strlen(d->name) + 1)) {
+			if (strstr(s, d->name) == this.value_str) {
+				if (strlen(s) < (strlen(d->name) + 1)) {
 					printf("**** ERROR **** Define with ENUM type not found with a name of '%s'\n",
-							this.value_str);
+							s);
 				}
 				else {
 					bool m = false;
 					for (int32_t i = 0; i < d->child_count; i++) {
-						char *str = this.value_str + strlen(d->name) + 1;
+						char *str = s + strlen(d->name) + 1;
 						char childname[256];
 						strcpy(childname, d->childs[i]);
 						// remove possible '=' characters from the name, as well as trailing space
@@ -112,7 +125,7 @@ dbvalue_st dbvalue_set_string(char *str, uint32_t str_len) {
 					}
 					if (!m) {
 						printf("**** ERROR **** No ENUM define found with name of '%s'\n",
-								this.value_str);
+								s);
 					}
 					else {
 						match = true;
@@ -126,13 +139,15 @@ dbvalue_st dbvalue_set_string(char *str, uint32_t str_len) {
 	}
 	else {
 		// match found, update the dbvalue string to contain the device name
-		if (strncmp(dev.db.dev_name_upper, this.value_str, strlen(dev.db.dev_name_upper)) != 0) {
+		if (strncmp(dev.db.dev_name_upper, s, strlen(dev.db.dev_name_upper)) != 0) {
 			free(this.value_str);
 			this.value_str = malloc(str_len + 1 + strlen(dev.db.dev_name_upper) + 1);
 			sprintf(this.value_str, "%s_", dev.db.dev_name_upper);
 			memcpy(this.value_str + strlen(this.value_str), str, str_len);
 		}
 	}
+
+	free(s);
 	return this;
 }
 
@@ -661,6 +676,13 @@ static bool parse_json(db_st *this, char *json) {
 						define.value = uv_jsonreader_get_int(v);
 						uv_vector_push_back(&this->defines, &define);
 					}
+					else if (type == JSON_STRING) {
+						define.type = DB_DEFINE_STRING;
+						memset(define.str, 0, sizeof(define.str));
+						uv_jsonreader_get_string(v, define.str, sizeof(define.str));
+						printf("%s\n", define.str);
+						uv_vector_push_back(&this->defines, &define);
+					}
 					else if (type == JSON_ARRAY) {
 						define.type = DB_DEFINE_ENUM;
 						int32_t len = uv_jsonreader_array_get_size(v);
@@ -688,7 +710,7 @@ static bool parse_json(db_st *this, char *json) {
 					}
 					else {
 						printf("*** ERROR *** DEFINES array had an illegal type of value. "
-								"Only integers and arrays are supported\n");
+								"Only integers, strings and arrays are supported\n");
 					}
 				}
 				else {
