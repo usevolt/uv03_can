@@ -172,6 +172,11 @@ void saveparam_step(void *ptr) {
 		char json_buffer[65536] = {};
 		uv_json_st json;
 		uv_jsonwriter_init(&json, json_buffer, sizeof(json_buffer));
+
+		uv_jsonwriter_begin_array(&json, "DEVS");
+
+		uv_jsonwriter_begin_object(&json);
+
 		uv_jsonwriter_begin_array(&json, "PARAMS");
 
 		uv_errors_e e = ERR_NONE;
@@ -336,7 +341,11 @@ void saveparam_step(void *ptr) {
 			uv_jsonwriter_end_array(&json);
 		}
 
+		// end DEV object
+		uv_jsonwriter_end_object(&json);
 
+		// end DEVS array
+		uv_jsonwriter_end_array(&json);
 
 		// end the whole JSON file
 		uv_jsonwriter_end(&json, NULL);

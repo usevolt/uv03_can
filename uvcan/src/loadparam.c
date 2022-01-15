@@ -18,6 +18,7 @@
 
 
 #include <stdio.h>
+#include <errno.h>
 #include <string.h>
 #include <uv_json.h>
 #include "loadparam.h"
@@ -38,6 +39,11 @@ bool cmd_loadparam(const char *arg) {
 	this->current_file = 0;
 	memset(this->files, 0, sizeof(this->files));
 
+	uv_vector_init(&this->queries, this->queries_buffer,
+			QUERY_COUNT, sizeof(this->queries_buffer[0]));
+
+	this->dev_count = 0;
+
 	if (!arg) {
 		fprintf(stderr, "ERROR: Give parameter file as a file path to binary file.\n");
 	}
@@ -56,27 +62,55 @@ static uv_errors_e load_param(char *json_obj) {
 	uv_errors_e ret = ERR_NONE;
 	uint32_t mindex;
 	uint32_t sindex = 0;
+	uint32_t sindex_offset = 0;
 	canopen_object_type_e type;
 	char *data;
 	char info[128] = { };
+
 
 	char *val = uv_jsonreader_find_child(json_obj, "MAININDEX");
 	if (val == NULL) {
 		ret = ERR_ABORTED;
 	}
 	mindex = uv_jsonreader_get_int(val);
+
 	val = uv_jsonreader_find_child(json_obj, "SUBINDEX");
 	if (val != NULL) {
 		sindex = uv_jsonreader_get_int(val);
 	}
+
+	// SUBINDEX_OFFSET is used for array objects to not start writing the data
+	// to the first element in array.
+	val = uv_jsonreader_find_child(json_obj, "SUBINDEX_OFFSET");
+	if (val != NULL) {
+		sindex_offset = uv_jsonreader_get_int(val);
+	}
+
 	val = uv_jsonreader_find_child(json_obj, "TYPE");
 	if (val == NULL) {
 		ret = ERR_ABORTED;
 	}
+
 	type = db_jsonval_to_type(val);
+
 	data = uv_jsonreader_find_child(json_obj, "DATA");
+
+	char *query_array = NULL;
+	query_st *query = NULL;
 	if (data == NULL) {
-		ret = ERR_ABORTED;
+		// DATA object not found. Check if any queries are defined
+		for (uint16_t i = 0; i < uv_vector_size(&this->queries); i++) {
+			query = uv_vector_at(&this->queries, i);
+			char *obj = uv_jsonreader_find_child(json_obj, query->name);
+			if (obj != NULL) {
+				// matching query found
+				query_array = obj;
+				break;
+			}
+		}
+		if (query_array == NULL) {
+			ret = ERR_ABORTED;
+		}
 	}
 	// check that that the data type and content actually match
 	if (data != NULL) {
@@ -86,6 +120,18 @@ static uv_errors_e load_param(char *json_obj) {
 			ret = ERR_ABORTED;
 		}
 	}
+	else if (query_array != NULL) {
+		uv_json_types_e t = uv_jsonreader_array_get_type(query_array, 0);
+		if ((CANOPEN_IS_ARRAY(type) && t != JSON_ARRAY) ||
+				(CANOPEN_IS_STRING(type) && t != JSON_STRING) ||
+				(CANOPEN_IS_INTEGER(type) && t != JSON_INT)) {
+			ret = ERR_ABORTED;
+		}
+	}
+	else {
+
+	}
+
 	val = uv_jsonreader_find_child(json_obj, "INFO");
 	if (val == NULL) {
 		ret = ERR_ABORTED;
@@ -101,9 +147,19 @@ static uv_errors_e load_param(char *json_obj) {
 				"    of type %s to target.\n", info, t);
 		fflush(stdout);
 		if (CANOPEN_IS_ARRAY(type)) {
-			for (uint32_t i = 0; i < uv_jsonreader_array_get_size(data); i++) {
-				uint32_t d = uv_jsonreader_array_get_int(data, i);
-				ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), mindex, i + 1,
+			char *array = NULL;
+			if (data != NULL) {
+				array = data;
+			}
+			else if (query_array != NULL) {
+				array = uv_jsonreader_array_at(query_array, query->correct_answer);
+			}
+			else {
+
+			}
+			for (uint32_t i = 0; i < uv_jsonreader_array_get_size(array); i++) {
+				uint32_t d = uv_jsonreader_array_get_int(array, i);
+				ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), mindex, i + 1 + sindex_offset,
 						CANOPEN_SIZEOF(type), &d);
 				if (ret != ERR_NONE) {
 					fprintf(stderr, "*** ERROR ***\n"
@@ -112,9 +168,22 @@ static uv_errors_e load_param(char *json_obj) {
 			}
 		}
 		else if (CANOPEN_IS_STRING(type)) {
-			unsigned int len = uv_jsonreader_get_string_len(data) + 1;
-			char *str = malloc(len);
-			uv_jsonreader_get_string(data, str, len);
+			unsigned int len;
+			char *str = NULL;
+			if (data != NULL) {
+				len = uv_jsonreader_get_string_len(data) + 1;
+				str = malloc(len);
+				uv_jsonreader_get_string(data, str, len);
+			}
+			else if (query_array != NULL) {
+				char s[128] = {};
+				uv_jsonreader_array_get_string(query_array, query->correct_answer, s, sizeof(s));
+				str = malloc(strlen(s));
+				strcpy(str, s);
+			}
+			else {
+
+			}
 			ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
 					mindex, 0, strlen(str) + 1, str);
 			free(str);
@@ -125,7 +194,16 @@ static uv_errors_e load_param(char *json_obj) {
 		}
 		else {
 			// data is integer data
-			uint32_t d = uv_jsonreader_get_int(data);
+			uint32_t d;
+			if (data != NULL) {
+				d = uv_jsonreader_get_int(data);
+			}
+			else if (query_array != NULL) {
+				d = uv_jsonreader_array_get_int(query_array, query->correct_answer);
+			}
+			else {
+
+			}
 			ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
 					mindex, sindex, CANOPEN_SIZEOF(type), &d);
 			if (ret != ERR_NONE) {
@@ -175,6 +253,18 @@ static uv_errors_e parse_dev(char *json) {
 		}
 	}
 	if (ret == ERR_NONE) {
+		// add this dev to modified dev list
+		bool match = false;
+		for (uint8_t i = 0; i < this->dev_count; i++) {
+			if (this->modified_dev_nodeids[i] == db_get_nodeid(&dev.db)) {
+				match = true;
+				break;
+			}
+		}
+		if (!match) {
+			this->modified_dev_nodeids[this->dev_count++] = db_get_nodeid(&dev.db);
+		}
+
 		obj = uv_jsonreader_find_child(json, "PARAMS");
 		if (obj != NULL && uv_jsonreader_get_type(obj) == JSON_ARRAY) {
 			char *arr = obj;
@@ -289,26 +379,6 @@ static uv_errors_e parse_dev(char *json) {
 					"OPERATORS array not found from the JSON.\n\n");
 			fflush(stdout);
 		}
-
-		printf("Saving the parameters...\n");
-		fflush(stdout);
-		ret |= uv_canopen_sdo_store_params(db_get_nodeid(&dev.db),
-				MEMORY_ALL_PARAMS);
-		uv_rtos_task_delay(300);
-		printf("Resetting the device...\n");
-		fflush(stdout);
-		if (ret == ERR_NONE) {
-			uv_canopen_nmt_master_send_cmd(db_get_nodeid(&dev.db),
-					CANOPEN_NMT_CMD_RESET_NODE);
-			printf("Done.\n\nBinary file closed.\n");
-			fflush(stdout);
-		}
-		else {
-			printf("\n**** NOTICE ****\n"
-					"The device was not reset due to errors. \n"
-					"Manual reset is necessary.\n\n");
-			fflush(stdout);
-		}
 	}
 
 	return ret;
@@ -326,13 +396,15 @@ void loadparam_step(void *ptr) {
 		arg_count++;
 	}
 
+	uv_errors_e e = ERR_NONE;
+
 	while (strlen(this->files[this->current_file]) != 0) {
+		printf("current file: %i\n", this->current_file);
 		char *file = this->files[this->current_file];
-		this->current_file++;
 		FILE *fptr = fopen(file, "rb");
 
 		if (fptr == NULL) {
-			// failed to open the file, exit this task
+			// failed to open the file
 			fprintf(stderr,
 					"Failed to open parameter file '%s'.\n", file);
 			fflush(stderr);
@@ -356,11 +428,97 @@ void loadparam_step(void *ptr) {
 				fflush(stderr);
 			}
 			else {
-				uv_errors_e e = ERR_NONE;
 
 				uv_jsonreader_init(json, strlen(json));
 
-				char *obj = uv_jsonreader_find_child(json, "DEVS");
+				// QUERIES array can hold queries that affect the param values
+				char *obj = uv_jsonreader_find_child(json, "QUERIES");
+				if (obj != NULL &&
+						uv_jsonreader_get_type(obj) == JSON_ARRAY) {
+					char *queries = obj;
+					for (uint16_t i = 0; i < uv_jsonreader_array_get_size(queries); i++) {
+						obj = uv_jsonreader_array_at(queries, i);
+						query_st q;
+						strcpy(q.name, "UNKNOWN");
+						bool valid = true;
+						char *name = uv_jsonreader_find_child(obj, "NAME");
+						if (name != NULL) {
+							uv_jsonreader_get_string(name, q.name, sizeof(q.name));
+						}
+						else {
+							valid = false;
+						}
+						char *question = uv_jsonreader_find_child(obj, "QUESTION");
+						if (question != NULL) {
+							uv_jsonreader_get_string(question, q.question, sizeof(q.question));
+						}
+						else {
+							valid = false;
+						}
+						char *answers = uv_jsonreader_find_child(obj, "ANSWERS");
+						if (answers != NULL &&
+								uv_jsonreader_get_type(answers) == JSON_ARRAY) {
+							q.answer_count = uv_jsonreader_array_get_size(answers);
+							for (uint16_t i = 0; i < q.answer_count; i++) {
+								uv_jsonreader_array_get_string(answers,
+										i, q.answers[i], sizeof(q.answers[i]));
+							}
+
+						}
+						else {
+							valid = false;
+						}
+
+						if (valid == false) {
+							printf("*** ERROR in query '%s'. All values not implemented.\n\n",
+									q.name);
+						}
+						else {
+							bool already_answered = false;
+							// check if query with this name was already asked
+							for (uint32_t i = 0; i < uv_vector_size(&this->queries); i++) {
+								query_st *qu = uv_vector_at(&this->queries, i);
+								if (strcmp(qu->name, q.name) == 0) {
+									already_answered = true;
+									printf("Query '%s' was already answered with an answer no %i.\n",
+											qu->name,
+											qu->correct_answer + 1);
+									break;
+								}
+							}
+							if (already_answered == false) {
+								portDISABLE_INTERRUPTS();
+								while (true) {
+									printf("\n\n "
+											"User input requested: \n"
+											"  ** %s **:\n",
+											q.question);
+									for (uint8_t i = 0; i < q.answer_count; i++) {
+										printf("    (%i): %s\n", i + 1, q.answers[i]);
+									}
+									fflush(stdout);
+
+									int32_t ans = 0;
+									scanf("%d", &ans);
+
+									if (ans < 1 || ans > q.answer_count) {
+										printf("ERR: Answer out of bounds\n");
+									}
+									else {
+										printf("Saving answer %i\n", ans);
+										q.correct_answer = ans - 1;
+										break;
+									}
+									portENABLE_INTERRUPTS();
+								}
+
+								uv_vector_push_back(&this->queries, &q);
+							}
+						}
+					}
+				}
+
+				obj = uv_jsonreader_find_child(json, "DEVS");
 				if (obj != NULL &&
 						uv_jsonreader_get_type(obj) == JSON_ARRAY) {
 					// new protocol where each device's settings are stored in a DEVS-array
@@ -391,6 +549,32 @@ void loadparam_step(void *ptr) {
 			}
 		}
 		this->current_file++;
+	}
+
+	if (e == ERR_NONE) {
+		uv_errors_e ret = ERR_NONE;
+		// save the params to all devices
+		for (uint8_t i = 0; i < this->dev_count; i++) {
+			uint8_t nodeid = this->modified_dev_nodeids[i];
+			printf("Saving the parameters to dev 0x%x...\n", nodeid);
+			fflush(stdout);
+			ret |= uv_canopen_sdo_store_params(nodeid,
+					MEMORY_ALL_PARAMS);
+			uv_rtos_task_delay(300);
+			printf("Resetting the device 0x%x...\n", nodeid);
+			fflush(stdout);
+			if (ret == ERR_NONE) {
+				uv_canopen_nmt_master_send_cmd(nodeid,
+						CANOPEN_NMT_CMD_RESET_NODE);
+			}
+			else {
+				printf("\n**** NOTICE ****\n"
+						"The device 0x%x was not reset due to errors. \n"
+						"Manual reset is necessary.\n\n",
+						nodeid);
+				fflush(stdout);
+			}
+		}
 	}
 
 	this->finished = true;

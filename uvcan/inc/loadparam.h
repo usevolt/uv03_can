@@ -24,10 +24,31 @@
 #include <stdbool.h>
 
 
+#define QUERY_NAME_LEN	64
+#define QUERY_QUESTION_LEN	128
+#define QUERY_ANSWER_COUNT	6
+#define QUERY_ANSWER_LEN	64
+
+typedef struct {
+	char name[QUERY_NAME_LEN];
+	char question[QUERY_QUESTION_LEN];
+	char answers[QUERY_ANSWER_COUNT][QUERY_ANSWER_LEN];
+	uint8_t answer_count;
+	uint8_t correct_answer;
+} query_st;
+
+
+#define QUERY_COUNT			20
 
 typedef struct {
 	char files[64][256];
 	unsigned int current_file;
+
+	query_st queries_buffer[QUERY_COUNT];
+	uv_vector_st queries;
+
+	uint8_t modified_dev_nodeids[64];
+	uint8_t dev_count;
 
 	// true if the loading has finished
 	bool finished;
