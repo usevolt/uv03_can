@@ -399,7 +399,6 @@ void loadparam_step(void *ptr) {
 	uv_errors_e e = ERR_NONE;
 
 	while (strlen(this->files[this->current_file]) != 0) {
-		printf("current file: %i\n", this->current_file);
 		char *file = this->files[this->current_file];
 		FILE *fptr = fopen(file, "rb");
 
@@ -498,11 +497,15 @@ void loadparam_step(void *ptr) {
 									}
 									fflush(stdout);
 
+									char ans_str[128] = {};
 									int32_t ans = 0;
-									scanf("%d", &ans);
+									fgets(ans_str, sizeof(ans_str) - 1, stdin);
+									if (sscanf(ans_str, " %d", &ans) < 1) {
+										ans = 1;
+									}
 
 									if (ans < 1 || ans > q.answer_count) {
-										printf("ERR: Answer out of bounds\n");
+										printf("ERR: Answer out of bounds. Defaulting to 1.\n");
 									}
 									else {
 										printf("Saving answer %i\n", ans);
