@@ -88,6 +88,8 @@ void db_array_child_init(db_array_child_st *this);
 /// can be read and written with *loadparam* & *saveparam* commands.
 typedef enum {
 	DB_OBJ_TYPE_UNDEFINED = 0,
+	// The CAN interface version number
+	DB_OBJ_TYPE_IF_VERSION,
 	// nonvolatile data paramter that is read / written with saveparam / loadparam commands
 	DB_OBJ_TYPE_NONVOL_PARAM,
 	// The operator database request object. CANOPEN_ARRAY8 type parameter,

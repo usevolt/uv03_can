@@ -163,6 +163,45 @@ void saveparam_step(void *ptr) {
 	this->progress = 0;
 	fflush(stdout);
 
+	int16_t can_if = -1;
+	// CAN IF
+	bool if_found = false;
+	db_obj_st *if_obj = NULL;
+	for (uint16_t i = 0; i < db_get_object_count(&dev.db); i++) {
+		if_obj = db_get_obj(&dev.db, i);
+		if (if_obj->obj_type == DB_OBJ_TYPE_IF_VERSION) {
+			if (uv_canopen_sdo_read(db_get_nodeid(&dev.db), if_obj->obj.main_index, if_obj->obj.sub_index,
+					CANOPEN_SIZEOF(if_obj->obj.type), &can_if) == ERR_NONE) {
+				if (dbvalue_get_int(&if_obj->value) != can_if) {
+					printf("\n***** ALERT ******\n"
+							"CAN Database interface version number differ in device and database.\n"
+							"All parameters might not be saved correctly.\n"
+							"\n"
+							"Press anything to continue...\n\n");
+					portDISABLE_INTERRUPTS();
+					fgetc(stdin);
+					portENABLE_INTERRUPTS();
+				}
+				else {
+					printf("CAN interface version %i\n", can_if);
+				}
+				if_found = true;
+			}
+			break;
+		}
+	}
+	if (!if_found) {
+		printf("\n***** ALERT ******\n"
+				"CAN interface version number not defined. The database of device software\n"
+				"does not define CAN iterface version number. Parameter loading might result\n"
+				"in undefined behaviour.\n\n"
+				"Press anything to continue...\n\n");
+		portDISABLE_INTERRUPTS();
+		fgetc(stdin);
+		portENABLE_INTERRUPTS();
+	}
+
+
 	FILE *dest = fopen(this->file, "wb");
 	if (dest == NULL) {
 		printf("Failed creating the output file '%s'\n", this->file);
@@ -176,6 +215,15 @@ void saveparam_step(void *ptr) {
 		uv_jsonwriter_begin_array(&json, "DEVS");
 
 		uv_jsonwriter_begin_object(&json);
+
+		if (if_found) {
+			uv_jsonwriter_add_int(&json, "CAN IF VERSION", can_if);
+			uv_jsonwriter_add_int(&json, "CAN IF MINDEX", if_obj->obj.main_index);
+			uv_jsonwriter_add_int(&json, "CAN IF SINDEX", if_obj->obj.sub_index);
+			uv_jsonwriter_add_string(&json, "CAN IF TYPE", if_obj->type_str);
+		}
+
+		uv_jsonwriter_add_int(&json, "NODEID", db_get_nodeid(&dev.db));
 
 		uv_jsonwriter_begin_array(&json, "PARAMS");
 

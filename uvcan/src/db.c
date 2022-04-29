@@ -389,6 +389,10 @@ static db_obj_type_e str_to_objtype(char *json_child) {
 				strcmp(str, "EMERGENCY") == 0) {
 			ret = DB_OBJ_TYPE_EMCY;
 		}
+		else if (strcmp(str, "CAN_IF") == 0 ||
+				strcmp(str, "CAN IF") == 0) {
+			ret = DB_OBJ_TYPE_IF_VERSION;
+		}
 		else {
 			ret = DB_OBJ_TYPE_UNDEFINED;
 		}

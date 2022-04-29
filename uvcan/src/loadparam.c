@@ -252,6 +252,65 @@ static uv_errors_e parse_dev(char *json) {
 			ret = ERR_CANOPEN_NODE_ID_ENTRY_INVALID;
 		}
 	}
+
+	obj = uv_jsonreader_find_child(json, "CAN IF VERSION");
+	if (obj != NULL) {
+		uint16_t can_if = uv_jsonreader_get_int(obj);
+		uint16_t dev_if = 0;
+		char *mindex = uv_jsonreader_find_child(json, "CAN IF MINDEX");
+		char *sindex = uv_jsonreader_find_child(json, "CAN IF SINDEX");
+		if (mindex != NULL &&
+				sindex != NULL) {
+			if (uv_canopen_sdo_read(db_get_nodeid(&dev.db), uv_jsonreader_get_int(mindex),
+					uv_jsonreader_get_int(sindex), CANOPEN_SIZEOF(CANOPEN_UNSIGNED16),
+					&dev_if) == ERR_NONE) {
+				if (dev_if != can_if) {
+					fprintf(stderr, "\n**** ALERT ****\n"
+							"CAN interface revision differ between parameter file (%i) and device (%i).\n"
+							"Some parameters might load incorrectly.\n\n"
+							"Press anything to continue...\n\n",
+							can_if,
+							dev_if);
+					portDISABLE_INTERRUPTS();
+					fgetc(stdin);
+					portENABLE_INTERRUPTS();
+				}
+				else {
+					printf("CAN interface version %i\n", can_if);
+				}
+			}
+			else {
+				fprintf(stderr, "\n**** ALERT ****\n"
+						"Failed to read CAN interface from the device. \n"
+						"The CAN IF VERSION object dictionary entry might not be defined.\n"
+						"Press anything to continue...\n\n");
+				portDISABLE_INTERRUPTS();
+				fgetc(stdin);
+				portENABLE_INTERRUPTS();
+			}
+		}
+		else {
+			fprintf(stderr, "\n**** ALERT ****\n"
+					"\"CAN IF MINDEX\" or \"CAN IF SINDEX\" not found in the parameter file.\n\n"
+					"Press anything to continue...\n\n");
+			portDISABLE_INTERRUPTS();
+			fflush(stdout);
+			fgetc(stdin);
+			portENABLE_INTERRUPTS();
+		}
+
+	}
+	else {
+		fprintf(stderr, "****** ALERT ******\n"
+				"Parameter file didn't contain CAN interface version number for device 0x%x.\n"
+				"Undefined behaviour might occur while loading the parameters.\n\n"
+				"Press anything to continue...\n\n");
+		fflush(stdout);
+		portDISABLE_INTERRUPTS();
+		fgetc(stdin);
+		portENABLE_INTERRUPTS();
+	}
+
 	if (ret == ERR_NONE) {
 		// add this dev to modified dev list
 		bool match = false;
