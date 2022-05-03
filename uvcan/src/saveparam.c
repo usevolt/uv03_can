@@ -174,18 +174,26 @@ void saveparam_step(void *ptr) {
 					CANOPEN_SIZEOF(if_obj->obj.type), &can_if) == ERR_NONE) {
 				if (dbvalue_get_int(&if_obj->value) != can_if) {
 					printf("\n***** ALERT ******\n"
-							"CAN Database interface version number differ in device and database.\n"
+							"CAN Database interface version number differ in device and database. (%i / %i)\n"
 							"All parameters might not be saved correctly.\n"
 							"\n"
-							"Press anything to continue...\n\n");
+							"Press anything to continue...\n\n", dbvalue_get_int(&if_obj->value), can_if);
 					portDISABLE_INTERRUPTS();
 					fgetc(stdin);
 					portENABLE_INTERRUPTS();
 				}
 				else {
 					printf("CAN interface version %i\n", can_if);
+					if_found = true;
 				}
-				if_found = true;
+			}
+			else {
+				printf("\n***** ALERT *****\n"
+						"Could not read CAN interface version number from device.\n\n"
+						"Press anything to continue...\n\n");
+				portDISABLE_INTERRUPTS();
+				fgetc(stdin);
+				portENABLE_INTERRUPTS();
 			}
 			break;
 		}

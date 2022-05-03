@@ -304,7 +304,7 @@ static uv_errors_e parse_dev(char *json) {
 		fprintf(stderr, "****** ALERT ******\n"
 				"Parameter file didn't contain CAN interface version number for device 0x%x.\n"
 				"Undefined behaviour might occur while loading the parameters.\n\n"
-				"Press anything to continue...\n\n");
+				"Press anything to continue...\n\n", db_get_nodeid(&dev.db));
 		fflush(stdout);
 		portDISABLE_INTERRUPTS();
 		fgetc(stdin);
