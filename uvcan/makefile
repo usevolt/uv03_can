@@ -101,7 +101,7 @@ UIFILES := $(shell find $(GRESOURCE_DIR) -maxdepth 1 -name '*.ui')
 GRESOURCE := $(GRESOURCE_DIR)$(GRESOURCE_FILE).xml
 
 
-CFLAGS := $(shell pkg-config --cflags gtk+-3.0 ncurses) -D$(TARGET)=1 -D__UV_PROJECT_NAME=$(FULL_NAME) -D__UV_PROGRAM_VERSION=$(GIT_REV_ID) $(INCLUDEDIRS) -D$(CORE) -$(O) -g3 -Wall -fmessage-length=0 -fno-builtin -ffunction-sections -fdata-sections
+CFLAGS := $(shell pkg-config --cflags gtk+-3.0 ncurses) -pthread -D$(TARGET)=1 -D__UV_PROJECT_NAME=$(FULL_NAME) -D__UV_PROGRAM_VERSION=$(GIT_REV_ID) $(INCLUDEDIRS) -D$(CORE) -$(O) -g3 -Wall -fmessage-length=0 -fno-builtin -ffunction-sections -fdata-sections
 
 LDFLAGS := -D__UV_APP_VERSION=\"$(GIT_VERSION)\"
 
