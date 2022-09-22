@@ -34,7 +34,7 @@
 
 
 #define CONFIG_RTOS									1
-#define CONFIG_RTOS_HEAP_SIZE						(20 * 1024 * 1024)
+#define CONFIG_RTOS_HEAP_SIZE						(50 * 1024 * 1024)
 #define CONFIG_UV_BOOTLOADER						1
 
 

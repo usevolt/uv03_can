@@ -27,7 +27,6 @@
 #include "listen.h"
 #include "terminal.h"
 #include "db.h"
-#include "ui.h"
 #include "loadmedia.h"
 #include "clearmedia.h"
 #include "sdo.h"
@@ -175,12 +174,6 @@ commands_st commands[] = {
 						"The export location is defined with --srcdest and --incdest.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_export
-		},
-		{
-				.cmd_long = "ui",
-				.str = "Opens the GUI configuration tool with this argument.",
-				.args = ARG_NONE,
-				.callback = &cmd_ui
 		},
 		{
 				.cmd_long = "loadmedia",

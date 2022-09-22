@@ -168,14 +168,6 @@ int main(int argc, char *argv[]) {
 	else {
 		this->argv_count = 0;
 	}
-	// if none arguments were given,
-	// uvcan starts with --ui command
-	if (none_args && !error) {
-		// stat freerots on another thread, since GTK requires main thread
-		pthread_t t;
-		pthread_create(&t, NULL, &pthread_rtos_main, NULL);
-		cmd_ui("");
-	}
 
 	if (!error) {
 		// register an own FreeRTOS task for all application tasks

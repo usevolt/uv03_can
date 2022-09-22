@@ -28,7 +28,6 @@
 #include "listen.h"
 #include "load.h"
 #include "export.h"
-#include "ui.h"
 #include "loadmedia.h"
 #include "sdo.h"
 #include "loadparam.h"
@@ -66,7 +65,6 @@ struct _dev_st {
 	listen_st listen;
 	db_st db;
 	export_st export;
-	ui_st ui;
 	loadmedia_st loadmedia;
 	sdo_st sdo;
 	loadparam_st loadparam;
