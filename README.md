@@ -9,10 +9,11 @@ The uvcan tool uses the following libraries underneath:
 * ncurses
 * pthread
 * SocketCAN
+* jq
 
 Especially the GTK3 libraries have to be installed to compile the uvcan. On Ubuntu Linux, run the following commands to install the prerequisites:
 
-`sudo apt-get install git build-essential libncurses5 libncurses5-dev libgtk-3-0 libgtk-3-dev libgtk-3-common libxml2-utils`
+`sudo apt-get install git build-essential libncurses5 libncurses5-dev libgtk-3-0 libgtk-3-dev libgtk-3-common libxml2-utils jq`
 
 #Compiling the uvcan
 The uvcan makefile detects the operating system automatically. Compiling on Linux & Windows is supported.

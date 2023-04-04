@@ -153,6 +153,10 @@ static uv_errors_e json_add_obj(uv_json_st *dest_json, db_obj_st *obj, char *inf
 		}
 	}
 
+	if (ret != ERR_NONE) {
+		printf("**** Error in obj 0x%x ****\n", obj->obj.main_index);
+	}
+
 	return ret;
 }
 
