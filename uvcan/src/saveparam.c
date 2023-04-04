@@ -112,7 +112,7 @@ static uv_errors_e json_add_obj(uv_json_st *dest_json, db_obj_st *obj, char *inf
 			}
 			uv_jsonwriter_end_array(&json);
 		}
-		printf("\narray length: %u\n", arr_len);
+		printf("\narray length: %i\n", arr_len);
 		fflush(stdout);
 	}
 	else if (CANOPEN_IS_STRING(obj->obj.type)) {
