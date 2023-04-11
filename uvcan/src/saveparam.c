@@ -176,12 +176,12 @@ void saveparam_step(void *ptr) {
 		if (if_obj->obj_type == DB_OBJ_TYPE_IF_VERSION) {
 			if (uv_canopen_sdo_read(db_get_nodeid(&dev.db), if_obj->obj.main_index, if_obj->obj.sub_index,
 					CANOPEN_SIZEOF(if_obj->obj.type), &can_if) == ERR_NONE) {
-				if (dbvalue_get_int(&if_obj->value) != can_if) {
+				if (db_get_revision_number(&dev.db) != can_if) {
 					printf("\n***** ALERT ******\n"
-							"CAN Database interface version number differ in device and database. (%i / %i)\n"
+							"CAN Database interface version number differs in database (%i) and device (%i).\n"
 							"All parameters might not be saved correctly.\n"
 							"\n"
-							"Press anything to continue...\n\n", dbvalue_get_int(&if_obj->value), can_if);
+							"Press anything to continue...\n\n", db_get_revision_number(&dev.db), can_if);
 					portDISABLE_INTERRUPTS();
 					fgetc(stdin);
 					portENABLE_INTERRUPTS();

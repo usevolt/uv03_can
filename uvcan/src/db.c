@@ -1157,6 +1157,8 @@ void db_set_nodeid(db_st *this, uint8_t value) {
 bool cmd_db(const char *arg) {
 	bool ret = false;
 
+	this->revision_number = 0;
+
 	// if database is already loaded, free the old memory
 	if (is_loaded) {
 		db_deinit();
