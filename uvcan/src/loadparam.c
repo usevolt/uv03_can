@@ -109,6 +109,7 @@ static uv_errors_e load_param(char *json_obj) {
 			}
 		}
 		if (query_array == NULL) {
+			printf("no \"DATA\" or queries found\n");
 			ret = ERR_ABORTED;
 		}
 	}
@@ -117,14 +118,19 @@ static uv_errors_e load_param(char *json_obj) {
 		if ((CANOPEN_IS_ARRAY(type) && uv_jsonreader_get_type(data) != JSON_ARRAY) ||
 				(CANOPEN_IS_STRING(type) && uv_jsonreader_get_type(data) != JSON_STRING) ||
 				(CANOPEN_IS_INTEGER(type) && uv_jsonreader_get_type(data) != JSON_INT)) {
+			printf("Data type mismatch\n");
 			ret = ERR_ABORTED;
 		}
 	}
 	else if (query_array != NULL) {
 		uv_json_types_e t = uv_jsonreader_array_get_type(query_array, 0);
+		char str[128] = "";
+		db_type_to_str(type, str);
 		if ((CANOPEN_IS_ARRAY(type) && t != JSON_ARRAY) ||
 				(CANOPEN_IS_STRING(type) && t != JSON_STRING) ||
 				(CANOPEN_IS_INTEGER(type) && t != JSON_INT)) {
+			printf("Array type mismatch, got %s, expected %s\n",
+					uv_json_type_to_str(t), str);
 			ret = ERR_ABORTED;
 		}
 	}
@@ -134,6 +140,7 @@ static uv_errors_e load_param(char *json_obj) {
 
 	val = uv_jsonreader_find_child(json_obj, "INFO");
 	if (val == NULL) {
+		printf("\"INFO\" not found\n");
 		ret = ERR_ABORTED;
 	}
 	else {
