@@ -633,7 +633,7 @@ bool cmd_exporth(const char *arg) {
 		printf("Failed to open header file '%s'.\n", filename);
 	}
 	else {
-		char objs[655360] = "";
+		char objs[2000000] = "";
 		get_header_objs(objs, arg);
 		fwrite(objs, sizeof(char), strlen(objs), headerfile);
 //		printf("header objects: \n%s\n", objs);
@@ -665,7 +665,7 @@ bool cmd_exportc(const char *arg) {
 		printf("Failed to open source file '%s'.\n", filename);
 	}
 	else {
-		char objs[655360] = "";
+		char objs[2000000] = "";
 
 		get_source_objs(objs, arg);
 		fwrite(objs, sizeof(char), strlen(objs), sourcefile);

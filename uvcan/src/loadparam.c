@@ -240,7 +240,32 @@ static uv_errors_e parse_dev(char *json) {
 	uv_errors_e ret = ERR_NONE;
 	char *obj = uv_jsonreader_find_child(json, "NODEID");
 	if (obj != NULL) {
-		uint8_t nodeid = uv_jsonreader_get_int(obj);
+		uint8_t nodeid = 0;
+		// nodeid given as query
+		if (uv_jsonreader_get_type(obj) == JSON_OBJECT) {
+			bool match = false;
+			char name[128];
+			for (uint8_t i = 0; i < uv_vector_size(&this->queries); i++) {
+				query_st *q = uv_vector_at(&this->queries, i);
+				if (uv_jsonreader_find_child(obj, q->name)) {
+					// matching query found
+					match = true;
+					char *query_array = uv_jsonreader_find_child(obj, q->name);
+					nodeid = uv_jsonreader_array_get_int(query_array, q->correct_answer);
+					break;
+				}
+			}
+			if (!match) {
+				char objname[128];
+				uv_jsonreader_get_obj_name(obj, objname, sizeof(name));
+				printf("No query '%s' found for object '%s'\n",
+						name, objname);
+			}
+		}
+		else {
+			// NODEID given as integer
+			nodeid = uv_jsonreader_get_int(obj);
+		}
 		if (db_get_nodeid(&dev.db) != 0 &&
 				db_get_nodeid(&dev.db) != nodeid) {
 			// update the device's nodeid
@@ -620,29 +645,27 @@ void loadparam_step(void *ptr) {
 		this->current_file++;
 	}
 
-	if (e == ERR_NONE) {
-		uv_errors_e ret = ERR_NONE;
-		// save the params to all devices
-		for (uint8_t i = 0; i < this->dev_count; i++) {
-			uint8_t nodeid = this->modified_dev_nodeids[i];
-			printf("Saving the parameters to dev 0x%x...\n", nodeid);
+	uv_errors_e ret = ERR_NONE;
+	// save the params to all devices
+	for (uint8_t i = 0; i < this->dev_count; i++) {
+		uint8_t nodeid = this->modified_dev_nodeids[i];
+		printf("Saving the parameters to dev 0x%x...\n", nodeid);
+		fflush(stdout);
+		ret |= uv_canopen_sdo_store_params(nodeid,
+				MEMORY_ALL_PARAMS);
+		uv_rtos_task_delay(300);
+		printf("Resetting the device 0x%x...\n", nodeid);
+		fflush(stdout);
+		if (ret == ERR_NONE) {
+			uv_canopen_nmt_master_send_cmd(nodeid,
+					CANOPEN_NMT_CMD_RESET_NODE);
+		}
+		else {
+			printf("\n**** NOTICE ****\n"
+					"The device 0x%x was not reset due to errors. \n"
+					"Manual reset is necessary.\n\n",
+					nodeid);
 			fflush(stdout);
-			ret |= uv_canopen_sdo_store_params(nodeid,
-					MEMORY_ALL_PARAMS);
-			uv_rtos_task_delay(300);
-			printf("Resetting the device 0x%x...\n", nodeid);
-			fflush(stdout);
-			if (ret == ERR_NONE) {
-				uv_canopen_nmt_master_send_cmd(nodeid,
-						CANOPEN_NMT_CMD_RESET_NODE);
-			}
-			else {
-				printf("\n**** NOTICE ****\n"
-						"The device 0x%x was not reset due to errors. \n"
-						"Manual reset is necessary.\n\n",
-						nodeid);
-				fflush(stdout);
-			}
 		}
 	}
 

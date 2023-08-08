@@ -74,6 +74,7 @@ dbvalue_st dbvalue_set_string(char *str, uint32_t str_len) {
 	strcpy(s, this.value_str);
 	str_to_upper_nonspace(s);
 
+
 	// if string value was set, search defines and assign the value that
 	// matches by name. Otherwise report an error.
 	bool match = false;
@@ -143,7 +144,7 @@ dbvalue_st dbvalue_set_string(char *str, uint32_t str_len) {
 			free(this.value_str);
 			this.value_str = malloc(str_len + 1 + strlen(dev.db.dev_name_upper) + 1);
 			sprintf(this.value_str, "%s_", dev.db.dev_name_upper);
-			memcpy(this.value_str + strlen(this.value_str), str, str_len);
+			strncat(this.value_str, str, str_len);
 		}
 	}
 
