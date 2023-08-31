@@ -898,16 +898,23 @@ static bool parse_json(db_st *this, char *json) {
 				// array parameters
 				else {
 					data = uv_jsonreader_find_child(child, "arraysize");
-					CHECK_OBJ(data, "arraysize", obj.name);
-					uv_json_types_e type = uv_jsonreader_get_type(data);
-					if (type == JSON_INT) {
-						obj.array_max_size = dbvalue_set_int(uv_jsonreader_get_int(data));
-					}
-					else if (type == JSON_STRING) {
-						obj.array_max_size = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
-								uv_jsonreader_get_string_len(data));
+					if (data != NULL) {
+						CHECK_OBJ(data, "arraysize", obj.name);
+						uv_json_types_e type = uv_jsonreader_get_type(data);
+						if (type == JSON_INT) {
+							obj.array_max_size = dbvalue_set_int(uv_jsonreader_get_int(data));
+						}
+						else if (type == JSON_STRING) {
+							obj.array_max_size = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
+									uv_jsonreader_get_string_len(data));
+						}
+						else {
+							dbvalue_init(&obj.array_max_size);
+						}
 					}
 					else {
+						// set array size to 0. This is checked with
+						// the "data" object later on
 						dbvalue_init(&obj.array_max_size);
 					}
 
@@ -920,7 +927,6 @@ static bool parse_json(db_st *this, char *json) {
 				str_to_upper_nonspace(obj.name);
 
 
-
 				if (CANOPEN_IS_ARRAY(obj.obj.type)) {
 					// cycle trough children and make a new object for each of them
 					// obj main index and type are already inherited from the array object
@@ -929,77 +935,100 @@ static bool parse_json(db_st *this, char *json) {
 
 					void **last_ptr = (void**) &obj.child_ptr;
 					char *children = uv_jsonreader_find_child(child, "data");
-					CHECK_OBJ(data, "data", obj.name);
 
-					if (children == NULL || uv_jsonreader_get_type(children) != JSON_ARRAY) {
-						printf("children array not an array in object %s\n", obj.name);
+					if (children == NULL && dbvalue_get_int(&obj.array_max_size) == 0) {
+						printf("ERROR: array type object '%s' should define children count\n"
+								"either with \"arraysize\" or \"data\".\n", obj.name);
 					}
-					for (uint8_t i = 0; i < uv_jsonreader_array_get_size(children); i++) {
-						thischild = malloc(sizeof(db_array_child_st));
-						db_array_child_init(thischild);
-
-						*last_ptr = thischild;
-						last_ptr = &(thischild->next_sibling);
-						thischild->next_sibling = NULL;
-
-						char *str = uv_jsonreader_array_at(children, i);
-						if (str == NULL) {
-							printf("ERROR: Array object didn't have enought children. \n"
-									"Number of children: %u, should be: %u\n", i, obj.obj.array_max_size);
+					else {
+						// if array size was not given, calculate it from data children count
+						if (dbvalue_get_int(&obj.array_max_size) == 0) {
+							dbvalue_free(&obj.array_max_size);
+							obj.array_max_size = dbvalue_set_int(uv_jsonreader_array_get_size(children));
 						}
-						else {
-							data = uv_jsonreader_find_child(str, "name");
-							CHECK_OBJ(data, "name", obj.name);
-							uv_jsonreader_get_string(data, thischild->name, sizeof(thischild->name));
-							str_to_upper_nonspace(thischild->name);
 
-							data = uv_jsonreader_find_child(str, "min");
-							CHECK_OBJ(data, "min", obj.name);
-							uv_json_types_e type = uv_jsonreader_get_type(data);
-							if (obj.obj.permissions != CANOPEN_RO) {
-								if (type == JSON_INT) {
-									thischild->min = dbvalue_set_int(uv_jsonreader_get_int(data));
-								}
-								else if (type == JSON_STRING) {
-									thischild->min = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
-											uv_jsonreader_get_string_len(data));
-								}
-								else {
-									dbvalue_init(&thischild->min);
-								}
-								data = uv_jsonreader_find_child(str, "max");
-								CHECK_OBJ(data, "max", obj.name);
-								type = uv_jsonreader_get_type(data);
-								if (type == JSON_INT) {
-									thischild->max = dbvalue_set_int(uv_jsonreader_get_int(data));
-								}
-								else if (type == JSON_STRING) {
-									thischild->max = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
-											uv_jsonreader_get_string_len(data));
-								}
-								else {
-									dbvalue_init(&thischild->max);
-								}
-							}
+						for (uint8_t i = 0;
+								i < MAX(uv_jsonreader_array_get_size(children),
+										dbvalue_get_int(&obj.array_max_size)); i++) {
+							thischild = malloc(sizeof(db_array_child_st));
+							db_array_child_init(thischild);
 
-							data = uv_jsonreader_find_child(str, "default");
-							if (data == NULL) {
-								data = uv_jsonreader_find_child(str, "value");
-								CHECK_OBJ(data, "value", obj.name);
-							}
-							type = uv_jsonreader_get_type(data);
-							if (type == JSON_INT) {
-								thischild->def = dbvalue_set_int(uv_jsonreader_get_int(data));
-							}
-							else if (type == JSON_STRING) {
-								thischild->def = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
-										uv_jsonreader_get_string_len(data));
+							*last_ptr = thischild;
+							last_ptr = &(thischild->next_sibling);
+							thischild->next_sibling = NULL;
+
+							char *str = uv_jsonreader_array_at(children, i);
+							if (str == NULL) {
+//								printf("WARNING: Array object didn't have enough children. \n"
+//										"Number of children: %u, should be: %u.\n"
+//										"Setting default value of extra childs to 0.\n",
+//										i, obj.obj.array_max_size);
+								sprintf(thischild->name, "CHILD%i", i + 1);
+								thischild->def = dbvalue_set_int(0);
 							}
 							else {
-								dbvalue_init(&thischild->def);
+								data = uv_jsonreader_find_child(str, "name");
+								if (data != NULL) {
+									CHECK_OBJ(data, "name", obj.name);
+									uv_jsonreader_get_string(data, thischild->name, sizeof(thischild->name));
+									str_to_upper_nonspace(thischild->name);
+								}
+								else {
+									sprintf(thischild->name, "CHILD%i", i + 1);
+								}
+
+								data = uv_jsonreader_find_child(str, "min");
+								uv_json_types_e type;
+								if (data != NULL) {
+									CHECK_OBJ(data, "min", obj.name);
+									type = uv_jsonreader_get_type(data);
+									if (obj.obj.permissions != CANOPEN_RO) {
+										if (type == JSON_INT) {
+											thischild->min = dbvalue_set_int(uv_jsonreader_get_int(data));
+										}
+										else if (type == JSON_STRING) {
+											thischild->min = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
+													uv_jsonreader_get_string_len(data));
+										}
+										else {
+											dbvalue_init(&thischild->min);
+										}
+										data = uv_jsonreader_find_child(str, "max");
+										CHECK_OBJ(data, "max", obj.name);
+										type = uv_jsonreader_get_type(data);
+										if (type == JSON_INT) {
+											thischild->max = dbvalue_set_int(uv_jsonreader_get_int(data));
+										}
+										else if (type == JSON_STRING) {
+											thischild->max = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
+													uv_jsonreader_get_string_len(data));
+										}
+										else {
+											dbvalue_init(&thischild->max);
+										}
+									}
+								}
+
+								data = uv_jsonreader_find_child(str, "default");
+								if (data == NULL) {
+									data = uv_jsonreader_find_child(str, "value");
+									CHECK_OBJ(data, "value", obj.name);
+								}
+								type = uv_jsonreader_get_type(data);
+								if (type == JSON_INT) {
+									thischild->def = dbvalue_set_int(uv_jsonreader_get_int(data));
+								}
+								else if (type == JSON_STRING) {
+									thischild->def = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
+											uv_jsonreader_get_string_len(data));
+								}
+								else {
+									dbvalue_init(&thischild->def);
+								}
 							}
 						}
 					}
+
 				}
 
 				uv_vector_push_back(&dev.db.objects, &obj);
@@ -1045,6 +1074,34 @@ static bool parse_json(db_st *this, char *json) {
 		}
 		if (br) {
 			break;
+		}
+	}
+
+	// Order object dictionary to rising order based on main index
+	for (int i = 0; i < uv_vector_size(&dev.db.objects); i++) {
+		db_obj_st *obj_i = uv_vector_at(&dev.db.objects, i);
+		for (int j = 0; j < i; j++) {
+			db_obj_st *obj_j = uv_vector_at(&dev.db.objects, j);
+			if (obj_i->obj.main_index < obj_j->obj.main_index) {
+				// swap i and j
+				db_obj_st swap = *obj_j;
+				memmove(obj_j, obj_i, sizeof(db_obj_st));
+				memcpy(obj_i, &swap, sizeof(db_obj_st));
+			}
+			else if (obj_i->obj.main_index == obj_j->obj.main_index) {
+				// check subindex
+				if (uv_canopen_is_array(&obj_i->obj) ||
+						uv_canopen_is_string(&obj_i->obj) ||
+						obj_i->obj.sub_index < obj_j->obj.sub_index) {
+					// swap i and j
+					db_obj_st swap = *obj_j;
+					memmove(obj_j, obj_i, sizeof(db_obj_st));
+					memcpy(obj_i, &swap, sizeof(db_obj_st));
+				}
+			}
+			else {
+
+			}
 		}
 	}
 

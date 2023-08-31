@@ -22,6 +22,7 @@
 #include <stdbool.h>
 #include <uv_utilities.h>
 #include <uv_canopen.h>
+#include <string.h>
 
 
 #define DB_OBJ_MAX_COUNT	512
@@ -41,6 +42,12 @@ typedef struct {
 } dbvalue_st;
 
 void dbvalue_init(dbvalue_st *this);
+
+
+/// @brief Returns true if the dbvalue is set
+static inline bool dbvalue_is_set(dbvalue_st *this) {
+	return !!strlen(this->value_str);
+}
 
 /// @brief: Sets the dbvalue to integer and returns the dbvalue object
 dbvalue_st dbvalue_set_int(int32_t value);
