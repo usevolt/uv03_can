@@ -63,7 +63,7 @@ static inline int32_t dbvalue_get_int(dbvalue_st *this) {
 
 /// @brief: Returns a pointer to the dbvalue's string component. In case if integer value
 /// was given to the dbvalue, it was converted to 10-base string and a pointer to that
-/// strin is returned. Otherwise pointer to empty string is returned.
+/// string is returned. Otherwise pointer to empty string is returned.
 static inline char *dbvalue_get_string(dbvalue_st *this) {
 	return this->value_str;
 }

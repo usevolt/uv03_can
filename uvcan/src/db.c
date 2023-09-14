@@ -942,9 +942,11 @@ static bool parse_json(db_st *this, char *json) {
 					}
 					else {
 						// if array size was not given, calculate it from data children count
-						if (dbvalue_get_int(&obj.array_max_size) == 0) {
+						if ((dbvalue_get_type(&obj.array_max_size) == DBVALUE_INT) &&
+								dbvalue_get_int(&obj.array_max_size) == 0) {
 							dbvalue_free(&obj.array_max_size);
-							obj.array_max_size = dbvalue_set_int(uv_jsonreader_array_get_size(children));
+							obj.array_max_size = dbvalue_set_int(
+									uv_jsonreader_array_get_size(children));
 						}
 
 						for (uint8_t i = 0;

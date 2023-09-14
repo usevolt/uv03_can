@@ -170,7 +170,7 @@ static uv_errors_e load_param(char *json_obj) {
 						CANOPEN_SIZEOF(type), &d);
 				if (ret != ERR_NONE) {
 					fprintf(stderr, "*** ERROR ***\n"
-							"Array loading failed for subindex %u\n", sindex);
+							"Array loading failed for subindex %u\n", i + 1 + sindex_offset);
 				}
 			}
 		}
