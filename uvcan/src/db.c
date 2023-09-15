@@ -1014,18 +1014,21 @@ static bool parse_json(db_st *this, char *json) {
 								data = uv_jsonreader_find_child(str, "default");
 								if (data == NULL) {
 									data = uv_jsonreader_find_child(str, "value");
-									CHECK_OBJ(data, "value", obj.name);
 								}
-								type = uv_jsonreader_get_type(data);
-								if (type == JSON_INT) {
-									thischild->def = dbvalue_set_int(uv_jsonreader_get_int(data));
-								}
-								else if (type == JSON_STRING) {
-									thischild->def = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
-											uv_jsonreader_get_string_len(data));
+								if (data != NULL) {
+									type = uv_jsonreader_get_type(data);
+									if (type == JSON_INT) {
+										thischild->def = dbvalue_set_int(uv_jsonreader_get_int(data));
+									}
+									else if (type == JSON_STRING) {
+										thischild->def = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
+												uv_jsonreader_get_string_len(data));
+									}
+									else {
+									}
 								}
 								else {
-									dbvalue_init(&thischild->def);
+									thischild->def = dbvalue_set_int(0);
 								}
 							}
 						}

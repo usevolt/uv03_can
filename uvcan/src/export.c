@@ -286,21 +286,25 @@ bool get_header_objs(char *dest, const char *filename) {
 				strcat(line, childname);
 				strcat(line, "_SUBINDEX            ");
 				sprintf(&line[strlen(line)], "%u\n", index + 1);
+				if (dbvalue_is_set(&child->min)) {
+					sprintf(line + strlen(line), "#define %s_%s_%s_MIN            ",
+							nameupper, name, childname);
+					sprintf(line + strlen(line), "%s\n",
+							dbvalue_get_string(&child->min));
+				}
+				if (dbvalue_is_set(&child->max)) {
+					sprintf(line + strlen(line), "#define %s_%s_%s_MAX            ",
+							nameupper, name, childname);
+					sprintf(line + strlen(line), "%s\n",
+							dbvalue_get_string(&child->max));
+				}
+				if (dbvalue_is_set(&child->def)) {
+					sprintf(line + strlen(line), "#define %s_%s_%s_DEFAULT            ",
+							nameupper, name, childname);
+					sprintf(line + strlen(line), "%s\n",
+							dbvalue_get_string(&child->def));
+				}
 
-				sprintf(line + strlen(line), "#define %s_%s_%s_MIN            ",
-						nameupper, name, childname);
-				sprintf(line + strlen(line), "%s\n",
-						dbvalue_get_string(&child->min));
-
-				sprintf(line + strlen(line), "#define %s_%s_%s_MAX            ",
-						nameupper, name, childname);
-				sprintf(line + strlen(line), "%s\n",
-						dbvalue_get_string(&child->max));
-
-				sprintf(line + strlen(line), "#define %s_%s_%s_DEFAULT            ",
-						nameupper, name, childname);
-				sprintf(line + strlen(line), "%s\n",
-						dbvalue_get_string(&child->def));
 
 				index++;
 				child = child->next_sibling;
