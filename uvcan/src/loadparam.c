@@ -300,12 +300,17 @@ static uv_errors_e parse_dev(char *json) {
 					fprintf(stderr, "\n**** ALERT ****\n"
 							"CAN interface revision differ between parameter file (%i) and device (%i).\n"
 							"Some parameters might load incorrectly.\n\n"
-							"Press anything to continue...\n\n",
+							"Press anything to continue or type 'skip' to skip this device\n\n",
 							can_if,
 							dev_if);
 					portDISABLE_INTERRUPTS();
-					fgetc(stdin);
+					char str[256] = {};
+					fgets(str, sizeof(str) - 1, stdin);
 					portENABLE_INTERRUPTS();
+					printf("got '%s'\n", str);
+					if (strstr(str, "skip")) {
+						ret = ERR_SKIPPED;
+					}
 				}
 				else {
 					printf("CAN interface version %i\n", can_if);
@@ -315,20 +320,29 @@ static uv_errors_e parse_dev(char *json) {
 				fprintf(stderr, "\n**** ALERT ****\n"
 						"Failed to read CAN interface from the device. \n"
 						"The CAN IF VERSION object dictionary entry might not be defined.\n"
-						"Press anything to continue...\n\n");
+						"Press anything to continue or 'skip' to ship this device.\n\n");
 				portDISABLE_INTERRUPTS();
-				fgetc(stdin);
+				char str[128] = {};
+				fgets(str, sizeof(str) - 1, stdin);
 				portENABLE_INTERRUPTS();
+				printf("'%s'\n", str);
+				if (strstr(str, "skip")) {
+					ret = ERR_SKIPPED;
+				}
 			}
 		}
 		else {
 			fprintf(stderr, "\n**** ALERT ****\n"
 					"\"CAN IF MINDEX\" or \"CAN IF SINDEX\" not found in the parameter file.\n\n"
-					"Press anything to continue...\n\n");
+					"Press anything to continue or type 'skip' to skip this device.\n\n");
 			portDISABLE_INTERRUPTS();
 			fflush(stdout);
-			fgetc(stdin);
+			char str[128] = {};
+			fgets(str, sizeof(str) - 1, stdin);
 			portENABLE_INTERRUPTS();
+			if (strstr(str, "skip")) {
+				ret = ERR_SKIPPED;
+			}
 		}
 
 	}
@@ -336,11 +350,16 @@ static uv_errors_e parse_dev(char *json) {
 		fprintf(stderr, "****** ALERT ******\n"
 				"Parameter file didn't contain CAN interface version number for device 0x%x.\n"
 				"Undefined behaviour might occur while loading the parameters.\n\n"
-				"Press anything to continue...\n\n", db_get_nodeid(&dev.db));
+				"Press anything to continue or type 'skip' to skip this device.\n\n",
+				db_get_nodeid(&dev.db));
 		fflush(stdout);
 		portDISABLE_INTERRUPTS();
-		fgetc(stdin);
+		char str[128] = {};
+		fgets(str, sizeof(str) - 1, stdin);
 		portENABLE_INTERRUPTS();
+		if (strstr(str, "skip")) {
+			ret = ERR_SKIPPED;
+		}
 	}
 
 	if (ret == ERR_NONE) {

@@ -87,6 +87,13 @@ bool cmd_sdowrite(const char *arg) {
 	add_task(&sdowrite);
 
 	this->value = strtol(arg, NULL, 0);
+	if (this->value == 0 &&
+			strlen(arg) > 1) {
+		this->str = arg;
+	}
+	else {
+		this->str = NULL;
+	}
 
 	return ret;
 }
@@ -130,12 +137,21 @@ void sdowrite(void *ptr) {
 	if (this->mindex == 0) {
 		printf("Error: The CANOpen main index has to be set with *--mindex* command\n");
 	}
-	else if (this->datalen > 4) {
-		printf("Error: SDO write command supports only expedited transfers\n");
-	}
 	else {
-		uv_errors_e e = uv_canopen_sdo_write(db_get_nodeid(&dev.db),
-				this->mindex, this->sindex, (this->datalen == 0) ? 4 : this->datalen, &this->value);
+		uv_errors_e e = ERR_NONE;
+		if (this->str) {
+			e = uv_canopen_sdo_write(db_get_nodeid(&dev.db),
+					this->mindex, 0,
+					(this->datalen == 0) ? strlen(this->str) + 1 : this->datalen,
+							this->str);
+			printf("Wrote SDO string '%s'\n", this->str);
+		}
+		else {
+			e = uv_canopen_sdo_write(db_get_nodeid(&dev.db),
+					this->mindex, this->sindex,
+					this->datalen, &this->value);
+			printf("Wrote SDO epxedited value '%i'\n", this->value);
+		}
 		if (e != ERR_NONE) {
 			printf("SDO write returned an error: %u\n", e);
 		}

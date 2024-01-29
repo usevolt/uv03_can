@@ -29,6 +29,7 @@ typedef struct {
 	uint8_t sindex;
 	uint32_t datalen;
 	int32_t value;
+	char *str;
 } sdo_st;
 
 
