@@ -50,7 +50,7 @@ bool cmd_loadparam(const char *arg) {
 	else {
 		strcpy(this->files[0], arg);
 		add_task(loadparam_step);
-		uv_can_set_up();
+		uv_can_set_up(false);
 	}
 
 	return ret;

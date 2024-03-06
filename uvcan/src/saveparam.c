@@ -56,7 +56,7 @@ bool cmd_saveparam(const char *arg) {
 		strcpy(this->file, arg);
 		this->nodeid = db_get_nodeid(&dev.db);
 		add_task(saveparam_step);
-		uv_can_set_up();
+		uv_can_set_up(false);
 	}
 
 	return ret;

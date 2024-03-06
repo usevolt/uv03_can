@@ -71,7 +71,7 @@ bool cmd_datalen(const char *arg) {
 bool cmd_sdoread(const char *arg) {
 	bool ret = true;
 
-	uv_can_set_up();
+	uv_can_set_up(false);
 
 	add_task(&sdoread);
 
@@ -82,7 +82,7 @@ bool cmd_sdoread(const char *arg) {
 bool cmd_sdowrite(const char *arg) {
 	bool ret = true;
 
-	uv_can_set_up();
+	uv_can_set_up(false);
 
 	add_task(&sdowrite);
 

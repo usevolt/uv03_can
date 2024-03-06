@@ -33,7 +33,7 @@ bool cmd_clearmedia(const char *arg) {
 	bool ret = true;
 
 	add_task(clearmedia_step);
-	uv_can_set_up();
+	uv_can_set_up(false);
 
 	return ret;
 }

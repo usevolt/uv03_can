@@ -49,7 +49,7 @@ bool cmd_loadmedia(const char *arg) {
 			this->filename[strlen(arg) - 1] = '\0';
 		}
 		add_task(loadmedia_step);
-		uv_can_set_up();
+		uv_can_set_up(false);
 	}
 
 	return ret;

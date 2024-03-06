@@ -88,7 +88,7 @@ bool cmd_load(const char *arg) {
 		this->nodeid = db_get_nodeid(&dev.db);
 		uv_delay_init(&this->delay, RESPONSE_DELAY_MS);
 		add_task(load_step);
-		uv_can_set_up();
+		uv_can_set_up(false);
 	}
 
 	return ret;
@@ -111,7 +111,7 @@ bool cmd_loadwfr(const char *arg) {
 		this->nodeid = db_get_nodeid(&dev.db);
 		uv_delay_init(&this->delay, LOADWFR_WAIT_TIME_MS);
 		add_task(load_step);
-		uv_can_set_up();
+		uv_can_set_up(false);
 	}
 
 	return ret;
@@ -133,7 +133,7 @@ bool cmd_segload(const char *arg) {
 		this->nodeid = db_get_nodeid(&dev.db);
 		uv_delay_init(&this->delay, RESPONSE_DELAY_MS);
 		add_task(load_step);
-		uv_can_set_up();
+		uv_can_set_up(false);
 	}
 
 	return ret;
@@ -156,7 +156,7 @@ bool cmd_segloadwfr(const char *arg) {
 		this->nodeid = db_get_nodeid(&dev.db);
 		uv_delay_init(&this->delay, LOADWFR_WAIT_TIME_MS);
 		add_task(load_step);
-		uv_can_set_up();
+		uv_can_set_up(false);
 	}
 
 	return ret;
@@ -179,7 +179,7 @@ bool cmd_uvload(const char *arg) {
 		this->nodeid = db_get_nodeid(&dev.db);
 		uv_delay_init(&this->delay, RESPONSE_DELAY_MS);
 		add_task(load_step);
-		uv_can_set_up();
+		uv_can_set_up(false);
 	}
 
 	return ret;
@@ -202,7 +202,7 @@ bool cmd_uvloadwfr(const char *arg) {
 		this->nodeid = db_get_nodeid(&dev.db);
 		uv_delay_init(&this->delay, LOADWFR_WAIT_TIME_MS);
 		add_task(load_step);
-		uv_can_set_up();
+		uv_can_set_up(false);
 	}
 
 	return ret;
