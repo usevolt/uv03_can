@@ -31,7 +31,10 @@ static bool is_nodeid_set = false;
 
 static void str_to_upper_nonspace(char *str) {
 	while (*str != '\0') {
-		if (isspace(*str)) {
+		if (isspace(*str) ||
+				*str == ':' ||
+				*str == ',' ||
+				*str == '=') {
 			*str = '_';
 		}
 		else {
