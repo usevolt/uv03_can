@@ -232,6 +232,13 @@ commands_st commands[] = {
 				.str = "Reads parameters from a UVCan device and saves them into the given file.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_saveparam
+		},
+		{
+				.cmd_long = "saveparamall",
+				.str = "Reads parameters from a UVCan device and saves them into the given file.\n"
+						"Reads also CANOpen 301 specified params.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_saveparamall
 		}
 };
 

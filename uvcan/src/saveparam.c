@@ -237,6 +237,12 @@ void saveparam_step(void *ptr) {
 
 		uv_jsonwriter_add_int(&json, "NODEID", db_get_nodeid(&dev.db));
 
+		char devname[256] = { };
+		uv_canopen_sdo_read(db_get_nodeid(&dev.db),
+				CONFIG_CANOPEN_DEVNAME_INDEX, 0,
+				sizeof(devname), devname);
+		uv_jsonwriter_add_string(&json, "DEVNAME", devname);
+
 		uv_jsonwriter_begin_array(&json, "PARAMS");
 
 		uv_errors_e e = ERR_NONE;
@@ -249,6 +255,11 @@ void saveparam_step(void *ptr) {
 			obj.obj.sub_index = 0;
 			obj.obj.type = CANOPEN_UNSIGNED8;
 			e |= json_add_obj(&json, &obj, "nodeid");
+
+			obj.obj.main_index = CONFIG_CANOPEN_BAUDRATE_INDEX;
+			obj.obj.sub_index = 0;
+			obj.obj.type = CANOPEN_UNSIGNED32;
+			e |= json_add_obj(&json, &obj, "baudrate");
 
 			// heartbeat producer time ms
 			obj.obj.main_index = CONFIG_CANOPEN_PRODUCER_HEARTBEAT_INDEX;
@@ -291,7 +302,6 @@ void saveparam_step(void *ptr) {
 				e |= json_add_obj(&json, &obj, str);
 			}
 		}
-
 
 		// fetch the active operator and the operator count
 		uint32_t current_op = 0;
