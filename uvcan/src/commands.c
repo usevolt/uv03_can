@@ -268,6 +268,8 @@ bool cmd_baud(const char *arg) {
 		printf("Setting CAN baudrate: %u\n", baudrate);
 		this->baudrate = baudrate;
 		uv_can_set_baudrate(this->can_channel, baudrate);
+		// force bus state up
+		uv_can_set_up(true);
 		ret = true;
 	}
 
