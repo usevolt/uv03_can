@@ -168,6 +168,13 @@ commands_st commands[] = {
 				.callback = &cmd_exportc
 		},
 		{
+				.cmd_long = "exporth",
+				.str = "Exports database given with --db to UV embedded header file with a given name.\n"
+						"The header file will be rewritten if it exists.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_exporth
+		},
+		{
 				.cmd_long = "export",
 				.cmd_short = 'e',
 				.str = "Exports the database loaded with --db into a C .h and .c files. \n"
