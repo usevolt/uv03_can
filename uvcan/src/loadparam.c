@@ -426,9 +426,14 @@ static uv_errors_e parse_dev(char *json) {
 			uint32_t opdb_mindex = uv_jsonreader_get_int(opdb_mindex_json);
 			canopen_object_type_e opdb_type = db_jsonval_to_type(opdb_type_json);
 
+			// check how many ops dev has
+			uint16_t devopcount = 1;
+			ret |= uv_canopen_sdo_read(db_get_nodeid(&dev.db),
+					opdb_mindex + 1, 0, sizeof(devopcount), &devopcount);
+
 			// copy as many times as necessary to have all the operators
 			uint8_t op_count = uv_jsonreader_array_get_size(operators);
-			for (uint32_t i = 1; i < op_count; i++) {
+			for (uint32_t i = devopcount; i < op_count; i++) {
 				printf("Creating new operator by copying operator %u\n", 1);
 				fflush(stdout);
 				uint32_t data = 1;
