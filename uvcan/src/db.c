@@ -68,90 +68,99 @@ dbvalue_st dbvalue_set_int(int32_t value) {
 
 dbvalue_st dbvalue_set_string(char *str, uint32_t str_len) {
 	dbvalue_st this;
-	this.type = DBVALUE_STRING;
-	this.value_str = malloc(str_len + 1);
-	memcpy(this.value_str, str, str_len);
-	this.value_str[str_len] = '\0';
 
-	char *s = malloc(strlen(this.value_str) + 1);
-	strcpy(s, this.value_str);
-	str_to_upper_nonspace(s);
+	// strings that contain hexadecimal numbers are read as integer values
+	if (strncmp(str, "0x", 2) == 0) {
+		this = dbvalue_set_int(strtol(str, NULL, 0));
+	}
+	// string was not starting as hex number, parse it and create string object
+	else {
+		this.type = DBVALUE_STRING;
+		this.value_str = malloc(str_len + 1);
+		memcpy(this.value_str, str, str_len);
+		this.value_str[str_len] = '\0';
+
+		char *s = malloc(strlen(this.value_str) + 1);
+		strcpy(s, this.value_str);
+		str_to_upper_nonspace(s);
 
 
-	// if string value was set, search defines and assign the value that
-	// matches by name. Otherwise report an error.
-	bool match = false;
-	for (uint32_t i = 0; i < uv_vector_size(&dev.db.defines); i++) {
-		db_define_st *d = uv_vector_at(&dev.db.defines, i);
+		// if string value was set, search defines and assign the value that
+		// matches by name. Otherwise report an error.
+		bool match = false;
+		for (uint32_t i = 0; i < uv_vector_size(&dev.db.defines); i++) {
+			db_define_st *d = uv_vector_at(&dev.db.defines, i);
 
-		if (d->type == DB_DEFINE_INT) {
-			if (strcmp(d->name, s) == 0) {
-				this.value_int = d->value;
-				strcpy(this.value_str, s);
-				match = true;
-				break;
-			}
-		}
-		else if (d->type == DB_DEFINE_STRING) {
-			// append the string as is
-			if (strcmp(d->name, s) == 0) {
-				strcpy(this.value_str, d->str);
-				// note: match has to be set to false, otherwise
-				// the dev name would be appended to the string
-				match = false;
-				break;
-			}
-		}
-		else if (d->type == DB_DEFINE_ENUM) {
-			// check if the dbvalue string starts with the same substring as d
-			if (strstr(s, d->name) == s) {
-				if (strlen(s) < (strlen(d->name) + 1)) {
-					printf("**** ERROR **** Define with ENUM type not found with a name of '%s'\n",
-							s);
+			if (d->type == DB_DEFINE_INT) {
+				if (strcmp(d->name, s) == 0) {
+					this.value_int = d->value;
+					strcpy(this.value_str, s);
+					match = true;
+					break;
 				}
-				else {
-					bool m = false;
-					for (int32_t i = 0; i < d->child_count; i++) {
-						char *str = s + strlen(d->name) + 1;
-						char childname[256];
-						strcpy(childname, d->childs[i]);
-						// remove possible '=' characters from the name, as well as trailing space
-						char *c = strstr(childname, "=");
-						while (c != NULL && c != childname && (isspace(*c) || *c == '=')) {
-							*c = '\0';
-							c--;
-						}
-						if (strcmp(str, childname) == 0) {
-							this.value_int = i;
-							m = true;
-							break;
-						}
-					}
-					if (!m) {
-						printf("**** ERROR **** No ENUM define found with name of '%s'\n",
+			}
+			else if (d->type == DB_DEFINE_STRING) {
+				// append the string as is
+				if (strcmp(d->name, s) == 0) {
+					strcpy(this.value_str, d->str);
+					// note: match has to be set to false, otherwise
+					// the dev name would be appended to the string
+					match = false;
+					break;
+				}
+			}
+			else if (d->type == DB_DEFINE_ENUM) {
+				// check if the dbvalue string starts with the same substring as d
+				if (strstr(s, d->name) == s) {
+					if (strlen(s) < (strlen(d->name) + 1)) {
+						printf("**** ERROR **** Define with ENUM type not found with a name of '%s'\n",
 								s);
 					}
 					else {
-						match = true;
+						bool m = false;
+						for (int32_t i = 0; i < d->child_count; i++) {
+							char *str = s + strlen(d->name) + 1;
+							char childname[256];
+							strcpy(childname, d->childs[i]);
+							// remove possible '=' characters from the name, as well as trailing space
+							char *c = strstr(childname, "=");
+							while (c != NULL && c != childname && (isspace(*c) || *c == '=')) {
+								*c = '\0';
+								c--;
+							}
+							if (strcmp(str, childname) == 0) {
+								this.value_int = i;
+								m = true;
+								break;
+							}
+						}
+						if (!m) {
+							printf("**** ERROR **** No ENUM define found with name of '%s'\n",
+									s);
+						}
+						else {
+							match = true;
+						}
 					}
 				}
 			}
 		}
-	}
-	if (!match) {
-		this.value_int = 0;
-	}
-	else {
-		// match found, update the dbvalue string to contain the device name
-		if (strncmp(dev.db.dev_name_upper, s, strlen(dev.db.dev_name_upper)) != 0) {
-			free(this.value_str);
-			this.value_str = malloc(str_len + 1 + strlen(dev.db.dev_name_upper) + 1);
-			sprintf(this.value_str, "%s_", dev.db.dev_name_upper);
-			strncat(this.value_str, str, str_len);
+		if (!match) {
+			this.value_int = 0;
 		}
+		else {
+			// match found, update the dbvalue string to contain the device name
+			if (strncmp(dev.db.dev_name_upper, s, strlen(dev.db.dev_name_upper)) != 0) {
+				free(this.value_str);
+				this.value_str = malloc(str_len + 1 + strlen(dev.db.dev_name_upper) + 1);
+				sprintf(this.value_str, "%s_", dev.db.dev_name_upper);
+				strncat(this.value_str, str, str_len);
+			}
+		}
+
+		free(s);
 	}
 
-	free(s);
 	return this;
 }
 
@@ -168,6 +177,7 @@ void db_array_child_init(db_array_child_st *this) {
 	dbvalue_init(&this->def);
 	dbvalue_init(&this->max);
 	dbvalue_init(&this->min);
+	this->numsys = DB_OBJ_NUMSYS_DEC;
 }
 
 
@@ -760,6 +770,18 @@ static bool parse_json(db_st *this, char *json) {
 				obj.obj.type = db_jsonval_to_type(data);
 				uv_jsonreader_get_string(data, obj.type_str, sizeof(obj.type_str));
 
+				data = uv_jsonreader_find_child(child, "numsystem");
+				if (data) {
+					char str[64] = {};
+					uv_jsonreader_get_string(data, str, sizeof(str));
+					if (strcmp(str, "HEX") == 0) {
+						obj.numsys = DB_OBJ_NUMSYS_HEX;
+					}
+				}
+				else {
+					obj.numsys = DB_OBJ_NUMSYS_DEC;
+				}
+
 				data = uv_jsonreader_find_child(child, "permissions");
 				CHECK_OBJ(data, "permissions", obj.name);
 				obj.obj.permissions = str_to_permissions(data);
@@ -980,6 +1002,15 @@ static bool parse_json(db_st *this, char *json) {
 								}
 								else {
 									sprintf(thischild->name, "CHILD%i", i + 1);
+								}
+
+								data = uv_jsonreader_find_child(str, "numsystem");
+								if (data != NULL) {
+									char str[64] = {};
+									uv_jsonreader_get_string(data, str, sizeof(str));
+									if (strcmp(str, "HEX") == 0) {
+										thischild->numsys = DB_OBJ_NUMSYS_HEX;
+									}
 								}
 
 								data = uv_jsonreader_find_child(str, "min");

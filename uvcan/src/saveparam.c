@@ -74,7 +74,7 @@ static uv_errors_e json_add_obj(uv_json_st *dest_json, db_obj_st *obj, char *inf
 	if (info_str != NULL && strlen(info_str) != 0) {
 		uv_jsonwriter_add_string(&json, "INFO", info_str);
 	}
-	uv_jsonwriter_add_int(&json, "MAININDEX", obj->obj.main_index);
+	uv_jsonwriter_add_int_hex(&json, "MAININDEX", obj->obj.main_index);
 	if (CANOPEN_IS_INTEGER(obj->obj.type)) {
 		uv_jsonwriter_add_int(&json, "SUBINDEX", obj->obj.sub_index);
 	}
@@ -97,6 +97,7 @@ static uv_errors_e json_add_obj(uv_json_st *dest_json, db_obj_st *obj, char *inf
 		if (ret == ERR_NONE) {
 			// fetch all the elements
 			uv_jsonwriter_begin_array(&json, "DATA");
+			db_array_child_st *child = obj->child_ptr;
 			for (uint32_t i = 0; i < arr_len; i++) {
 				uint32_t data = 0;
 				ret = uv_canopen_sdo_read(db_get_nodeid(&dev.db),
@@ -107,7 +108,16 @@ static uv_errors_e json_add_obj(uv_json_st *dest_json, db_obj_st *obj, char *inf
 				else {
 					printf("0x%x ", data);
 					fflush(stdout);
-					uv_jsonwriter_array_add_int(&json, data);
+					if (child &&
+							child->numsys == DB_OBJ_NUMSYS_HEX) {
+						uv_jsonwriter_array_add_int_hex(&json, data);
+					}
+					else {
+						uv_jsonwriter_array_add_int(&json, data);
+					}
+					if (child) {
+						child = child->next_sibling;
+					}
 				}
 			}
 			uv_jsonwriter_end_array(&json);
@@ -137,8 +147,13 @@ static uv_errors_e json_add_obj(uv_json_st *dest_json, db_obj_st *obj, char *inf
 		ret = uv_canopen_sdo_read(db_get_nodeid(&dev.db), obj->obj.main_index,
 				obj->obj.sub_index, CANOPEN_SIZEOF(obj->obj.type), &data);
 		if (ret == ERR_NONE) {
-			// write the received data to the json
-			uv_jsonwriter_add_int(&json, "DATA", data);
+			if (obj->numsys == DB_OBJ_NUMSYS_HEX) {
+				uv_jsonwriter_add_int_hex(&json, "DATA", data);
+			}
+			else {
+				// write the received data to the json
+				uv_jsonwriter_add_int(&json, "DATA", data);
+			}
 		}
 		printf("0x%x\n", data);
 		fflush(stdout);
@@ -230,12 +245,12 @@ void saveparam_step(void *ptr) {
 
 		if (if_found) {
 			uv_jsonwriter_add_int(&json, "CAN IF VERSION", can_if);
-			uv_jsonwriter_add_int(&json, "CAN IF MINDEX", if_obj->obj.main_index);
+			uv_jsonwriter_add_int_hex(&json, "CAN IF MINDEX", if_obj->obj.main_index);
 			uv_jsonwriter_add_int(&json, "CAN IF SINDEX", if_obj->obj.sub_index);
 			uv_jsonwriter_add_string(&json, "CAN IF TYPE", if_obj->type_str);
 		}
 
-		uv_jsonwriter_add_int(&json, "NODEID", db_get_nodeid(&dev.db));
+		uv_jsonwriter_add_int_hex(&json, "NODEID", db_get_nodeid(&dev.db));
 
 		char devname[256] = { };
 		uv_canopen_sdo_read(db_get_nodeid(&dev.db),

@@ -76,12 +76,19 @@ static inline dbvalue_type_e dbvalue_get_type(dbvalue_st *this) {
 void dbvalue_free(dbvalue_st *this);
 
 
+/// @brief: Defines the number system used by this object if object is or integer type
+typedef enum {
+	DB_OBJ_NUMSYS_DEC = 0,
+	DB_OBJ_NUMSYS_HEX
+} db_obj_numsys_e;
+
 /// @brief: Data structure for each array object's children
 typedef struct {
 	char name[128];
 	dbvalue_st min;
 	dbvalue_st max;
 	dbvalue_st def;
+	db_obj_numsys_e numsys;
 	// pointer to the next sibling
 	void *next_sibling;
 } db_array_child_st;
@@ -111,6 +118,7 @@ typedef enum {
 	DB_OBJ_TYPE_COUNT
 } db_obj_type_e;
 
+
 /// @brief: A single object structure
 typedef struct {
 	// Descriptive name of the object
@@ -123,6 +131,8 @@ typedef struct {
 	char type_str[32];
 	// the object type. Undefined, nonvol_param or something else.
 	db_obj_type_e obj_type;
+	// number system
+	db_obj_numsys_e numsys;
 	union {
 		// for integer objects
 		struct {
