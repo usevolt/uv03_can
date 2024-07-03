@@ -1012,6 +1012,9 @@ static bool parse_json(db_st *this, char *json) {
 										thischild->numsys = DB_OBJ_NUMSYS_HEX;
 									}
 								}
+								else {
+									thischild->numsys = obj.numsys;
+								}
 
 								data = uv_jsonreader_find_child(str, "min");
 								uv_json_types_e type;
