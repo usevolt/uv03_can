@@ -95,21 +95,15 @@ void step(void *me) {
 
 	if (!uv_rtos_idle_task_set()) {
 		db_deinit();
-		printf("Finished\n");
+		fprintf(stderr, "Finished\n");
 		exit(0);
 	}
-	printf("step done\n");
+	fprintf(stderr, "step done\n");
 	while(1) {
 		uv_rtos_task_delay(1);
 	}
 }
 
-
-static void pthread_rtos_main(void *ptr) {
-	printf("starting FreeRTOS on another thread\n");
-	uv_init(&dev);
-	uv_rtos_start_scheduler();
-}
 
 
 int main(int argc, char *argv[]) {
@@ -140,7 +134,6 @@ int main(int argc, char *argv[]) {
 
 	bool error = false;
 	char c = 'c';
-	bool none_args = true;
 	while ((c = getopt_long(argc, argv, optstr, opts, NULL)) != -1) {
 		if (c != '?') {
 			// execute command callback
@@ -153,7 +146,6 @@ int main(int argc, char *argv[]) {
 						error = true;
 						break;
 					}
-					none_args = false;
 				}
 			}
 		}

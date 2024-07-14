@@ -256,10 +256,10 @@ unsigned int commands_count(void) {
 
 
 bool cmd_can(const char *arg) {
-	printf("selecting '%s' as CAN dev\n", arg);
+	fprintf(stderr, "selecting '%s' as CAN dev\n", arg);
 	strcpy(this->can_channel, arg);
 
-	printf("Setting CAN dev name and baudrate: %u\n", arg, this->baudrate);
+	fprintf(stderr, "Setting CAN dev name and baudrate: %u\n", arg, this->baudrate);
 	uv_can_set_baudrate(this->can_channel, this->baudrate);
 
 	return true;
@@ -268,11 +268,11 @@ bool cmd_can(const char *arg) {
 bool cmd_baud(const char *arg) {
 	bool ret = false;
 	if (!arg) {
-		printf("Bad baudrate\n");
+		fprintf(stderr, "Bad baudrate\n");
 	}
 	else {
 		unsigned int baudrate = strtol(arg, NULL, 0);
-		printf("Setting CAN baudrate: %u\n", baudrate);
+		fprintf(stderr, "Setting CAN baudrate: %u\n", baudrate);
 		this->baudrate = baudrate;
 		uv_can_set_baudrate(this->can_channel, baudrate);
 		// force bus state up
@@ -286,12 +286,12 @@ bool cmd_baud(const char *arg) {
 bool cmd_node(const char *arg) {
 	bool ret = true;
 	if (!arg) {
-		printf("Give Node ID.\n");
+		fprintf(stderr, "Give Node ID.\n");
 		ret = false;
 	}
 	else {
 		uint8_t nodeid = strtol(arg, NULL, 0);
-		printf("Selected Node ID 0x%x\n", nodeid);
+		fprintf(stderr, "Selected Node ID 0x%x\n", nodeid);
 		db_set_nodeid(&dev.db, nodeid);
 	}
 
@@ -300,13 +300,13 @@ bool cmd_node(const char *arg) {
 
 bool cmd_srcdest(const char *arg) {
 	strcpy(dev.srcdest, arg);
-	printf("Source destination file path set to '%s'\n", arg);
+	fprintf(stderr, "Source destination file path set to '%s'\n", arg);
 	return true;
 }
 
 bool cmd_incdest(const char *arg) {
 	strcpy(dev.incdest, arg);
-	printf("Include destination file path set to '%s'\n", arg);
+	fprintf(stderr, "Include destination file path set to '%s'\n", arg);
 	return true;
 }
 

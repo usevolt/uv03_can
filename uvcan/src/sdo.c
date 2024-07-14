@@ -89,7 +89,7 @@ bool cmd_sdowrite(const char *arg) {
 	this->value = strtol(arg, NULL, 0);
 	if (this->value == 0 &&
 			strlen(arg) > 1) {
-		this->str = arg;
+		this->str = (char*) arg;
 	}
 	else {
 		this->str = NULL;
@@ -103,7 +103,8 @@ bool cmd_sdowrite(const char *arg) {
 void sdoread(void *ptr) {
 
 	if (this->mindex == 0) {
-		printf("Error: The CANOpen main index has to be set with *--mindex* command\n");
+		fprintf(stderr,
+				"Error: The CANOpen main index has to be set with *--mindex* command\n");
 	}
 	else {
 		uint8_t *databuffer = malloc((this->datalen == 0) ? 4 : this->datalen);
@@ -111,7 +112,12 @@ void sdoread(void *ptr) {
 				this->mindex, this->sindex, (this->datalen == 0) ? 4 : this->datalen,
 						databuffer);
 		if (e != ERR_NONE) {
-			printf("SDO read returned an error: %u (0x%x)\n", e, uv_canopen_sdo_get_error());
+			fprintf(stderr, "SDO read returned an error:\n");
+			printf("0x%x, %u: 0x%x: %s\n",
+					_canopen.sdo.client.mindex,
+					_canopen.sdo.client.sindex,
+					uv_canopen_sdo_get_error(),
+					uv_canopen_sdo_error_code_to_str(uv_canopen_sdo_get_error()));
 		}
 		else {
 			if (this->datalen <= 4) {
