@@ -108,8 +108,10 @@ static uv_errors_e json_add_obj(uv_json_st *dest_json, db_obj_st *obj, char *inf
 				else {
 					printf("0x%x ", data);
 					fflush(stdout);
-					if (child &&
-							child->numsys == DB_OBJ_NUMSYS_HEX) {
+					if ((child &&
+							child->numsys == DB_OBJ_NUMSYS_HEX) ||
+							(!child &&
+								obj->numsys == DB_OBJ_NUMSYS_HEX)) {
 						uv_jsonwriter_array_add_int_hex(&json, data);
 					}
 					else {

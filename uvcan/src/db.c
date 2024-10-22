@@ -958,6 +958,8 @@ static bool parse_json(db_st *this, char *json) {
 
 					db_array_child_st *thischild;
 
+					// initialize child pointer to NULL in case if noe childs are defined
+					obj.child_ptr = NULL;
 					void **last_ptr = (void**) &obj.child_ptr;
 					char *children = uv_jsonreader_find_child(child, "data");
 
@@ -1378,13 +1380,15 @@ bool cmd_db(const char *arg) {
 
 
 static void free_child(db_array_child_st *child) {
-	if (child->next_sibling != NULL) {
-		free_child(child->next_sibling);
+	if (child) {
+		if (child->next_sibling != NULL) {
+			free_child(child->next_sibling);
+		}
+		dbvalue_free(&child->def);
+		dbvalue_free(&child->max);
+		dbvalue_free(&child->min);
+		free(child);
 	}
-	dbvalue_free(&child->def);
-	dbvalue_free(&child->max);
-	dbvalue_free(&child->min);
-	free(child);
 }
 
 void db_deinit(void) {

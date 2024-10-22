@@ -79,6 +79,15 @@ static uv_errors_e load_param(char *json_obj) {
 		sindex = uv_jsonreader_get_int(val);
 	}
 
+	val = uv_jsonreader_find_child(json_obj, "INFO");
+	if (val == NULL) {
+		printf("\"INFO\" not found\n");
+		ret = ERR_ABORTED;
+	}
+	else {
+		uv_jsonreader_get_string(val, info, sizeof(info));
+	}
+
 	// SUBINDEX_OFFSET is used for array objects to not start writing the data
 	// to the first element in array.
 	val = uv_jsonreader_find_child(json_obj, "SUBINDEX_OFFSET");
@@ -116,9 +125,8 @@ static uv_errors_e load_param(char *json_obj) {
 	// check that that the data type and content actually match
 	if (data != NULL) {
 		if ((CANOPEN_IS_ARRAY(type) && uv_jsonreader_get_type(data) != JSON_ARRAY) ||
-				(CANOPEN_IS_STRING(type) && uv_jsonreader_get_type(data) != JSON_STRING) ||
-				(CANOPEN_IS_INTEGER(type) && uv_jsonreader_get_type(data) != JSON_INT)) {
-			printf("Data type mismatch\n");
+				(CANOPEN_IS_STRING(type) && uv_jsonreader_get_type(data) != JSON_STRING)) {
+			printf("Data type mismatch in object '%s'\n", info);
 			ret = ERR_ABORTED;
 		}
 	}
@@ -136,15 +144,6 @@ static uv_errors_e load_param(char *json_obj) {
 	}
 	else {
 
-	}
-
-	val = uv_jsonreader_find_child(json_obj, "INFO");
-	if (val == NULL) {
-		printf("\"INFO\" not found\n");
-		ret = ERR_ABORTED;
-	}
-	else {
-		uv_jsonreader_get_string(val, info, sizeof(info));
 	}
 
 	if (ret == ERR_NONE) {
@@ -265,13 +264,6 @@ static uv_errors_e parse_dev(char *json) {
 		else {
 			// NODEID given as integer
 			nodeid = uv_jsonreader_get_int(obj);
-		}
-		if (db_get_nodeid(&dev.db) != 0 &&
-				db_get_nodeid(&dev.db) != nodeid) {
-			// update the device's nodeid
-			ret |= uv_canopen_sdo_write(nodeid,
-					CONFIG_CANOPEN_NODEID_INDEX, 0,
-					CANOPEN_SIZEOF(CANOPEN_UNSIGNED8), &nodeid);
 		}
 		printf("The NODEID set to 0x%x from the param file\n", nodeid);
 		db_set_nodeid(&dev.db, nodeid);
