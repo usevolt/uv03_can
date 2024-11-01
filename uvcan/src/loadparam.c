@@ -474,8 +474,8 @@ static uv_errors_e parse_dev(char *json) {
 			}
 
 			// todo: load the current op
-			uint32_t data = uv_jsonreader_get_int(current_op_json);
-			printf("Setting the current operator to op %i\n", data + 1);
+			uint32_t data = uv_jsonreader_get_int(current_op_json) + 1;
+			printf("Setting the current operator to op %i\n", data);
 			fflush(stdout);
 			ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), opdb_mindex, 1,
 					 CANOPEN_SIZEOF(opdb_type), &data);

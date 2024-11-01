@@ -352,7 +352,7 @@ void load_step(void *ptr) {
 
 			if (this->response) {
 
-				printf("Reset OK. Now downloading...\n");
+				printf("Now downloading...\n");
 				fflush(stdout);
 
 				// download with block transfer
