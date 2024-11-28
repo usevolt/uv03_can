@@ -26,7 +26,6 @@
 
 
 #define DB_OBJ_MAX_COUNT	512
-#define DB_MAX_FILE_SIZE	(1000000)
 
 
 enum {
@@ -50,12 +49,12 @@ static inline bool dbvalue_is_set(dbvalue_st *this) {
 }
 
 /// @brief: Sets the dbvalue to integer and returns the dbvalue object
-dbvalue_st dbvalue_set_int(int32_t value);
+void dbvalue_set_int(dbvalue_st *this, int32_t value);
 
-/// @brief: Sets the dbvalue to string, allocates memory for the string and returns
-/// a new dbvalue object. dbvalues should be free'd with dbvalue_free after
-/// calling this
-dbvalue_st dbvalue_set_string(char *str, uint32_t str_len);
+/// @brief: Sets the dbvalue to string, allocates memory for the string
+void dbvalue_set_string(dbvalue_st *this, char *str, uint32_t str_len);
+
+void dbvalue_set(dbvalue_st *this, char *jsonobj);
 
 static inline int32_t dbvalue_get_int(dbvalue_st *this) {
 	return this->value_int;
@@ -93,7 +92,7 @@ typedef struct {
 	void *next_sibling;
 } db_array_child_st;
 
-void db_array_child_init(db_array_child_st *this);
+void db_array_child_init(db_array_child_st *this, void *parent);
 
 
 
@@ -133,34 +132,35 @@ typedef struct {
 	db_obj_type_e obj_type;
 	// number system
 	db_obj_numsys_e numsys;
-	union {
-		// for integer objects
-		struct {
-			union {
-				// for read-only integer objects
-				dbvalue_st value;
-				// default (reset) value
-				dbvalue_st def;
-			};
-			// minimum value for integer objects
-			dbvalue_st min;
-			// maximum value for integer objects
-			dbvalue_st max;
-		};
-		// for array objects
-		struct {
-			// array object's children object pointer.
-			// this points to dynamically allocated array of children.
-			db_array_child_st *child_ptr;
-			dbvalue_st array_max_size;
-		};
-		// for string objects
-		struct {
-			dbvalue_st string_len;
-			char string_def[512];
-		};
+	// for integer objects
+	struct {
+		// for read-only integer objects
+		dbvalue_st value;
+		// default (reset) value
+		dbvalue_st def;
+		// minimum value for integer objects
+		dbvalue_st min;
+		// maximum value for integer objects
+		dbvalue_st max;
+	};
+	// for array objects
+	struct {
+		// array object's children object pointer.
+		// this points to dynamically allocated array of children.
+		db_array_child_st *child_ptr;
+		dbvalue_st array_max_size;
+	};
+	// for string objects
+	struct {
+		dbvalue_st string_len;
+		dbvalue_st string_def;
 	};
 } db_obj_st;
+
+/// @brief: Initializes database object
+void db_obj_init(db_obj_st *this);
+
+void db_obj_deinit(db_obj_st *this);
 
 
 /// @brief: A single EMCY object
@@ -259,6 +259,8 @@ static inline char *db_get_file(db_st *this) {
 static inline db_obj_st *db_get_obj(db_st *this, uint32_t index) {
 	return ((db_obj_st*) uv_vector_at(&this->objects, index));
 }
+
+db_obj_st *db_find_obj(db_st *this, char *name);
 
 uint8_t db_get_nodeid(db_st *this);
 

@@ -45,6 +45,49 @@ static void str_to_upper_nonspace(char *str) {
 }
 
 
+
+void db_obj_init(db_obj_st *this) {
+	strcpy(this->name, "");
+	strcpy(this->dataptr, "");
+	strcpy(this->type_str, "");
+	this->obj_type = DB_OBJ_TYPE_COUNT;
+	this->numsys = DB_OBJ_NUMSYS_DEC;
+	dbvalue_init(&this->value);
+	dbvalue_init(&this->def);
+	dbvalue_init(&this->min);
+	dbvalue_init(&this->max);
+	this->child_ptr = NULL;
+	dbvalue_init(&this->array_max_size);
+	dbvalue_init(&this->string_len);
+	dbvalue_init(&this->string_def);
+}
+
+
+static void free_child(db_array_child_st *child) {
+	if (child) {
+		if (child->next_sibling != NULL) {
+			free_child(child->next_sibling);
+		}
+		dbvalue_free(&child->def);
+		dbvalue_free(&child->max);
+		dbvalue_free(&child->min);
+		free(child);
+	}
+}
+
+void db_obj_deinit(db_obj_st *this) {
+	dbvalue_free(&this->value);
+	dbvalue_free(&this->def);
+	dbvalue_free(&this->min);
+	dbvalue_free(&this->max);
+	dbvalue_free(&this->array_max_size);
+	dbvalue_free(&this->string_len);
+	dbvalue_free(&this->string_def);
+	free_child(this->child_ptr);
+}
+
+
+
 void dbvalue_init(dbvalue_st *this) {
 	this->type = DBVALUE_INT;
 	this->value_int = 0;
@@ -52,36 +95,32 @@ void dbvalue_init(dbvalue_st *this) {
 }
 
 
-dbvalue_st dbvalue_set_int(int32_t value) {
+void dbvalue_set_int(dbvalue_st *this, int32_t value) {
+	dbvalue_free(this);
 	// all dbvalues are stored as string. Integer has to be converted to a string
-
-	dbvalue_st this;
-	this.type = DBVALUE_STRING;
-	this.value_int = value;
+	this->type = DBVALUE_STRING;
+	this->value_int = value;
 	char str[1000] = {};
 	snprintf(str, sizeof(str) - 1, "%i", value);
-	this.value_str = malloc(strlen(str) + 1);
-	strcpy(this.value_str, str);
-
-	return this;
+	this->value_str = malloc(strlen(str) + 1);
+	strcpy(this->value_str, str);
 }
 
-dbvalue_st dbvalue_set_string(char *str, uint32_t str_len) {
-	dbvalue_st this;
-
+void dbvalue_set_string(dbvalue_st *this, char *str, uint32_t str_len) {
+	dbvalue_free(this);
 	// strings that contain hexadecimal numbers are read as integer values
 	if (strncmp(str, "0x", 2) == 0) {
-		this = dbvalue_set_int(strtol(str, NULL, 0));
+		dbvalue_set_int(this, strtol(str, NULL, 0));
 	}
 	// string was not starting as hex number, parse it and create string object
 	else {
-		this.type = DBVALUE_STRING;
-		this.value_str = malloc(str_len + 1);
-		memcpy(this.value_str, str, str_len);
-		this.value_str[str_len] = '\0';
+		this->type = DBVALUE_STRING;
+		this->value_str = malloc(str_len + 1);
+		memcpy(this->value_str, str, str_len);
+		this->value_str[str_len] = '\0';
 
-		char *s = malloc(strlen(this.value_str) + 1);
-		strcpy(s, this.value_str);
+		char *s = malloc(strlen(this->value_str) + 1);
+		strcpy(s, this->value_str);
 		str_to_upper_nonspace(s);
 
 
@@ -93,8 +132,8 @@ dbvalue_st dbvalue_set_string(char *str, uint32_t str_len) {
 
 			if (d->type == DB_DEFINE_INT) {
 				if (strcmp(d->name, s) == 0) {
-					this.value_int = d->value;
-					strcpy(this.value_str, s);
+					this->value_int = d->value;
+					strcpy(this->value_str, s);
 					match = true;
 					break;
 				}
@@ -102,7 +141,7 @@ dbvalue_st dbvalue_set_string(char *str, uint32_t str_len) {
 			else if (d->type == DB_DEFINE_STRING) {
 				// append the string as is
 				if (strcmp(d->name, s) == 0) {
-					strcpy(this.value_str, d->str);
+					strcpy(this->value_str, d->str);
 					// note: match has to be set to false, otherwise
 					// the dev name would be appended to the string
 					match = false;
@@ -129,7 +168,7 @@ dbvalue_st dbvalue_set_string(char *str, uint32_t str_len) {
 								c--;
 							}
 							if (strcmp(str, childname) == 0) {
-								this.value_int = i;
+								this->value_int = i;
 								m = true;
 								break;
 							}
@@ -146,23 +185,38 @@ dbvalue_st dbvalue_set_string(char *str, uint32_t str_len) {
 			}
 		}
 		if (!match) {
-			this.value_int = 0;
+			this->value_int = 0;
 		}
 		else {
 			// match found, update the dbvalue string to contain the device name
 			if (strncmp(dev.db.dev_name_upper, s, strlen(dev.db.dev_name_upper)) != 0) {
-				free(this.value_str);
-				this.value_str = malloc(str_len + 1 + strlen(dev.db.dev_name_upper) + 1);
-				sprintf(this.value_str, "%s_", dev.db.dev_name_upper);
-				strncat(this.value_str, str, str_len);
+				free(this->value_str);
+				this->value_str = malloc(str_len + 1 + strlen(dev.db.dev_name_upper) + 1);
+				sprintf(this->value_str, "%s_", dev.db.dev_name_upper);
+				strncat(this->value_str, str, str_len);
 			}
 		}
 
 		free(s);
 	}
-
-	return this;
 }
+
+void dbvalue_set(dbvalue_st *this, char *jsonobj) {
+	uv_json_types_e type = uv_jsonreader_get_type(jsonobj);
+	if (type == JSON_INT) {
+		dbvalue_set_int(this, uv_jsonreader_get_int(jsonobj));
+	}
+	else if (type == JSON_STRING) {
+		dbvalue_set_string(this,
+				uv_jsonreader_get_string_ptr(jsonobj),
+				uv_jsonreader_get_string_len(jsonobj));
+	}
+	else {
+		dbvalue_init(this);
+	}
+
+}
+
 
 void dbvalue_free(dbvalue_st *this) {
 	if (this->type == DBVALUE_STRING) {
@@ -173,11 +227,13 @@ void dbvalue_free(dbvalue_st *this) {
 
 
 
-void db_array_child_init(db_array_child_st *this) {
+void db_array_child_init(db_array_child_st *this, void *parent) {
 	dbvalue_init(&this->def);
 	dbvalue_init(&this->max);
 	dbvalue_init(&this->min);
-	this->numsys = DB_OBJ_NUMSYS_DEC;
+	this->numsys = ((db_obj_st*) parent)->numsys;
+	this->next_sibling = NULL;
+	strcpy(this->name, "");
 }
 
 
@@ -417,13 +473,19 @@ static db_obj_type_e str_to_objtype(char *json_child) {
 
 
 
-#define CHECK_OBJ(object, objname, parametername) { \
-		if (object == NULL) { \
-			printf("*** ERROR *** \"%s\" field not found in parameter \"%s\"\n", \
-					objname, parametername); \
-			return false; \
-		} \
+// Checks the object dict object for mandatory fields. If a variable named
+// check_obj_disable is set to true, skips the check
+static bool check_obj(char *object, char *objname, char *parametername, bool echo) {
+	bool ret = true;
+	if (object == NULL) {
+		if (echo) {
+			printf("*** ERROR *** \"%s\" field not found in parameter \"%s\"\n",
+					objname, parametername);
+		}
+		ret = false;
 	}
+	return ret;
+}
 
 #define CHECK_EMCY(object, objname, index) { \
 		if (object == NULL) { \
@@ -532,6 +594,295 @@ static bool pdo_parse_mappings(char *mappingsjson, canopen_pdo_mapping_parameter
 			index++;
 		}
 	}
+	return ret;
+}
+
+
+static bool parse_obj_dict_obj(db_st *this, char *child) {
+	bool ret = true;
+
+	// start parsing data from child, e.g. object dictionary entry
+	// CONTAINER types are objects that contain child "content" either as array
+	// defining objects or string defining file name where to search for objects.
+	// CONTAINERS can be recursive
+	char *content = uv_jsonreader_find_child(child, "content");
+	if (content != NULL) {
+		if (uv_jsonreader_get_type(content) == JSON_ARRAY) {
+			for (uint16_t i = 0; i < uv_jsonreader_array_get_size(content); i++) {
+				char *child = uv_jsonreader_array_at(content, i);
+				// recursively parse each child found in 'content' array
+				if (uv_jsonreader_get_type(child) == JSON_OBJECT) {
+					ret = parse_obj_dict_obj(this, child);
+				}
+				else {
+					printf("*** ERROR *** 'content' array in CONTAINER contained\n"
+							"other types than objects.\n");
+					ret = false;
+				}
+				if (!ret) {
+					break;
+				}
+			}
+		}
+		else if (uv_jsonreader_get_type(content) == JSON_STRING) {
+			char name[128] = {};
+			uv_jsonreader_get_string(content, name, sizeof(name));
+			printf("reading content file '%s'\n", name);
+			FILE *fptr = fopen(name, "r");
+
+			if (fptr == NULL) {
+				// failed to open the file, exit this task
+				printf("Failed to open content file '%s'.\n", name);
+			}
+			else {
+				int32_t size;
+				fseek(fptr, 0, SEEK_END);
+				size = ftell(fptr);
+				rewind(fptr);
+				char *data = malloc(size);
+				if (fread(data, 1, size, fptr)) {
+					uv_jsonreader_init(data, size);
+					parse_obj_dict_obj(this, data);
+				}
+				free(data);
+			}
+		}
+		else {
+			printf("*** ERROR *** 'content' not array or string in CONTAINER\n");
+			ret = false;
+		}
+
+		// after reading content array, look through other childs that overwrite
+		// just loaded parameters
+		char *data = uv_jsonreader_find_child(child, "data");
+		if (check_obj(data, "", "", false) &&
+				uv_jsonreader_get_type(data) == JSON_ARRAY) {
+			for (uint16_t i = 0; i < uv_jsonreader_array_get_size(data); i++) {
+				char *c = uv_jsonreader_array_at(data, i);
+				if (uv_jsonreader_array_get_type(data, i) == JSON_OBJECT &&
+						c) {
+					parse_obj_dict_obj(this, c);
+				}
+			}
+		}
+	}
+	else {
+		db_obj_st o;
+
+		char *data = uv_jsonreader_find_child(child, "name");
+		if (data == NULL) {
+			printf("### ERROR ### Object without name found.\n");
+			return false;
+		}
+		uv_jsonreader_get_string(data, o.name, sizeof(o.name));
+		str_to_upper_nonspace(o.name);
+
+
+		// check if any same named objects where already loaded
+		db_obj_st *obj = db_find_obj(this, o.name);
+		bool echo = true;
+		if (obj == NULL) {
+			// new object found, push this to objects array
+			uv_vector_push_back(&this->objects, &o);
+			obj = uv_vector_at(&this->objects,
+					uv_vector_size(&this->objects) - 1);
+			db_obj_init(obj);
+			strcpy(obj->name, o.name);
+		}
+		else {
+			// object checking is disabled as same named object was already loaded.
+			// All children are used to udpate already downloaded data
+			echo = false;
+		}
+
+		data = uv_jsonreader_find_child(child, "index");
+		if (check_obj(data, "index", obj->name, echo)) {
+			obj->obj.main_index = uv_jsonreader_get_int(data);
+		}
+
+		data = uv_jsonreader_find_child(child, "type");
+		if (check_obj(data, "type", obj->name, echo)) {
+			obj->obj.type = db_jsonval_to_type(data);
+			uv_jsonreader_get_string(data, obj->type_str, sizeof(obj->type_str));
+		}
+
+		data = uv_jsonreader_find_child(child, "numsystem");
+		if (check_obj(data, "", "", false)) {
+			char str[64] = {};
+			uv_jsonreader_get_string(data, str, sizeof(str));
+			if (strcmp(str, "HEX") == 0) {
+				obj->numsys = DB_OBJ_NUMSYS_HEX;
+			}
+		}
+
+		data = uv_jsonreader_find_child(child, "permissions");
+		if (check_obj(data, "permissions", obj->name, echo)) {
+			obj->obj.permissions = str_to_permissions(data);
+		}
+
+		data = uv_jsonreader_find_child(child, "data_type");
+		if (check_obj(data, "", "", false)) {
+			obj->obj_type = str_to_objtype(data);
+		}
+
+		if (!CANOPEN_IS_ARRAY(obj->obj.type)) {
+			// string parameters
+			if (CANOPEN_IS_STRING(obj->obj.type)) {
+				data = uv_jsonreader_find_child(child, "stringsize");
+				if (check_obj(data, "stringsize", obj->name, echo)) {
+					dbvalue_set(&obj->string_len, data);
+				}
+				data = uv_jsonreader_find_child(child, "default");
+				if (check_obj(data, "default", obj->name, echo)) {
+					dbvalue_set(&obj->string_def, data);
+					if (!dbvalue_is_set(&obj->string_len)) {
+						dbvalue_set(&obj->string_len, data);
+					}
+				}
+			}
+			// integer parameters
+			else {
+				data = uv_jsonreader_find_child(child, "subindex");
+				if (check_obj(data, "subindex", obj->name, echo)) {
+					obj->obj.sub_index = uv_jsonreader_get_int(data);
+				}
+
+				data = uv_jsonreader_find_child(child, "min");
+				if (check_obj(data, "min", obj->name,
+						(obj->obj.permissions != CANOPEN_RO) ? echo : false)) {
+					dbvalue_set(&obj->min, data);
+				}
+
+				data = uv_jsonreader_find_child(child, "max");
+				if (check_obj(data, "max", obj->name,
+						(obj->obj.permissions != CANOPEN_RO) ? echo : false)) {
+					dbvalue_set(&obj->max, data);
+				}
+				// writable integer parameters
+				if (obj->obj.permissions != CANOPEN_RO) {
+
+					data = uv_jsonreader_find_child(child, "default");
+					if (check_obj(data, "default", obj->name, echo)) {
+						dbvalue_set(&obj->def, data);
+					}
+				}
+				// read-only integer parameters
+				else {
+					data = uv_jsonreader_find_child(child, "value");
+					if (!check_obj(data, "", "", false)) {
+						data = uv_jsonreader_find_child(child, "default");
+					}
+					if (check_obj(data, "default", obj->name, echo)) {
+						dbvalue_set(&obj->value, data);
+						if (!dbvalue_is_set(&obj->min)) {
+							dbvalue_set_int(&obj->min, dbvalue_get_int(&obj->value));
+						}
+						if (!dbvalue_is_set(&obj->max)) {
+							dbvalue_set_int(&obj->max, dbvalue_get_int(&obj->value));
+						}
+					}
+				}
+			}
+		}
+		// array parameters
+		else {
+			data = uv_jsonreader_find_child(child, "arraysize");
+			if (check_obj(data, "", "", false)) {
+				dbvalue_set(&obj->array_max_size, data);
+			}
+
+			obj->obj.array_max_size = dbvalue_get_int(&obj->array_max_size);
+		}
+
+		data = uv_jsonreader_find_child(child, "dataptr");
+		if (check_obj(data, "dataptr", obj->name, echo)) {
+			uv_jsonreader_get_string(data, obj->dataptr, sizeof(obj->dataptr));
+			str_to_upper_nonspace(obj->name);
+		}
+
+
+		if (CANOPEN_IS_ARRAY(obj->obj.type)) {
+			// cycle trough children and make a new object for each of them
+			// obj main index and type are already inherited from the array object
+
+			db_array_child_st *thischild;
+			void **last_ptr = (void**) &obj->child_ptr;
+			char *children = uv_jsonreader_find_child(child, "data");
+
+			if (children == NULL && dbvalue_get_int(&obj->array_max_size) == 0) {
+				printf("ERROR: array type object '%s' should define children count\n"
+						"either with \"arraysize\" or \"data\".\n", obj->name);
+			}
+			else {
+				// if array size was not given, calculate it from data children count
+				if ((dbvalue_get_type(&obj->array_max_size) == DBVALUE_INT) &&
+						dbvalue_get_int(&obj->array_max_size) == 0) {
+					dbvalue_set_int(&obj->array_max_size,
+							uv_jsonreader_array_get_size(children));
+				}
+
+				for (uint8_t i = 0;
+						i < MAX(uv_jsonreader_array_get_size(children),
+								dbvalue_get_int(&obj->array_max_size)); i++) {
+					if (*last_ptr == NULL) {
+						thischild = malloc(sizeof(db_array_child_st));
+						db_array_child_init(thischild, obj);
+						*last_ptr = thischild;
+					}
+					else {
+						thischild = *last_ptr;
+					}
+					last_ptr = &(thischild->next_sibling);
+
+					char *str = uv_jsonreader_array_at(children, i);
+					if (str == NULL) {
+						if (strlen(thischild->name) == 0) {
+							sprintf(thischild->name, "CHILD%i", i + 1);
+							dbvalue_set_int(&thischild->def, 0);
+						}
+					}
+					else {
+						data = uv_jsonreader_find_child(str, "name");
+						if (check_obj(data, "", "", false)) {
+							uv_jsonreader_get_string(data,
+									thischild->name, sizeof(thischild->name));
+							str_to_upper_nonspace(thischild->name);
+						}
+						else if (strlen(thischild->name) == 0) {
+							sprintf(thischild->name, "CHILD%i", i + 1);
+						}
+						else {
+
+						}
+
+						data = uv_jsonreader_find_child(str, "numsystem");
+						if (check_obj(data, "", "", false)) {
+							char str[64] = {};
+							uv_jsonreader_get_string(data, str, sizeof(str));
+							if (strcmp(str, "HEX") == 0) {
+								thischild->numsys = DB_OBJ_NUMSYS_HEX;
+							}
+						}
+
+						data = uv_jsonreader_find_child(str, "min");
+						if (check_obj(data, "", "", false)) {
+							dbvalue_set(&thischild->min, data);
+						}
+
+						data = uv_jsonreader_find_child(str, "default");
+						if (data == NULL) {
+							data = uv_jsonreader_find_child(str, "value");
+						}
+						if (data != NULL) {
+							dbvalue_set(&thischild->def, data);
+						}
+					}
+				}
+			}
+		}
+	}
+
+
 	return ret;
 }
 
@@ -698,7 +1049,6 @@ static bool parse_json(db_st *this, char *json) {
 						define.type = DB_DEFINE_STRING;
 						memset(define.str, 0, sizeof(define.str));
 						uv_jsonreader_get_string(v, define.str, sizeof(define.str));
-						printf("%s\n", define.str);
 						uv_vector_push_back(&this->defines, &define);
 					}
 					else if (type == JSON_ARRAY) {
@@ -753,329 +1103,7 @@ static bool parse_json(db_st *this, char *json) {
 				break;
 			}
 			else {
-				// start parsing data from child
-				db_obj_st obj;
-
-				char *data = uv_jsonreader_find_child(child, "name");
-				CHECK_OBJ(data, "name", obj.name);
-				uv_jsonreader_get_string(data, obj.name, 128);
-				str_to_upper_nonspace(obj.name);
-
-				data = uv_jsonreader_find_child(child, "index");
-				CHECK_OBJ(data, "index", obj.name);
-				obj.obj.main_index = uv_jsonreader_get_int(data);
-
-				data = uv_jsonreader_find_child(child, "type");
-				CHECK_OBJ(data, "type", obj.name);
-				obj.obj.type = db_jsonval_to_type(data);
-				uv_jsonreader_get_string(data, obj.type_str, sizeof(obj.type_str));
-
-				data = uv_jsonreader_find_child(child, "numsystem");
-				if (data) {
-					char str[64] = {};
-					uv_jsonreader_get_string(data, str, sizeof(str));
-					if (strcmp(str, "HEX") == 0) {
-						obj.numsys = DB_OBJ_NUMSYS_HEX;
-					}
-				}
-				else {
-					obj.numsys = DB_OBJ_NUMSYS_DEC;
-				}
-
-				data = uv_jsonreader_find_child(child, "permissions");
-				CHECK_OBJ(data, "permissions", obj.name);
-				obj.obj.permissions = str_to_permissions(data);
-
-				data = uv_jsonreader_find_child(child, "data_type");
-				obj.obj_type = str_to_objtype(data);
-
-				if (!CANOPEN_IS_ARRAY(obj.obj.type)) {
-					// string parameters
-					if (CANOPEN_IS_STRING(obj.obj.type)) {
-						data = uv_jsonreader_find_child(child, "stringsize");
-						CHECK_OBJ(data, "stringsize", obj.name);
-						uv_json_types_e type = uv_jsonreader_get_type(data);
-						if (type == JSON_INT) {
-							obj.obj.string_len = uv_jsonreader_get_int(data);
-							obj.string_len = dbvalue_set_int(uv_jsonreader_get_int(data));
-						}
-						else if (type == JSON_STRING) {
-							obj.string_len = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
-									uv_jsonreader_get_string_len(data));
-							obj.obj.string_len = obj.string_len.value_int;
-						}
-						else {
-							dbvalue_init(&obj.string_len);
-						}
-
-						data = uv_jsonreader_find_child(child, "default");
-						CHECK_OBJ(data, "default", obj.name);
-						uv_jsonreader_get_string(data, obj.string_def, sizeof(obj.string_def));
-					}
-					// integer parameters
-					else {
-						data = uv_jsonreader_find_child(child, "subindex");
-						CHECK_OBJ(data, "subindex", obj.name);
-						obj.obj.sub_index = uv_jsonreader_get_int(data);
-
-						// writable integer parameters
-						if (obj.obj.permissions != CANOPEN_RO) {
-
-							data = uv_jsonreader_find_child(child, "min");
-							CHECK_OBJ(data, "min", obj.name);
-							uv_json_types_e type = uv_jsonreader_get_type(data);
-							if (type == JSON_INT) {
-								obj.min = dbvalue_set_int(uv_jsonreader_get_int(data));
-							}
-							else if (type == JSON_STRING) {
-								obj.min = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
-										uv_jsonreader_get_string_len(data));
-							}
-							else {
-								dbvalue_init(&obj.min);
-							}
-
-							data = uv_jsonreader_find_child(child, "max");
-							CHECK_OBJ(data, "max", obj.name);
-							type = uv_jsonreader_get_type(data);
-							if (type == JSON_INT) {
-								obj.max = dbvalue_set_int(uv_jsonreader_get_int(data));
-							}
-							else if (type == JSON_STRING) {
-								obj.max = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
-										uv_jsonreader_get_string_len(data));
-							}
-							else {
-								dbvalue_init(&obj.max);
-							}
-
-							data = uv_jsonreader_find_child(child, "default");
-							CHECK_OBJ(data, "default", obj.name);
-							type = uv_jsonreader_get_type(data);
-							if (type == JSON_INT) {
-								obj.def = dbvalue_set_int(uv_jsonreader_get_int(data));
-							}
-							else if (type == JSON_STRING) {
-								obj.def = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
-										uv_jsonreader_get_string_len(data));
-							}
-							else {
-								dbvalue_init(&obj.def);
-							}
-						}
-						// read-only integer parameters
-						else {
-							data = uv_jsonreader_find_child(child, "value");
-							if (data == NULL) {
-								data = uv_jsonreader_find_child(child, "default");
-								CHECK_OBJ(data, "default", obj.name);
-							}
-							uv_json_types_e type = uv_jsonreader_get_type(data);
-							if (type == JSON_INT) {
-								obj.value = dbvalue_set_int(uv_jsonreader_get_int(data));
-							}
-							else if (type == JSON_STRING) {
-								obj.value = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
-										uv_jsonreader_get_string_len(data));
-							}
-							else {
-								dbvalue_init(&obj.value);
-							}
-
-							data = uv_jsonreader_find_child(child, "min");
-							if (data != NULL) {
-								uv_json_types_e type = uv_jsonreader_get_type(data);
-								if (type == JSON_INT) {
-									obj.min = dbvalue_set_int(uv_jsonreader_get_int(data));
-								}
-								else if (type == JSON_STRING) {
-									obj.min = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
-											uv_jsonreader_get_string_len(data));
-								}
-								else {
-									dbvalue_init(&obj.min);
-								}
-							}
-							else {
-								obj.min = dbvalue_set_int(obj.value.value_int);
-							}
-
-							data = uv_jsonreader_find_child(child, "max");
-							if (data != NULL) {
-								type = uv_jsonreader_get_type(data);
-								if (type == JSON_INT) {
-									obj.max = dbvalue_set_int(uv_jsonreader_get_int(data));
-								}
-								else if (type == JSON_STRING) {
-									obj.max = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
-											uv_jsonreader_get_string_len(data));
-								}
-								else {
-									dbvalue_init(&obj.max);
-								}
-							}
-							else {
-								obj.max = dbvalue_set_int(obj.value.value_int);
-							}
-						}
-					}
-				}
-				// array parameters
-				else {
-					data = uv_jsonreader_find_child(child, "arraysize");
-					if (data != NULL) {
-						CHECK_OBJ(data, "arraysize", obj.name);
-						uv_json_types_e type = uv_jsonreader_get_type(data);
-						if (type == JSON_INT) {
-							obj.array_max_size = dbvalue_set_int(uv_jsonreader_get_int(data));
-						}
-						else if (type == JSON_STRING) {
-							obj.array_max_size = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
-									uv_jsonreader_get_string_len(data));
-						}
-						else {
-							dbvalue_init(&obj.array_max_size);
-						}
-					}
-					else {
-						// set array size to 0. This is checked with
-						// the "data" object later on
-						dbvalue_init(&obj.array_max_size);
-					}
-
-					obj.obj.array_max_size = obj.array_max_size.value_int;
-				}
-
-				data = uv_jsonreader_find_child(child, "dataptr");
-				CHECK_OBJ(data, "dataptr", obj.name);
-				uv_jsonreader_get_string(data, obj.dataptr, sizeof(obj.dataptr));
-				str_to_upper_nonspace(obj.name);
-
-
-				if (CANOPEN_IS_ARRAY(obj.obj.type)) {
-					// cycle trough children and make a new object for each of them
-					// obj main index and type are already inherited from the array object
-
-					db_array_child_st *thischild;
-
-					// initialize child pointer to NULL in case if noe childs are defined
-					obj.child_ptr = NULL;
-					void **last_ptr = (void**) &obj.child_ptr;
-					char *children = uv_jsonreader_find_child(child, "data");
-
-					if (children == NULL && dbvalue_get_int(&obj.array_max_size) == 0) {
-						printf("ERROR: array type object '%s' should define children count\n"
-								"either with \"arraysize\" or \"data\".\n", obj.name);
-					}
-					else {
-						// if array size was not given, calculate it from data children count
-						if ((dbvalue_get_type(&obj.array_max_size) == DBVALUE_INT) &&
-								dbvalue_get_int(&obj.array_max_size) == 0) {
-							dbvalue_free(&obj.array_max_size);
-							obj.array_max_size = dbvalue_set_int(
-									uv_jsonreader_array_get_size(children));
-						}
-
-						for (uint8_t i = 0;
-								i < MAX(uv_jsonreader_array_get_size(children),
-										dbvalue_get_int(&obj.array_max_size)); i++) {
-							thischild = malloc(sizeof(db_array_child_st));
-							db_array_child_init(thischild);
-
-							*last_ptr = thischild;
-							last_ptr = &(thischild->next_sibling);
-							thischild->next_sibling = NULL;
-
-							char *str = uv_jsonreader_array_at(children, i);
-							if (str == NULL) {
-//								printf("WARNING: Array object didn't have enough children. \n"
-//										"Number of children: %u, should be: %u.\n"
-//										"Setting default value of extra childs to 0.\n",
-//										i, obj.obj.array_max_size);
-								sprintf(thischild->name, "CHILD%i", i + 1);
-								thischild->def = dbvalue_set_int(0);
-							}
-							else {
-								data = uv_jsonreader_find_child(str, "name");
-								if (data != NULL) {
-									CHECK_OBJ(data, "name", obj.name);
-									uv_jsonreader_get_string(data, thischild->name, sizeof(thischild->name));
-									str_to_upper_nonspace(thischild->name);
-								}
-								else {
-									sprintf(thischild->name, "CHILD%i", i + 1);
-								}
-
-								data = uv_jsonreader_find_child(str, "numsystem");
-								if (data != NULL) {
-									char str[64] = {};
-									uv_jsonreader_get_string(data, str, sizeof(str));
-									if (strcmp(str, "HEX") == 0) {
-										thischild->numsys = DB_OBJ_NUMSYS_HEX;
-									}
-								}
-								else {
-									thischild->numsys = obj.numsys;
-								}
-
-								data = uv_jsonreader_find_child(str, "min");
-								uv_json_types_e type;
-								if (data != NULL) {
-									CHECK_OBJ(data, "min", obj.name);
-									type = uv_jsonreader_get_type(data);
-									if (obj.obj.permissions != CANOPEN_RO) {
-										if (type == JSON_INT) {
-											thischild->min = dbvalue_set_int(uv_jsonreader_get_int(data));
-										}
-										else if (type == JSON_STRING) {
-											thischild->min = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
-													uv_jsonreader_get_string_len(data));
-										}
-										else {
-											dbvalue_init(&thischild->min);
-										}
-										data = uv_jsonreader_find_child(str, "max");
-										CHECK_OBJ(data, "max", obj.name);
-										type = uv_jsonreader_get_type(data);
-										if (type == JSON_INT) {
-											thischild->max = dbvalue_set_int(uv_jsonreader_get_int(data));
-										}
-										else if (type == JSON_STRING) {
-											thischild->max = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
-													uv_jsonreader_get_string_len(data));
-										}
-										else {
-											dbvalue_init(&thischild->max);
-										}
-									}
-								}
-
-								data = uv_jsonreader_find_child(str, "default");
-								if (data == NULL) {
-									data = uv_jsonreader_find_child(str, "value");
-								}
-								if (data != NULL) {
-									type = uv_jsonreader_get_type(data);
-									if (type == JSON_INT) {
-										thischild->def = dbvalue_set_int(uv_jsonreader_get_int(data));
-									}
-									else if (type == JSON_STRING) {
-										thischild->def = dbvalue_set_string(uv_jsonreader_get_string_ptr(data),
-												uv_jsonreader_get_string_len(data));
-									}
-									else {
-									}
-								}
-								else {
-									thischild->def = dbvalue_set_int(0);
-								}
-							}
-						}
-					}
-
-				}
-
-				uv_vector_push_back(&dev.db.objects, &obj);
+				ret = parse_obj_dict_obj(this, child);
 			}
 		}
 
@@ -1093,6 +1121,7 @@ static bool parse_json(db_st *this, char *json) {
 		uint8_t j = 0;
 		while (strlen(emcy->info_strs[j]) != 0) {
 			db_obj_st obj;
+			db_obj_init(&obj);
 			obj.obj_type = DB_OBJ_TYPE_EMCY;
 			strcpy(obj.name, "EMCY_");
 			strcat(obj.name, emcy->name);
@@ -1101,8 +1130,9 @@ static bool parse_json(db_st *this, char *json) {
 			snprintf(obj.dataptr, sizeof(obj.dataptr) - 1,
 					"%s_%s_DEFAULT", nameupper, obj.name);
 			strcpy(obj.type_str, "CANOPEN_STRING");
-			obj.string_len = dbvalue_set_int(strlen(emcy->info_strs[j]) + 1);
-			strcpy(obj.string_def, emcy->info_strs[j]);
+			dbvalue_set_int(&obj.string_len, strlen(emcy->info_strs[j]) + 1);
+			dbvalue_set_string(&obj.string_def, emcy->info_strs[j],
+					strlen(emcy->info_strs[j]));
 			obj.obj.type = CANOPEN_STRING;
 			obj.obj.string_len = strlen(emcy->info_strs[j]) + 1;
 			obj.obj.main_index = db_get_emcy_index(this) + emcy->value + j;
@@ -1237,6 +1267,19 @@ static bool parse_json(db_st *this, char *json) {
 }
 
 
+db_obj_st *db_find_obj(db_st *this, char *name) {
+	db_obj_st *ret = NULL;
+	for (uint16_t i = 0; i < uv_vector_size(&this->objects); i++) {
+		db_obj_st *obj = uv_vector_at(&this->objects, i);
+		if (strcmp(obj->name, name) == 0) {
+			ret = obj;
+			break;
+		}
+	}
+	return ret;
+}
+
+
 uint8_t db_get_nodeid(db_st *this) {
 	uint8_t ret = 0;
 	if (db_is_loaded(this) || is_nodeid_set) {
@@ -1301,28 +1344,21 @@ bool cmd_db(const char *arg) {
 		rewind(fptr);
 		printf("file size: %u\n", size);
 
-		if (size >= DB_MAX_FILE_SIZE) {
-			printf("*********\n"
-					"JSON max file size exceeded. Parsing failed.\n"
-					"*********\n");
-		}
-		else {
-			char data[DB_MAX_FILE_SIZE];
-			if (fread(data, 1, size, fptr)) {
-				if (parse_json(this, data)) {
-					printf("JSON parsed succesfully.\n");
-					strcpy(dev.db.filepath, arg);
-					ret = true;
-				}
-				else {
-					printf("ERROR: Parsing the JSON file failed.\n");
-				}
+		char *data = malloc(size);
+		if (fread(data, 1, size, fptr)) {
+			if (parse_json(this, data)) {
+				printf("JSON parsed succesfully.\n");
+				strcpy(dev.db.filepath, arg);
+				ret = true;
 			}
 			else {
-				printf("ERROR: Reading the JSON file failed.\n");
+				printf("ERROR: Parsing the JSON file failed.\n");
 			}
-
 		}
+		else {
+			printf("ERROR: Reading the JSON file failed.\n");
+		}
+		free(data);
 	}
 
 	is_loaded = ret;
@@ -1379,18 +1415,6 @@ bool cmd_db(const char *arg) {
 }
 
 
-static void free_child(db_array_child_st *child) {
-	if (child) {
-		if (child->next_sibling != NULL) {
-			free_child(child->next_sibling);
-		}
-		dbvalue_free(&child->def);
-		dbvalue_free(&child->max);
-		dbvalue_free(&child->min);
-		free(child);
-	}
-}
-
 void db_deinit(void) {
 	is_loaded = false;
 	for (int i = 0; i < db_get_define_count(this); i++) {
@@ -1401,21 +1425,7 @@ void db_deinit(void) {
 	}
 	for (int i = 0; i < db_get_object_count(this); i++) {
 		db_obj_st *obj = db_get_obj(this, i);
-		if (CANOPEN_IS_ARRAY(obj->obj.type)) {
-			dbvalue_free(&obj->array_max_size);
-			free_child(obj->child_ptr);
-		}
-		else if (CANOPEN_IS_INTEGER(obj->obj.type)) {
-			dbvalue_free(&obj->def);
-			dbvalue_free(&obj->max);
-			dbvalue_free(&obj->min);
-		}
-		else if (CANOPEN_IS_STRING(obj->obj.type)) {
-			dbvalue_free(&obj->string_len);
-		}
-		else {
-
-		}
+		db_obj_deinit(obj);
 	}
 }
 
