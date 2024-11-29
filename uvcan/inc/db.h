@@ -45,7 +45,7 @@ void dbvalue_init(dbvalue_st *this);
 
 /// @brief Returns true if the dbvalue is set
 static inline bool dbvalue_is_set(dbvalue_st *this) {
-	return !!strlen(this->value_str);
+	return (this->type == DBVALUE_STRING) || (!!strlen(this->value_str));
 }
 
 /// @brief: Sets the dbvalue to integer and returns the dbvalue object
@@ -69,6 +69,15 @@ static inline char *dbvalue_get_string(dbvalue_st *this) {
 
 static inline dbvalue_type_e dbvalue_get_type(dbvalue_st *this) {
 	return this->type;
+}
+
+/// @brief: Returns by defualt string, but if it is empty, returns "0"
+static inline char *dbvalue_get(dbvalue_st *this) {
+	char *ret = "0";
+	if (dbvalue_is_set(this)) {
+		ret = dbvalue_get_string(this);
+	}
+	return ret;
 }
 
 

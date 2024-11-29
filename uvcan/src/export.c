@@ -235,12 +235,12 @@ bool get_header_objs(char *dest, const char *filename) {
 		strcat(line, name);
 		if (uv_canopen_is_array(&obj->obj)) {
 			strcat(line, "_ARRAY_MAX_SIZE            ");
-			sprintf(&line[strlen(line)], "%s\n", dbvalue_get_string(&obj->array_max_size));
+			sprintf(&line[strlen(line)], "%s\n", dbvalue_get(&obj->array_max_size));
 		}
 		else {
 			if (CANOPEN_IS_STRING(obj->obj.type)) {
 				strcat(line, "_STRING_LEN            ");
-				sprintf(&line[strlen(line)], "%s\n", dbvalue_get_string(&obj->string_len));
+				sprintf(&line[strlen(line)], "%s\n", dbvalue_get(&obj->string_len));
 			}
 			else {
 				strcat(line, "_SUBINDEX            ");
@@ -290,20 +290,18 @@ bool get_header_objs(char *dest, const char *filename) {
 					sprintf(line + strlen(line), "#define %s_%s_%s_MIN            ",
 							nameupper, name, childname);
 					sprintf(line + strlen(line), "%s\n",
-							dbvalue_get_string(&child->min));
+							dbvalue_get(&child->min));
 				}
 				if (dbvalue_is_set(&child->max)) {
 					sprintf(line + strlen(line), "#define %s_%s_%s_MAX            ",
 							nameupper, name, childname);
 					sprintf(line + strlen(line), "%s\n",
-							dbvalue_get_string(&child->max));
+							dbvalue_get(&child->max));
 				}
-				if (dbvalue_is_set(&child->def)) {
-					sprintf(line + strlen(line), "#define %s_%s_%s_DEFAULT            ",
-							nameupper, name, childname);
-					sprintf(line + strlen(line), "%s\n",
-							dbvalue_get_string(&child->def));
-				}
+				sprintf(line + strlen(line), "#define %s_%s_%s_DEFAULT            ",
+						nameupper, name, childname);
+				sprintf(line + strlen(line), "%s\n",
+						dbvalue_get(&child->def));
 
 
 				index++;
@@ -319,17 +317,17 @@ bool get_header_objs(char *dest, const char *filename) {
 		}
 		else if (CANOPEN_IS_INTEGER(obj->obj.type)) {
 			sprintf(&line[strlen(line)], "#define %s_%s_VALUE            %s\n",
-					nameupper, name, dbvalue_get_string(&obj->value));
+					nameupper, name, dbvalue_get(&obj->value));
 			sprintf(&line[strlen(line)], "#define %s_%s_DEFAULT            %s\n",
-					nameupper, name, dbvalue_get_string(&obj->def));
+					nameupper, name, dbvalue_get(&obj->def));
 			sprintf(&line[strlen(line)], "#define %s_%s_MIN            %s\n",
-					nameupper, name, dbvalue_get_string(&obj->min));
+					nameupper, name, dbvalue_get(&obj->min));
 			sprintf(&line[strlen(line)], "#define %s_%s_MAX            %s\n",
-					nameupper, name, dbvalue_get_string(&obj->max));
+					nameupper, name, dbvalue_get(&obj->max));
 		}
 		else if (CANOPEN_IS_STRING(obj->obj.type)) {
 			sprintf(&line[strlen(line)], "#define %s_%s_DEFAULT				\"%s\"\n",
-					nameupper, name, dbvalue_get_string(&obj->string_def));
+					nameupper, name, dbvalue_get(&obj->string_def));
 		}
 		else {
 

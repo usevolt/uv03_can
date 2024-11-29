@@ -109,7 +109,18 @@ void dbvalue_set_int(dbvalue_st *this, int32_t value) {
 void dbvalue_set_string(dbvalue_st *this, char *str, uint32_t str_len) {
 	dbvalue_free(this);
 	// strings that contain hexadecimal numbers are read as integer values
+	bool is_digit = false;
 	if (strncmp(str, "0x", 2) == 0) {
+		is_digit = true;
+		for (uint16_t i = 2; i < strlen(str); i++) {
+			if (!isxdigit(str[i])) {
+				is_digit = false;
+				break;
+			}
+		}
+	}
+
+	if (is_digit) {
 		dbvalue_set_int(this, strtol(str, NULL, 0));
 	}
 	// string was not starting as hex number, parse it and create string object
@@ -216,6 +227,7 @@ void dbvalue_set(dbvalue_st *this, char *jsonobj) {
 	}
 
 }
+
 
 
 void dbvalue_free(dbvalue_st *this) {
@@ -757,13 +769,18 @@ static bool parse_obj_dict_obj(db_st *this, char *child) {
 				if (check_obj(data, "max", obj->name,
 						(obj->obj.permissions != CANOPEN_RO) ? echo : false)) {
 					dbvalue_set(&obj->max, data);
+					printf("%s %s\n", obj->name, dbvalue_get(&obj->max));
 				}
 				// writable integer parameters
 				if (obj->obj.permissions != CANOPEN_RO) {
 
-					data = uv_jsonreader_find_child(child, "default");
+					data = uv_jsonreader_find_child(child, "value");
+					if (data == NULL) {
+						data = uv_jsonreader_find_child(child, "default");
+					}
 					if (check_obj(data, "default", obj->name, echo)) {
 						dbvalue_set(&obj->def, data);
+						dbvalue_set(&obj->value, data);
 					}
 				}
 				// read-only integer parameters
@@ -774,6 +791,7 @@ static bool parse_obj_dict_obj(db_st *this, char *child) {
 					}
 					if (check_obj(data, "default", obj->name, echo)) {
 						dbvalue_set(&obj->value, data);
+						dbvalue_set(&obj->def, data);
 						if (!dbvalue_is_set(&obj->min)) {
 							dbvalue_set_int(&obj->min, dbvalue_get_int(&obj->value));
 						}
@@ -867,6 +885,10 @@ static bool parse_obj_dict_obj(db_st *this, char *child) {
 						data = uv_jsonreader_find_child(str, "min");
 						if (check_obj(data, "", "", false)) {
 							dbvalue_set(&thischild->min, data);
+						}
+						data = uv_jsonreader_find_child(str, "max");
+						if (check_obj(data, "", "", false)) {
+							dbvalue_set(&thischild->max, data);
 						}
 
 						data = uv_jsonreader_find_child(str, "default");
@@ -1130,6 +1152,7 @@ static bool parse_json(db_st *this, char *json) {
 			snprintf(obj.dataptr, sizeof(obj.dataptr) - 1,
 					"%s_%s_DEFAULT", nameupper, obj.name);
 			strcpy(obj.type_str, "CANOPEN_STRING");
+			obj.obj.permissions = CANOPEN_RO;
 			dbvalue_set_int(&obj.string_len, strlen(emcy->info_strs[j]) + 1);
 			dbvalue_set_string(&obj.string_def, emcy->info_strs[j],
 					strlen(emcy->info_strs[j]));
