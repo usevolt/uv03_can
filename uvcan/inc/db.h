@@ -92,7 +92,7 @@ typedef enum {
 
 /// @brief: Data structure for each array object's children
 typedef struct {
-	char name[128];
+	dbvalue_st name;
 	dbvalue_st min;
 	dbvalue_st max;
 	dbvalue_st def;
@@ -130,11 +130,11 @@ typedef enum {
 /// @brief: A single object structure
 typedef struct {
 	// Descriptive name of the object
-	char name[128];
+	dbvalue_st name;
 	// object structure holding the embedded parameters
 	canopen_object_st obj;
 	// data pointer as a string for embedded system
-	char dataptr[128];
+	dbvalue_st dataptr;
 	// the object data type as a string. This holds information about signed/unsigned
 	char type_str[32];
 	// the object type. Undefined, nonvol_param or something else.
@@ -310,6 +310,9 @@ static inline uint32_t db_get_define_count(db_st *this) {
 static inline db_define_st *db_get_define(db_st *this, uint32_t index) {
 	return (db_define_st*) uv_vector_at(&this->defines, index);
 }
+
+/// @brief: Finds a define with given *name*
+db_define_st *db_define_find(db_st *this, char *name);
 
 static inline uint16_t db_get_rxpdo_count(db_st *this) {
 	return uv_vector_size(&this->rxpdos);

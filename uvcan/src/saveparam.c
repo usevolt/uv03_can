@@ -361,6 +361,7 @@ void saveparam_step(void *ptr) {
 				uv_jsonwriter_begin_array(&json, "");
 				for (int32_t i = 0; i < db_get_object_count(&dev.db); i++) {
 					obj = *db_get_obj(&dev.db, i);
+					char *objname = dbvalue_get_string(&obj.name);
 					if (obj.obj_type == DB_OBJ_TYPE_NONVOL_PARAM) {
 						if (dev.argv_count != 0) {
 							// if additional arguments are given, these are parsed as main indexes or names
@@ -368,16 +369,16 @@ void saveparam_step(void *ptr) {
 							for (uint16_t i = 0; i < dev.argv_count; i++) {
 								uint16_t mindex = strtol(dev.nonopt_argv[i], NULL, 0);
 								char *name = dev.nonopt_argv[i];
-								if ((strcmp(obj.name, name) == 0) ||
+								if ((strcmp(objname, name) == 0) ||
 										(mindex == obj.obj.main_index)) {
-									e |= json_add_obj(&json, &obj, obj.name);
+									e |= json_add_obj(&json, &obj, objname);
 									break;
 								}
 							}
 						}
 						else {
 							// no additional arguments given, just save all nonvol parameters
-							e |= json_add_obj(&json, &obj, obj.name);
+							e |= json_add_obj(&json, &obj, objname);
 						}
 					}
 				}
@@ -408,19 +409,20 @@ void saveparam_step(void *ptr) {
 				obj = *db_get_obj(&dev.db, i);
 
 				if (obj.obj_type == DB_OBJ_TYPE_NONVOL_PARAM) {
+					char *objname = dbvalue_get_string(&obj.name);
 					if (dev.argv_count != 0) {
 						// if additional arguments are given, these are parsed as main indexes or names
 						// for the parameters that are saved
 						for (uint16_t i = 0; i < dev.argv_count; i++) {
-							if ((strcmp(obj.name, dev.nonopt_argv[i]) == 0) ||
+							if ((strcmp(objname, dev.nonopt_argv[i]) == 0) ||
 									(strtol(dev.nonopt_argv[i], NULL, 0) == obj.obj.main_index)) {
-								e |= json_add_obj(&json, &obj, obj.name);
+								e |= json_add_obj(&json, &obj, objname);
 							}
 						}
 					}
 					else {
 						// no additional arguments given, just save all nonvol parameters
-						e |= json_add_obj(&json, &obj, obj.name);
+						e |= json_add_obj(&json, &obj, objname);
 					}
 				}
 			}

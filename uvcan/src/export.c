@@ -20,6 +20,7 @@
 #include <export.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 #include <ctype.h>
 #include <uv_terminal.h>
 #include <libgen.h>
@@ -209,30 +210,38 @@ bool get_header_objs(char *dest, const char *filename) {
 		// *name* contains the object name in upper case letters
 		char name[1024];
 		char namel[1024];
+		char *objname = dbvalue_get_string(&obj->name);
 		int j = 0;
-		while (obj->name[j] != '\0') {
-			if (isspace(obj->name[j])) {
+		while (objname[j] != '\0') {
+			if (isspace(objname[j])) {
 				name[j] = '_';
 				namel[j] = '_';
 			}
 			else {
-				name[j] = toupper(obj->name[j]);
-				namel[j] = tolower(obj->name[j]);
+				name[j] = toupper(objname[j]);
+				namel[j] = tolower(objname[j]);
 			}
 			j++;
 		}
 		name[j] = '\0';
 		namel[j] = '\0';
 		strcpy(line, "#define ");
-		strcat(line, nameupper);
-		strcat(line, "_");
-		strcat(line, name);
+		char objnameh[1024] = {};
+		char objnamel[1024] = {};
+		if (strncmp(name, nameupper, strlen(nameupper)) != 0) {
+			strcpy(objnameh, nameupper);
+			strcat(objnameh, "_");
+			strcpy(objnamel, namelower);
+			strcat(objnamel, "_");
+		}
+		strcat(objnameh, name);
+		strcat(objnamel, namel);
+
+		strcat(line, objnameh);
 		strcat(line, "_INDEX           ");
 		sprintf(&line[strlen(line)], "0x%x\n", obj->obj.main_index);
 		strcat(line, "#define ");
-		strcat(line, nameupper);
-		strcat(line, "_");
-		strcat(line, name);
+		strcat(line, objnameh);
 		if (uv_canopen_is_array(&obj->obj)) {
 			strcat(line, "_ARRAY_MAX_SIZE            ");
 			sprintf(&line[strlen(line)], "%s\n", dbvalue_get(&obj->array_max_size));
@@ -248,17 +257,13 @@ bool get_header_objs(char *dest, const char *filename) {
 			}
 		}
 		strcat(line, "#define ");
-		strcat(line, nameupper);
-		strcat(line, "_");
-		strcat(line, name);
+		strcat(line, objnameh);
 		strcat(line, "_TYPE            ");
 		strcat(line, obj->type_str);
 		strcat(line, "\n");
 
 		strcat(line, "#define ");
-		strcat(line, nameupper);
-		strcat(line, "_");
-		strcat(line, name);
+		strcat(line, objnameh);
 		strcat(line, "_PERMISSIONS            ");
 		db_permission_to_str(obj->obj.permissions, &line[strlen(line)]);
 		strcat(line, "\n");
@@ -268,12 +273,10 @@ bool get_header_objs(char *dest, const char *filename) {
 			int index = 0;
 			while (child != NULL) {
 				strcat(line, "#define ");
-				strcat(line, nameupper);
-				strcat(line, "_");
-				strcat(line, name);
+				strcat(line, objnameh);
 				strcat(line, "_");
 				char childname[1024] = { '\0' };
-				char *c = child->name;
+				char *c = dbvalue_get_string(&child->name);
 				while (*c != '\0') {
 					if (isspace(*c)) {
 						strcat(childname, "_");
@@ -287,19 +290,19 @@ bool get_header_objs(char *dest, const char *filename) {
 				strcat(line, "_SUBINDEX            ");
 				sprintf(&line[strlen(line)], "%u\n", index + 1);
 				if (dbvalue_is_set(&child->min)) {
-					sprintf(line + strlen(line), "#define %s_%s_%s_MIN            ",
-							nameupper, name, childname);
+					sprintf(line + strlen(line), "#define %s_%s_MIN            ",
+							objnameh, childname);
 					sprintf(line + strlen(line), "%s\n",
 							dbvalue_get(&child->min));
 				}
 				if (dbvalue_is_set(&child->max)) {
-					sprintf(line + strlen(line), "#define %s_%s_%s_MAX            ",
-							nameupper, name, childname);
+					sprintf(line + strlen(line), "#define %s_%s_MAX            ",
+							objnameh, childname);
 					sprintf(line + strlen(line), "%s\n",
 							dbvalue_get(&child->max));
 				}
-				sprintf(line + strlen(line), "#define %s_%s_%s_DEFAULT            ",
-						nameupper, name, childname);
+				sprintf(line + strlen(line), "#define %s_%s_DEFAULT            ",
+						objnameh, childname);
 				sprintf(line + strlen(line), "%s\n",
 						dbvalue_get(&child->def));
 
@@ -309,25 +312,25 @@ bool get_header_objs(char *dest, const char *filename) {
 			}
 			char type[128];
 			db_type_to_stdint(obj->obj.type, type);
-			sprintf(line + strlen(line), "extern const %s %s_%s_defaults[];\n",
-					type, namelower, namel);
-			sprintf(line + strlen(line), "uint32_t %s_%s_defaults_size(void);\n",
-					namelower, namel);
+			sprintf(line + strlen(line), "extern const %s %s_defaults[];\n",
+					type, objnamel);
+			sprintf(line + strlen(line), "uint32_t %s_defaults_size(void);\n",
+					objnamel);
 
 		}
 		else if (CANOPEN_IS_INTEGER(obj->obj.type)) {
-			sprintf(&line[strlen(line)], "#define %s_%s_VALUE            %s\n",
-					nameupper, name, dbvalue_get(&obj->value));
-			sprintf(&line[strlen(line)], "#define %s_%s_DEFAULT            %s\n",
-					nameupper, name, dbvalue_get(&obj->def));
-			sprintf(&line[strlen(line)], "#define %s_%s_MIN            %s\n",
-					nameupper, name, dbvalue_get(&obj->min));
-			sprintf(&line[strlen(line)], "#define %s_%s_MAX            %s\n",
-					nameupper, name, dbvalue_get(&obj->max));
+			sprintf(&line[strlen(line)], "#define %s_VALUE            %s\n",
+					objnameh, dbvalue_get(&obj->value));
+			sprintf(&line[strlen(line)], "#define %s_DEFAULT            %s\n",
+					objnameh, dbvalue_get(&obj->def));
+			sprintf(&line[strlen(line)], "#define %s_MIN            %s\n",
+					objnameh, dbvalue_get(&obj->min));
+			sprintf(&line[strlen(line)], "#define %s_MAX            %s\n",
+					objnameh, dbvalue_get(&obj->max));
 		}
 		else if (CANOPEN_IS_STRING(obj->obj.type)) {
-			sprintf(&line[strlen(line)], "#define %s_%s_DEFAULT				\"%s\"\n",
-					nameupper, name, dbvalue_get(&obj->string_def));
+			sprintf(&line[strlen(line)], "#define %s_DEFAULT				\"%s\"\n",
+					objnameh, dbvalue_get(&obj->string_def));
 		}
 		else {
 
@@ -490,58 +493,54 @@ bool get_source_objs(char *dest, const char *filename) {
 		// *name* contains the object name in upper case letters
 		char name[1024] = {};
 		int j = 0;
-		while (obj->name[j] != '\0') {
-			if (isspace(obj->name[j])) {
+		if (strncmp(dbvalue_get_string(&obj->name), nameupper, strlen(nameupper)) != 0) {
+			strcpy(name, nameupper);
+			strcat(name, "_");
+			j = strlen(name);
+		}
+		char *objname = dbvalue_get_string(&obj->name);
+		int k = 0;
+		while (objname[k] != '\0') {
+			if (isspace(objname[k])) {
 				name[j] = '_';
 			}
 			else {
-				name[j] = toupper(obj->name[j]);
+				name[j] = toupper(objname[k]);
 			}
 			j++;
+			k++;
 		}
 		name[j] = '\0';
 		char line[1024] = {};
 		strcpy(line, "    {\n"
 				"        .main_index = ");
-		strcat(line, nameupper);
-		strcat(line, "_");
 		strcat(line, name);
 		strcat(line, "_INDEX,\n");
 		if (uv_canopen_is_array(&obj->obj)) {
 			strcat(line, "        .array_max_size = ");
-			strcat(line, nameupper);
-			strcat(line, "_");
 			strcat(line, name);
 			strcat(line, "_ARRAY_MAX_SIZE,\n");
 		}
 		else {
 			if (CANOPEN_IS_STRING(obj->obj.type)) {
 				strcat(line, "        .string_len = ");
-				strcat(line, nameupper);
-				strcat(line, "_");
 				strcat(line, name);
 				strcat(line, "_STRING_LEN,\n");
 			}
 			else {
 				strcat(line, "        .sub_index = ");
-				strcat(line, nameupper);
-				strcat(line, "_");
 				strcat(line, name);
 				strcat(line, "_SUBINDEX,\n");
 			}
 		}
 		strcat(line, "        .type = ");
-		strcat(line, nameupper);
-		strcat(line, "_");
 		strcat(line, name);
 		strcat(line, "_TYPE,\n"
 				"        .permissions = ");
-		strcat(line, nameupper);
-		strcat(line, "_");
 		strcat(line, name);
 		strcat(line, "_PERMISSIONS,\n"
 				"        .data_ptr = (void *) ");
-		strcat(line, obj->dataptr);
+		strcat(line, dbvalue_get_string(&obj->dataptr));
 		strcat(line, "\n    }");
 
 		strcat(dest, line);
@@ -563,12 +562,13 @@ bool get_source_objs(char *dest, const char *filename) {
 		char line[65536] = {};
 		char type[128];
 		char namel[1024] = {};
-		for (int i = 0; i < strlen(obj->name); i++) {
-			if (isspace(obj->name[i])) {
+		char *objname = dbvalue_get_string(&obj->name);
+		for (int i = 0; i < strlen(objname); i++) {
+			if (isspace(objname[i])) {
 				namel[i] = '_';
 			}
 			else {
-				namel[i] = tolower(obj->name[i]);
+				namel[i] = tolower(objname[i]);
 			}
 		}
 		db_type_to_stdint(obj->obj.type, type);
@@ -583,7 +583,7 @@ bool get_source_objs(char *dest, const char *filename) {
 			db_array_child_st *child = obj->child_ptr;
 			while (child != NULL) {
 				sprintf(line + strlen(line), "    %s_%s_%s_DEFAULT",
-						nameupper, obj->name, child->name);
+						nameupper, objname, dbvalue_get_string(&child->name));
 				if (child->next_sibling != NULL) {
 					strcat(line, ",");
 				}

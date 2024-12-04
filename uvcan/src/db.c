@@ -26,6 +26,11 @@
 #include "main.h"
 
 
+static bool parse_defines(db_st *this, char *obj);
+static void remove_defines(db_st *this, char *obj);
+
+
+
 static bool is_loaded = false;
 static bool is_nodeid_set = false;
 
@@ -47,8 +52,8 @@ static void str_to_upper_nonspace(char *str) {
 
 
 void db_obj_init(db_obj_st *this) {
-	strcpy(this->name, "");
-	strcpy(this->dataptr, "");
+	dbvalue_init(&this->name);
+	dbvalue_init(&this->dataptr);
 	strcpy(this->type_str, "");
 	this->obj_type = DB_OBJ_TYPE_COUNT;
 	this->numsys = DB_OBJ_NUMSYS_DEC;
@@ -68,6 +73,7 @@ static void free_child(db_array_child_st *child) {
 		if (child->next_sibling != NULL) {
 			free_child(child->next_sibling);
 		}
+		dbvalue_free(&child->name);
 		dbvalue_free(&child->def);
 		dbvalue_free(&child->max);
 		dbvalue_free(&child->min);
@@ -76,6 +82,8 @@ static void free_child(db_array_child_st *child) {
 }
 
 void db_obj_deinit(db_obj_st *this) {
+	dbvalue_free(&this->name);
+	dbvalue_free(&this->dataptr);
 	dbvalue_free(&this->value);
 	dbvalue_free(&this->def);
 	dbvalue_free(&this->min);
@@ -130,13 +138,13 @@ void dbvalue_set_string(dbvalue_st *this, char *str, uint32_t str_len) {
 		memcpy(this->value_str, str, str_len);
 		this->value_str[str_len] = '\0';
 
-		char *s = malloc(strlen(this->value_str) + 1);
+		char s[1024] = {};
 		strcpy(s, this->value_str);
 		str_to_upper_nonspace(s);
 
 
 		// if string value was set, search defines and assign the value that
-		// matches by name. Otherwise report an error.
+		// matches by name
 		bool match = false;
 		for (uint32_t i = 0; i < uv_vector_size(&dev.db.defines); i++) {
 			db_define_st *d = uv_vector_at(&dev.db.defines, i);
@@ -151,8 +159,21 @@ void dbvalue_set_string(dbvalue_st *this, char *str, uint32_t str_len) {
 			}
 			else if (d->type == DB_DEFINE_STRING) {
 				// append the string as is
-				if (strcmp(d->name, s) == 0) {
-					strcpy(this->value_str, d->str);
+				if (strstr(s, d->name)) {
+					// replace the define string from value_str
+					int len_diff = strlen(d->str) - strlen(d->name);
+					int len = strlen(this->value_str) + len_diff;
+					char *strr = malloc(len + 1);
+					memset(strr, 0, len + 1);
+					char *match = strstr(s, d->name);
+					strncpy(strr, this->value_str, match - s);
+					strcat(strr, d->str);
+					strcat(strr, this->value_str + (match - s) + strlen(d->name));
+
+					// copy new string to dbvalue
+					free(this->value_str);
+					this->value_str = malloc(strlen(strr) + 1);
+					strcpy(this->value_str, strr);
 					// note: match has to be set to false, otherwise
 					// the dev name would be appended to the string
 					match = false;
@@ -185,8 +206,8 @@ void dbvalue_set_string(dbvalue_st *this, char *str, uint32_t str_len) {
 							}
 						}
 						if (!m) {
-							printf("**** ERROR **** No ENUM define found with name of '%s'\n",
-									s);
+							printf("**** ERROR **** No ENUM define found with name of '%s' for define '%s'\n",
+									s, d->name);
 						}
 						else {
 							match = true;
@@ -207,8 +228,6 @@ void dbvalue_set_string(dbvalue_st *this, char *str, uint32_t str_len) {
 				strncat(this->value_str, str, str_len);
 			}
 		}
-
-		free(s);
 	}
 }
 
@@ -240,12 +259,12 @@ void dbvalue_free(dbvalue_st *this) {
 
 
 void db_array_child_init(db_array_child_st *this, void *parent) {
+	dbvalue_init(&this->name);
 	dbvalue_init(&this->def);
 	dbvalue_init(&this->max);
 	dbvalue_init(&this->min);
 	this->numsys = ((db_obj_st*) parent)->numsys;
 	this->next_sibling = NULL;
-	strcpy(this->name, "");
 }
 
 
@@ -552,7 +571,7 @@ static bool pdo_parse_mappings(char *mappingsjson, canopen_pdo_mapping_parameter
 				bool match = false;
 				for (int32_t i = 0; i < db_get_object_count(&dev.db); i++) {
 					db_obj_st *obj = db_get_obj(&dev.db, i);
-					if (strcmp(obj->name, name) == 0) {
+					if (strcmp(dbvalue_get_string(&obj->name), name) == 0) {
 						mappings->mappings[index].main_index = obj->obj.main_index;
 						mappings->mappings[index].length = CANOPEN_TYPE_LEN(obj->obj.type);
 
@@ -566,7 +585,7 @@ static bool pdo_parse_mappings(char *mappingsjson, canopen_pdo_mapping_parameter
 								bool match = false;
 								int32_t childindex = 1;
 								while (child != NULL) {
-									if (strcmp(child->name, name) == 0) {
+									if (strcmp(dbvalue_get_string(&child->name), name) == 0) {
 										mappings->mappings[index].sub_index = childindex;
 										match = true;
 										break;
@@ -620,6 +639,25 @@ static bool parse_obj_dict_obj(db_st *this, char *child) {
 	char *content = uv_jsonreader_find_child(child, "content");
 	if (content != NULL) {
 		if (uv_jsonreader_get_type(content) == JSON_ARRAY) {
+			// 'content' defined, CONTAINER type object
+			// 'require' array can define mandatory defines
+			char *require = uv_jsonreader_find_child(child, "require");
+			if (require != NULL &&
+					uv_jsonreader_get_type(require) == JSON_ARRAY) {
+				for (uint16_t i = 0; i < uv_jsonreader_array_get_size(require); i++) {
+					char str[1024] = {};
+					uv_jsonreader_array_get_string(require, i, str, sizeof(str) - 1);
+					db_define_st *def = db_define_find(this, str);
+					if (def == NULL) {
+						fprintf(stderr,
+								"*** ERROR *** CONTAINER requires define '%s' to be defined\n",
+								str);
+						ret = false;
+						break;
+					}
+				}
+			}
+
 			for (uint16_t i = 0; i < uv_jsonreader_array_get_size(content); i++) {
 				char *child = uv_jsonreader_array_at(content, i);
 				// recursively parse each child found in 'content' array
@@ -637,26 +675,40 @@ static bool parse_obj_dict_obj(db_st *this, char *child) {
 			}
 		}
 		else if (uv_jsonreader_get_type(content) == JSON_STRING) {
+			// check for *defines* array for local definitions
+			char *defines = uv_jsonreader_find_child(child, "defines");
+			if (defines != NULL) {
+				ret = parse_defines(this, defines);
+			}
 			char name[128] = {};
 			uv_jsonreader_get_string(content, name, sizeof(name));
-			printf("reading content file '%s'\n", name);
-			FILE *fptr = fopen(name, "r");
+			if (ret) {
+				printf("reading content file '%s'\n", name);
+				FILE *fptr = fopen(name, "r");
 
-			if (fptr == NULL) {
-				// failed to open the file, exit this task
-				printf("Failed to open content file '%s'.\n", name);
+				if (fptr == NULL) {
+					// failed to open the file, exit this task
+					printf("Failed to open content file '%s'.\n", name);
+				}
+				else {
+					int32_t size;
+					fseek(fptr, 0, SEEK_END);
+					size = ftell(fptr);
+					rewind(fptr);
+					char *data = malloc(size);
+					if (fread(data, 1, size, fptr)) {
+						uv_jsonreader_init(data, size);
+						parse_obj_dict_obj(this, data);
+					}
+					free(data);
+				}
 			}
 			else {
-				int32_t size;
-				fseek(fptr, 0, SEEK_END);
-				size = ftell(fptr);
-				rewind(fptr);
-				char *data = malloc(size);
-				if (fread(data, 1, size, fptr)) {
-					uv_jsonreader_init(data, size);
-					parse_obj_dict_obj(this, data);
-				}
-				free(data);
+				printf("*** ERROR *** Skipping content file '%s' because of error in defines\n",
+						name);
+			}
+			if (defines != NULL) {
+				remove_defines(this, defines);
 			}
 		}
 		else {
@@ -679,27 +731,27 @@ static bool parse_obj_dict_obj(db_st *this, char *child) {
 		}
 	}
 	else {
-		db_obj_st o;
-
 		char *data = uv_jsonreader_find_child(child, "name");
 		if (data == NULL) {
 			printf("### ERROR ### Object without name found.\n");
 			return false;
 		}
-		uv_jsonreader_get_string(data, o.name, sizeof(o.name));
-		str_to_upper_nonspace(o.name);
+		char name[128] = {};
+		uv_jsonreader_get_string(data, name, sizeof(name));
+		str_to_upper_nonspace(name);
 
 
-		// check if any same named objects where already loaded
-		db_obj_st *obj = db_find_obj(this, o.name);
+		// check if any same named objects were already loaded
+		db_obj_st *obj = db_find_obj(this, name);
 		bool echo = true;
 		if (obj == NULL) {
 			// new object found, push this to objects array
+			db_obj_st o;
 			uv_vector_push_back(&this->objects, &o);
 			obj = uv_vector_at(&this->objects,
 					uv_vector_size(&this->objects) - 1);
 			db_obj_init(obj);
-			strcpy(obj->name, o.name);
+			dbvalue_set_string(&obj->name, name, strlen(name));
 		}
 		else {
 			// object checking is disabled as same named object was already loaded.
@@ -708,12 +760,22 @@ static bool parse_obj_dict_obj(db_st *this, char *child) {
 		}
 
 		data = uv_jsonreader_find_child(child, "index");
-		if (check_obj(data, "index", obj->name, echo)) {
-			obj->obj.main_index = uv_jsonreader_get_int(data);
+		if (check_obj(data, "index", name, echo)) {
+			dbvalue_st dbval;
+			dbvalue_init(&dbval);
+			dbvalue_set(&dbval, data);
+			obj->obj.main_index = dbvalue_get_int(&dbval);
+			dbvalue_free(&dbval);
+		}
+
+		data = uv_jsonreader_find_child(child, "index_offset");
+		if (check_obj(data, "", NULL, false)) {
+			int offset = uv_jsonreader_get_int(data);
+			obj->obj.main_index += offset;
 		}
 
 		data = uv_jsonreader_find_child(child, "type");
-		if (check_obj(data, "type", obj->name, echo)) {
+		if (check_obj(data, "type", name, echo)) {
 			obj->obj.type = db_jsonval_to_type(data);
 			uv_jsonreader_get_string(data, obj->type_str, sizeof(obj->type_str));
 		}
@@ -728,7 +790,7 @@ static bool parse_obj_dict_obj(db_st *this, char *child) {
 		}
 
 		data = uv_jsonreader_find_child(child, "permissions");
-		if (check_obj(data, "permissions", obj->name, echo)) {
+		if (check_obj(data, "permissions", name, echo)) {
 			obj->obj.permissions = str_to_permissions(data);
 		}
 
@@ -741,11 +803,11 @@ static bool parse_obj_dict_obj(db_st *this, char *child) {
 			// string parameters
 			if (CANOPEN_IS_STRING(obj->obj.type)) {
 				data = uv_jsonreader_find_child(child, "stringsize");
-				if (check_obj(data, "stringsize", obj->name, echo)) {
+				if (check_obj(data, "stringsize", name, echo)) {
 					dbvalue_set(&obj->string_len, data);
 				}
 				data = uv_jsonreader_find_child(child, "default");
-				if (check_obj(data, "default", obj->name, echo)) {
+				if (check_obj(data, "default", name, echo)) {
 					dbvalue_set(&obj->string_def, data);
 					if (!dbvalue_is_set(&obj->string_len)) {
 						dbvalue_set(&obj->string_len, data);
@@ -755,21 +817,20 @@ static bool parse_obj_dict_obj(db_st *this, char *child) {
 			// integer parameters
 			else {
 				data = uv_jsonreader_find_child(child, "subindex");
-				if (check_obj(data, "subindex", obj->name, echo)) {
+				if (check_obj(data, "subindex", name, echo)) {
 					obj->obj.sub_index = uv_jsonreader_get_int(data);
 				}
 
 				data = uv_jsonreader_find_child(child, "min");
-				if (check_obj(data, "min", obj->name,
+				if (check_obj(data, "min", name,
 						(obj->obj.permissions != CANOPEN_RO) ? echo : false)) {
 					dbvalue_set(&obj->min, data);
 				}
 
 				data = uv_jsonreader_find_child(child, "max");
-				if (check_obj(data, "max", obj->name,
+				if (check_obj(data, "max", name,
 						(obj->obj.permissions != CANOPEN_RO) ? echo : false)) {
 					dbvalue_set(&obj->max, data);
-					printf("%s %s\n", obj->name, dbvalue_get(&obj->max));
 				}
 				// writable integer parameters
 				if (obj->obj.permissions != CANOPEN_RO) {
@@ -778,7 +839,7 @@ static bool parse_obj_dict_obj(db_st *this, char *child) {
 					if (data == NULL) {
 						data = uv_jsonreader_find_child(child, "default");
 					}
-					if (check_obj(data, "default", obj->name, echo)) {
+					if (check_obj(data, "default", name, echo)) {
 						dbvalue_set(&obj->def, data);
 						dbvalue_set(&obj->value, data);
 					}
@@ -789,7 +850,7 @@ static bool parse_obj_dict_obj(db_st *this, char *child) {
 					if (!check_obj(data, "", "", false)) {
 						data = uv_jsonreader_find_child(child, "default");
 					}
-					if (check_obj(data, "default", obj->name, echo)) {
+					if (check_obj(data, "default", name, echo)) {
 						dbvalue_set(&obj->value, data);
 						dbvalue_set(&obj->def, data);
 						if (!dbvalue_is_set(&obj->min)) {
@@ -813,9 +874,8 @@ static bool parse_obj_dict_obj(db_st *this, char *child) {
 		}
 
 		data = uv_jsonreader_find_child(child, "dataptr");
-		if (check_obj(data, "dataptr", obj->name, echo)) {
-			uv_jsonreader_get_string(data, obj->dataptr, sizeof(obj->dataptr));
-			str_to_upper_nonspace(obj->name);
+		if (check_obj(data, "dataptr", name, echo)) {
+			dbvalue_set(&obj->dataptr, data);
 		}
 
 
@@ -829,7 +889,8 @@ static bool parse_obj_dict_obj(db_st *this, char *child) {
 
 			if (children == NULL && dbvalue_get_int(&obj->array_max_size) == 0) {
 				printf("ERROR: array type object '%s' should define children count\n"
-						"either with \"arraysize\" or \"data\".\n", obj->name);
+						"either with \"arraysize\" or \"data\".\n",
+						dbvalue_get_string(&obj->name));
 			}
 			else {
 				// if array size was not given, calculate it from data children count
@@ -854,20 +915,23 @@ static bool parse_obj_dict_obj(db_st *this, char *child) {
 
 					char *str = uv_jsonreader_array_at(children, i);
 					if (str == NULL) {
-						if (strlen(thischild->name) == 0) {
-							sprintf(thischild->name, "CHILD%i", i + 1);
+						if (strlen(dbvalue_get_string(&thischild->name)) == 0) {
+							char str[1024] = {};
+							sprintf(str, "CHILD%i", i + 1);
+							dbvalue_set_string(&thischild->name, str, strlen(str));
 							dbvalue_set_int(&thischild->def, 0);
 						}
 					}
 					else {
 						data = uv_jsonreader_find_child(str, "name");
 						if (check_obj(data, "", "", false)) {
-							uv_jsonreader_get_string(data,
-									thischild->name, sizeof(thischild->name));
-							str_to_upper_nonspace(thischild->name);
+							dbvalue_set(&thischild->name, data);
+							str_to_upper_nonspace(dbvalue_get_string(&thischild->name));
 						}
-						else if (strlen(thischild->name) == 0) {
-							sprintf(thischild->name, "CHILD%i", i + 1);
+						else if (strlen(dbvalue_get_string(&thischild->name)) == 0) {
+							char str[1024];
+							sprintf(str, "CHILD%i", i + 1);
+							dbvalue_set_string(&thischild->name, str, strlen(str));
 						}
 						else {
 
@@ -906,6 +970,151 @@ static bool parse_obj_dict_obj(db_st *this, char *child) {
 
 
 	return ret;
+}
+
+
+static bool define_push(db_st *this, char *define_name, char *v,
+		char *parent, char *parentname) {
+	bool ret = true;
+	db_define_st define;
+	strcpy(define.name, define_name);
+	str_to_upper_nonspace(define.name);
+	uv_json_types_e type = uv_jsonreader_get_type(v);
+	if (type == JSON_INT) {
+		define.type = DB_DEFINE_INT;
+		define.value = uv_jsonreader_get_int(v);
+		uv_vector_push_back(&this->defines, &define);
+	}
+	else if (type == JSON_STRING) {
+		define.type = DB_DEFINE_STRING;
+		memset(define.str, 0, sizeof(define.str));
+		uv_jsonreader_get_string(v, define.str, sizeof(define.str));
+		uv_vector_push_back(&this->defines, &define);
+	}
+	else if (type == JSON_ARRAY) {
+		define.type = DB_DEFINE_ENUM;
+		int32_t len = uv_jsonreader_array_get_size(v);
+		define.child_count = len + 1;
+		define.childs = malloc(128 * (len + 1));
+		for (int32_t i = 0; i < len; i++) {
+			char c[128];
+			uv_jsonreader_array_get_string(v, i, c, sizeof(c));
+			strcpy(define.childs[i], c);
+		}
+		strcpy(define.childs[define.child_count - 1], "COUNT");
+
+		// in case of array, search for a key "type" which specifies
+		// the data type of the enum
+		v = uv_jsonreader_find_child(parent, "type");
+		if (v != NULL) {
+			define.data_type = db_jsonval_to_type(v);
+		}
+		else {
+			define.data_type = CANOPEN_UNDEFINED;
+		}
+
+
+		uv_vector_push_back(&this->defines, &define);
+	}
+	else {
+		ret = false;
+		printf("*** ERROR *** DEFINES array '%s' had an illegal type of value. "
+				"Only integers, strings and arrays are supported\n",
+				parentname);
+	}
+	return ret;
+}
+
+static bool parse_defines(db_st *this, char *obj) {
+	bool ret = true;
+	if (obj != NULL) {
+		char name[128] = "UNDEFINED";
+		uv_jsonreader_get_obj_name(obj, name, sizeof(name));
+
+		if (uv_jsonreader_get_type(obj) != JSON_ARRAY) {
+			printf("*** JSON ERROR **** DEFINES array '%s' is not an array\n",
+					name);
+			ret = false;
+		}
+		else {
+			for (unsigned int i = 0; i < uv_jsonreader_array_get_size(obj); i++) {
+				char *d = uv_jsonreader_array_at(obj, i);
+				if (d != NULL) {
+					char *v = uv_jsonreader_find_child(d, "name");
+					if (v == NULL) {
+						// old syntax where key-value pair key defines name
+						// and value defines the value
+						char *define = uv_jsonreader_get_child(d, 0);
+						if (define != NULL) {
+							char dname[128];
+							uv_jsonreader_get_obj_name(define, dname, sizeof(dname));
+							ret = define_push(this, dname, define, NULL, name);
+						}
+						else {
+							printf("*** ERROR *** Define '%s' contained empty definition\n",
+									name);
+							ret = false;
+						}
+					}
+					else {
+						// old syntax with "name" and "value" pairs
+						char dname[128];
+						uv_jsonreader_get_string(v, dname, sizeof(dname));
+						v = uv_jsonreader_find_child(d, "value");
+						ret = define_push(this, dname, v, d, name);
+					}
+				}
+				else {
+					ret = false;
+					printf("*** ERROR *** DEFINES array '%s' member was not an object at index %u\n",
+							name, i);
+				}
+			}
+		}
+	}
+	else {
+
+	}
+	return ret;
+}
+
+
+static void remove_defines(db_st *this, char *obj) {
+	if (obj != NULL) {
+		char name[128] = "";
+		if (uv_jsonreader_get_type(obj) != JSON_ARRAY) {
+			printf("*** JSON ERROR **** DEFINES array is not an array\n");
+		}
+		else {
+			for (unsigned int i = 0; i < uv_jsonreader_array_get_size(obj); i++) {
+				char *d = uv_jsonreader_array_at(obj, i);
+				if (d != NULL) {
+					char *v = uv_jsonreader_find_child(d, "name");
+					if (v == NULL) {
+						v = uv_jsonreader_get_child(d, 0);
+						if (v != NULL) {
+							uv_jsonreader_get_obj_name(v, name, sizeof(name));
+						}
+					}
+					else {
+						// old protocol
+						uv_jsonreader_get_string(v, name, sizeof(name));
+					}
+					if (strlen(name) != 0) {
+						str_to_upper_nonspace(name);
+						// remove define from vector
+						for (uint16_t i = 0; i < uv_vector_size(&this->defines); i++) {
+							db_define_st *def = uv_vector_at(&this->defines, i);
+							if (strcmp(def->name, name) == 0) {
+								uv_vector_remove(&this->defines, i, 1);
+							}
+						}
+					}
+					strcpy(name, "");
+				}
+			}
+		}
+	}
 }
 
 
@@ -986,7 +1195,9 @@ static bool parse_json(db_st *this, char *json) {
 
 	// emcy
 	obj = uv_jsonreader_find_child(data, "EMCY_INDEX");
-	if (obj == NULL || uv_jsonreader_get_type(obj) != JSON_INT) {
+	if (obj == NULL ||
+			(uv_jsonreader_get_type(obj) != JSON_INT &&
+					uv_jsonreader_get_type(obj) != JSON_STRING)) {
 		printf("No EMCY_INDEX integer parameter defined. Skipping EMCY handling.\n");
 	}
 	else {
@@ -1039,79 +1250,7 @@ static bool parse_json(db_st *this, char *json) {
 
 	// defines
 	obj = uv_jsonreader_find_child(data, "DEFINES");
-	if (obj != NULL) {
-		if (uv_jsonreader_get_type(obj) != JSON_ARRAY) {
-			printf("*** JSON ERROR **** DEFINES array is not an array\n");
-		}
-		else {
-			for (unsigned int i = 0; i < uv_jsonreader_array_get_size(obj); i++) {
-				db_define_st define;
-				char *d = uv_jsonreader_array_at(obj, i);
-				if (d != NULL) {
-					char *v = uv_jsonreader_find_child(d, "name");
-					uv_jsonreader_get_string(v, define.name, sizeof(define.name));
-					char *s = define.name;
-					while(*s != '\0') {
-						if (isspace(*s)) {
-							*s = '_';
-						}
-						else {
-							*s = toupper(*s);
-						}
-						s++;
-					}
-					v = uv_jsonreader_find_child(d, "value");
-					uv_json_types_e type = uv_jsonreader_get_type(v);
-					if (type == JSON_INT) {
-						define.type = DB_DEFINE_INT;
-						define.value = uv_jsonreader_get_int(v);
-						uv_vector_push_back(&this->defines, &define);
-					}
-					else if (type == JSON_STRING) {
-						define.type = DB_DEFINE_STRING;
-						memset(define.str, 0, sizeof(define.str));
-						uv_jsonreader_get_string(v, define.str, sizeof(define.str));
-						uv_vector_push_back(&this->defines, &define);
-					}
-					else if (type == JSON_ARRAY) {
-						define.type = DB_DEFINE_ENUM;
-						int32_t len = uv_jsonreader_array_get_size(v);
-						define.child_count = len + 1;
-						define.childs = malloc(128 * (len + 1));
-						for (int32_t i = 0; i < len; i++) {
-							char c[128];
-							uv_jsonreader_array_get_string(v, i, c, sizeof(c));
-							strcpy(define.childs[i], c);
-						}
-						strcpy(define.childs[define.child_count - 1], "COUNT");
-
-						// in case of array, search for a key "type" which specifies
-						// the data type of the enum
-						v = uv_jsonreader_find_child(d, "type");
-						if (v != NULL) {
-							define.data_type = db_jsonval_to_type(v);
-						}
-						else {
-							define.data_type = CANOPEN_UNDEFINED;
-						}
-
-
-						uv_vector_push_back(&this->defines, &define);
-					}
-					else {
-						printf("*** ERROR *** DEFINES array had an illegal type of value. "
-								"Only integers, strings and arrays are supported\n");
-					}
-				}
-				else {
-					printf("*** ERROR *** DEFINES array member was not an object at index %u\n", i);
-				}
-			}
-		}
-	}
-	else {
-
-	}
+	parse_defines(this, obj);
 
 
 	// object dictionary
@@ -1145,12 +1284,15 @@ static bool parse_json(db_st *this, char *json) {
 			db_obj_st obj;
 			db_obj_init(&obj);
 			obj.obj_type = DB_OBJ_TYPE_EMCY;
-			strcpy(obj.name, "EMCY_");
-			strcat(obj.name, emcy->name);
-			sprintf(obj.name + strlen(obj.name),
+			char name[128] = {};
+			strcpy(name, "EMCY_");
+			strcat(name, emcy->name);
+			sprintf(name + strlen(name),
 					"_STR%u", j);
-			snprintf(obj.dataptr, sizeof(obj.dataptr) - 1,
-					"%s_%s_DEFAULT", nameupper, obj.name);
+			dbvalue_set_string(&obj.name, name, strlen(name));
+			char str[1024];
+			sprintf(str, "%s_%s_DEFAULT", nameupper, name);
+			dbvalue_set_string(&obj.dataptr, str, strlen(str));
 			strcpy(obj.type_str, "CANOPEN_STRING");
 			obj.obj.permissions = CANOPEN_RO;
 			dbvalue_set_int(&obj.string_len, strlen(emcy->info_strs[j]) + 1);
@@ -1294,11 +1436,32 @@ db_obj_st *db_find_obj(db_st *this, char *name) {
 	db_obj_st *ret = NULL;
 	for (uint16_t i = 0; i < uv_vector_size(&this->objects); i++) {
 		db_obj_st *obj = uv_vector_at(&this->objects, i);
-		if (strcmp(obj->name, name) == 0) {
+		if (strcmp(dbvalue_get_string(&obj->name), name) == 0) {
 			ret = obj;
 			break;
 		}
 	}
+	return ret;
+}
+
+
+
+db_define_st *db_define_find(db_st *this, char *name) {
+	db_define_st *ret = NULL;
+	// first parse name to uppercase and nonspace
+	char *namestr = malloc(strlen(name) + 1);
+	strcpy(namestr, name);
+	str_to_upper_nonspace(namestr);
+
+	for (uint16_t i = 0; i < db_get_define_count(this); i++) {
+		db_define_st *def = db_get_define(this, i);
+		if (strcmp(def->name, namestr) == 0) {
+			ret = def;
+			break;
+		}
+	}
+
+	free(namestr);
 	return ret;
 }
 
