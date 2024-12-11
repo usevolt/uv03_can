@@ -752,6 +752,8 @@ static bool parse_obj_dict_obj(db_st *this, char *child) {
 					uv_vector_size(&this->objects) - 1);
 			db_obj_init(obj);
 			dbvalue_set_string(&obj->name, name, strlen(name));
+			// copy value to dbvalue in case if defines were expanded
+			strcpy(name, dbvalue_get_string(&obj->name));
 		}
 		else {
 			// object checking is disabled as same named object was already loaded.
@@ -1377,6 +1379,20 @@ static bool parse_json(db_st *this, char *json) {
 			}
 		}
 	}
+	else if ((obj = uv_jsonreader_find_child(data, "RXPDO_COUNT")) != NULL) {
+		// RXPDO_COUNT can be used to initialize RXPDOs
+		int count = uv_jsonreader_get_int(obj);
+		for (uint16_t i = 0; i < count; i++) {
+			db_rxpdo_st pdo = {
+					.cobid = {},
+					.mappings = {},
+					.transmission = CANOPEN_PDO_TRANSMISSION_ASYNC
+			};
+			strcpy(pdo.cobid, "CANOPEN_PDO_DISABLED");
+			uv_vector_push_back(&this->rxpdos, &pdo);
+		}
+		printf("%i RXPDO's initialized\n", count);
+	}
 	else {
 		printf("WARNING: RXPDO array not found in JSON.\n");
 	}
@@ -1422,6 +1438,22 @@ static bool parse_json(db_st *this, char *json) {
 				uv_vector_push_back(&this->txpdos, &pdo);
 			}
 		}
+	}
+	else if ((obj = uv_jsonreader_find_child(data, "TXPDO_COUNT")) != NULL) {
+		// TXPDO_COUNT can be used to initialize TXPDOs
+		int count = uv_jsonreader_get_int(obj);
+		for (uint16_t i = 0; i < count; i++) {
+			db_txpdo_st pdo = {
+					.cobid = {},
+					.inhibit_time = 10,
+					.event_timer = 100,
+					.mappings = {},
+					.transmission = CANOPEN_PDO_TRANSMISSION_ASYNC
+			};
+			strcpy(pdo.cobid, "CANOPEN_PDO_DISABLED");
+			uv_vector_push_back(&this->rxpdos, &pdo);
+		}
+		printf("%i TXPDO's initialized\n", count);
 	}
 	else {
 		printf("WARNING: TXPDO array not found in JSON.\n");

@@ -57,6 +57,63 @@ bool cmd_loadparam(const char *arg) {
 }
 
 
+/// @brief: Gets and returns the query value. Integer values are returned,
+/// string values are copied to *dest_str*.
+///
+/// @param dest_str: If type is JSON_STRING, the resulting string is copied to this
+/// @param array_obj: If type is JSON_ARRAY, the resulting array object is copied to this
+static int query_get(char *json_obj, char *dest_str, int dest_len, char **array_obj) {
+	int ret = 0;
+	switch (uv_jsonreader_get_type(json_obj)) {
+	case JSON_OBJECT:
+	{
+		// query object
+		for (uint8_t i = 0; i < uv_vector_size(&this->queries); i++) {
+			query_st *q = uv_vector_at(&this->queries, i);
+			char *query_array = uv_jsonreader_find_child(json_obj, q->name);
+			if (query_array != NULL) {
+				switch(uv_jsonreader_array_get_type(query_array, q->correct_answer)) {
+				case JSON_INT:
+					ret = uv_jsonreader_array_get_int(query_array, q->correct_answer);
+					break;
+				case JSON_STRING:
+					// matching query found, fetch the answer
+					if (uv_jsonreader_array_get_size(query_array) > q->correct_answer) {
+						uv_jsonreader_array_get_string(query_array,
+								q->correct_answer,
+								dest_str,
+								dest_len);
+					}
+					break;
+				case JSON_ARRAY:
+					*array_obj = uv_jsonreader_array_at(query_array, q->correct_answer);
+					break;
+				default:
+					break;
+				}
+				break;
+			}
+		}
+		break;
+	}
+	case JSON_ARRAY:
+		*array_obj = json_obj;
+		break;
+	case JSON_INT:
+		ret = uv_jsonreader_get_int(json_obj);
+		break;
+	case JSON_STRING:
+		if (dest_str && dest_len) {
+			uv_jsonreader_get_string(json_obj, dest_str, dest_len);
+		}
+		break;
+	default:
+		break;
+	}
+	return ret;
+}
+
+
 // loads the given param from the JSON file to the target device
 static uv_errors_e load_param(char *json_obj) {
 	uv_errors_e ret = ERR_NONE;
@@ -72,11 +129,11 @@ static uv_errors_e load_param(char *json_obj) {
 	if (val == NULL) {
 		ret = ERR_ABORTED;
 	}
-	mindex = uv_jsonreader_get_int(val);
+	mindex = query_get(val, NULL, 0, NULL);
 
 	val = uv_jsonreader_find_child(json_obj, "SUBINDEX");
 	if (val != NULL) {
-		sindex = uv_jsonreader_get_int(val);
+		sindex = query_get(val, NULL, 0, NULL);
 	}
 
 	val = uv_jsonreader_find_child(json_obj, "INFO");
@@ -92,7 +149,7 @@ static uv_errors_e load_param(char *json_obj) {
 	// to the first element in array.
 	val = uv_jsonreader_find_child(json_obj, "SUBINDEX_OFFSET");
 	if (val != NULL) {
-		sindex_offset = uv_jsonreader_get_int(val);
+		sindex_offset = query_get(val, NULL, 0, NULL);
 	}
 
 	val = uv_jsonreader_find_child(json_obj, "TYPE");
@@ -122,99 +179,74 @@ static uv_errors_e load_param(char *json_obj) {
 			ret = ERR_ABORTED;
 		}
 	}
-	// check that that the data type and content actually match
-	if (data != NULL) {
-		if ((CANOPEN_IS_ARRAY(type) && uv_jsonreader_get_type(data) != JSON_ARRAY) ||
-				(CANOPEN_IS_STRING(type) && uv_jsonreader_get_type(data) != JSON_STRING)) {
-			printf("Data type mismatch in object '%s'\n", info);
-			ret = ERR_ABORTED;
-		}
-	}
-	else if (query_array != NULL) {
-		uv_json_types_e t = uv_jsonreader_array_get_type(query_array, 0);
-		char str[128] = "";
-		db_type_to_str(type, str);
-		if ((CANOPEN_IS_ARRAY(type) && t != JSON_ARRAY) ||
-				(CANOPEN_IS_STRING(type) && t != JSON_STRING) ||
-				(CANOPEN_IS_INTEGER(type) && t != JSON_INT)) {
-			printf("Array type mismatch, got %s, expected %s\n",
-					uv_json_type_to_str(t), str);
-			ret = ERR_ABORTED;
-		}
-	}
-	else {
-
-	}
 
 	if (ret == ERR_NONE) {
-		char t[64];
-		db_type_to_str(type, t);
-		printf("Writing object '%s'\n"
-				"    of type %s to target.\n", info, t);
-		fflush(stdout);
-		if (CANOPEN_IS_ARRAY(type)) {
-			char *array = NULL;
-			if (data != NULL) {
-				array = data;
-			}
-			else if (query_array != NULL) {
-				array = uv_jsonreader_array_at(query_array, query->correct_answer);
-			}
-			else {
+		if (mindex != 0) {
+			char t[64];
+			db_type_to_str(type, t);
+			printf("Writing object '%s'\n"
+					"    of type %s to target.\n", info, t);
+			fflush(stdout);
+			if (CANOPEN_IS_ARRAY(type)) {
+				char *array = NULL;
+				if (data != NULL) {
+					query_get(data, NULL, 0, &array);
+				}
+				else if (query_array != NULL) {
+					array = uv_jsonreader_array_at(query_array, query->correct_answer);
+				}
+				else {
 
-			}
-			for (uint32_t i = 0; i < uv_jsonreader_array_get_size(array); i++) {
-				uint32_t d = uv_jsonreader_array_get_int(array, i);
-				ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), mindex, i + 1 + sindex_offset,
-						CANOPEN_SIZEOF(type), &d);
-				if (ret != ERR_NONE) {
-					fprintf(stderr, "*** ERROR ***\n"
-							"Array loading failed for subindex %u\n", i + 1 + sindex_offset);
+				}
+				for (uint32_t i = 0; i < uv_jsonreader_array_get_size(array); i++) {
+					uint32_t d = uv_jsonreader_array_get_int(array, i);
+					ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), mindex, i + 1 + sindex_offset,
+							CANOPEN_SIZEOF(type), &d);
+					if (ret != ERR_NONE) {
+						fprintf(stderr, "*** ERROR ***\n"
+								"Array loading failed for subindex %u\n", i + 1 + sindex_offset);
+					}
 				}
 			}
-		}
-		else if (CANOPEN_IS_STRING(type)) {
-			unsigned int len;
-			char *str = NULL;
-			if (data != NULL) {
-				len = uv_jsonreader_get_string_len(data) + 1;
-				str = malloc(len);
-				uv_jsonreader_get_string(data, str, len);
-			}
-			else if (query_array != NULL) {
-				char s[128] = {};
-				uv_jsonreader_array_get_string(query_array, query->correct_answer, s, sizeof(s));
-				str = malloc(strlen(s));
-				strcpy(str, s);
+			else if (CANOPEN_IS_STRING(type)) {
+				char str[1024] = {};
+				if (data != NULL) {
+					query_get(data, str, sizeof(str), NULL);
+				}
+				else if (query_array != NULL) {
+					char s[128] = {};
+					uv_jsonreader_array_get_string(query_array,
+							query->correct_answer, s, sizeof(s));
+					strcpy(str, s);
+				}
+				else {
+
+				}
+				ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
+						mindex, 0, strlen(str) + 1, str);
+				if (ret != ERR_NONE) {
+					fprintf(stderr, "*** ERROR ***\n"
+							"Loading string '%s' failed.\n", str);
+				}
 			}
 			else {
+				// data is integer data
+				uint32_t d;
+				if (data != NULL) {
+					d = query_get(data, NULL, 0, NULL);
+				}
+				else if (query_array != NULL) {
+					d = uv_jsonreader_array_get_int(query_array, query->correct_answer);
+				}
+				else {
 
-			}
-			ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
-					mindex, 0, strlen(str) + 1, str);
-			free(str);
-			if (ret != ERR_NONE) {
-				fprintf(stderr, "*** ERROR ***\n"
-						"Loading the string '%s' failed.\n", str);
-			}
-		}
-		else {
-			// data is integer data
-			uint32_t d;
-			if (data != NULL) {
-				d = uv_jsonreader_get_int(data);
-			}
-			else if (query_array != NULL) {
-				d = uv_jsonreader_array_get_int(query_array, query->correct_answer);
-			}
-			else {
-
-			}
-			ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
-					mindex, sindex, CANOPEN_SIZEOF(type), &d);
-			if (ret != ERR_NONE) {
-				fprintf(stderr, "*** ERROR ***\n"
-						"Parameter loading failed for sub index %u\n", sindex);
+				}
+				ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
+						mindex, sindex, CANOPEN_SIZEOF(type), &d);
+				if (ret != ERR_NONE) {
+					fprintf(stderr, "*** ERROR ***\n"
+							"Parameter loading failed for sub index %u\n", sindex);
+				}
 			}
 		}
 	}
@@ -240,31 +272,7 @@ static uv_errors_e parse_dev(char *json) {
 	char *obj = uv_jsonreader_find_child(json, "NODEID");
 	if (obj != NULL) {
 		uint8_t nodeid = 0;
-		// nodeid given as query
-		if (uv_jsonreader_get_type(obj) == JSON_OBJECT) {
-			bool match = false;
-			char name[128];
-			for (uint8_t i = 0; i < uv_vector_size(&this->queries); i++) {
-				query_st *q = uv_vector_at(&this->queries, i);
-				if (uv_jsonreader_find_child(obj, q->name)) {
-					// matching query found
-					match = true;
-					char *query_array = uv_jsonreader_find_child(obj, q->name);
-					nodeid = uv_jsonreader_array_get_int(query_array, q->correct_answer);
-					break;
-				}
-			}
-			if (!match) {
-				char objname[128];
-				uv_jsonreader_get_obj_name(obj, objname, sizeof(name));
-				printf("No query '%s' found for object '%s'\n",
-						name, objname);
-			}
-		}
-		else {
-			// NODEID given as integer
-			nodeid = uv_jsonreader_get_int(obj);
-		}
+		nodeid = query_get(obj, NULL, 0, NULL);
 		printf("The NODEID set to 0x%x from the param file\n", nodeid);
 		db_set_nodeid(&dev.db, nodeid);
 	}
@@ -279,7 +287,7 @@ static uv_errors_e parse_dev(char *json) {
 
 	obj = uv_jsonreader_find_child(json, "CAN IF VERSION");
 	if (obj != NULL) {
-		uint16_t can_if = uv_jsonreader_get_int(obj);
+		uint16_t can_if = query_get(obj, NULL, 0, NULL);
 		uint16_t dev_if = 0;
 		char *mindex = uv_jsonreader_find_child(json, "CAN IF MINDEX");
 		char *sindex = uv_jsonreader_find_child(json, "CAN IF SINDEX");
