@@ -24,6 +24,7 @@
 #include <uv_json.h>
 #include <ctype.h>
 #include "main.h"
+#include <libgen.h>
 
 
 static bool parse_defines(db_st *this, char *obj);
@@ -629,7 +630,7 @@ static bool pdo_parse_mappings(char *mappingsjson, canopen_pdo_mapping_parameter
 }
 
 
-static bool parse_obj_dict_obj(db_st *this, char *child) {
+static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 	bool ret = true;
 
 	// start parsing data from child, e.g. object dictionary entry
@@ -662,7 +663,7 @@ static bool parse_obj_dict_obj(db_st *this, char *child) {
 				char *child = uv_jsonreader_array_at(content, i);
 				// recursively parse each child found in 'content' array
 				if (uv_jsonreader_get_type(child) == JSON_OBJECT) {
-					ret = parse_obj_dict_obj(this, child);
+					ret = parse_obj_dict_obj(this, child, path);
 				}
 				else {
 					printf("*** ERROR *** 'content' array in CONTAINER contained\n"
@@ -681,7 +682,9 @@ static bool parse_obj_dict_obj(db_st *this, char *child) {
 				ret = parse_defines(this, defines);
 			}
 			char name[128] = {};
-			uv_jsonreader_get_string(content, name, sizeof(name));
+			strcpy(name, path);
+			uv_jsonreader_get_string(content, name + strlen(name),
+					sizeof(name) - strlen(name));
 			if (ret) {
 				printf("reading content file '%s'\n", name);
 				FILE *fptr = fopen(name, "r");
@@ -698,7 +701,7 @@ static bool parse_obj_dict_obj(db_st *this, char *child) {
 					char *data = malloc(size);
 					if (fread(data, 1, size, fptr)) {
 						uv_jsonreader_init(data, size);
-						parse_obj_dict_obj(this, data);
+						parse_obj_dict_obj(this, data, path);
 					}
 					free(data);
 				}
@@ -725,7 +728,7 @@ static bool parse_obj_dict_obj(db_st *this, char *child) {
 				char *c = uv_jsonreader_array_at(data, i);
 				if (uv_jsonreader_array_get_type(data, i) == JSON_OBJECT &&
 						c) {
-					parse_obj_dict_obj(this, c);
+					parse_obj_dict_obj(this, c, path);
 				}
 			}
 		}
@@ -1120,7 +1123,7 @@ static void remove_defines(db_st *this, char *obj) {
 }
 
 
-static bool parse_json(db_st *this, char *json) {
+static bool parse_json(db_st *this, char *json, char *path) {
 	bool ret = true;
 
 	uv_jsonreader_init(json, strlen(json));
@@ -1266,7 +1269,7 @@ static bool parse_json(db_st *this, char *json) {
 				break;
 			}
 			else {
-				ret = parse_obj_dict_obj(this, child);
+				ret = parse_obj_dict_obj(this, child, path);
 			}
 		}
 
@@ -1556,6 +1559,9 @@ bool cmd_db(const char *arg) {
 		printf("Failed to open database file %s.\n", arg);
 	}
 	else {
+		char *path = malloc(strlen(dirname(arg) + 2));
+		strcpy(path, dirname(arg));
+		strcat(path, "/");
 		int32_t size;
 		fseek(fptr, 0, SEEK_END);
 		size = ftell(fptr);
@@ -1564,7 +1570,7 @@ bool cmd_db(const char *arg) {
 
 		char *data = malloc(size);
 		if (fread(data, 1, size, fptr)) {
-			if (parse_json(this, data)) {
+			if (parse_json(this, data, path)) {
 				printf("JSON parsed succesfully.\n");
 				strcpy(dev.db.filepath, arg);
 				ret = true;
@@ -1577,6 +1583,7 @@ bool cmd_db(const char *arg) {
 			printf("ERROR: Reading the JSON file failed.\n");
 		}
 		free(data);
+		free(path);
 	}
 
 	is_loaded = ret;
