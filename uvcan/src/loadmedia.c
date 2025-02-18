@@ -30,7 +30,7 @@
 
 
 static void loadmedia_step(void *dev);
-static void load(char *filename);
+static void load(char *filename, uint32_t count, uint32_t index);
 static bool is_known_mediafile(char *filename);
 
 
@@ -70,7 +70,7 @@ static bool is_known_mediafile(char *filename) {
 }
 
 
-static void load(char *filename) {
+static void load(char *filename, uint32_t count, uint32_t index) {
 	FILE *fptr = fopen(filename, "rb");
 
 	if (fptr == NULL) {
@@ -151,8 +151,10 @@ static void load(char *filename) {
 
 						addr += len;
 						printf("\33[2K\r");
-						printf("Loaded %u / %u bytes (%u %%)",
-								addr, size, 100 * addr / size);
+						printf("Loaded %u / %u bytes (%u %%) file %i/%i",
+								addr, size, 100 * addr / size,
+								index + 1,
+								count);
 						fflush(stdout);
 					}
 					printf("\n");
@@ -168,8 +170,9 @@ static void load(char *filename) {
 
 
 		fclose(fptr);
-		if (success) {
-			printf("Media file %s loaded\n", filename);
+		if (!success) {
+			printf("*** ERROR ***:\n"
+					"    Media file %s loading failed\n", filename);
 			fflush(stdout);
 		}
 	}
@@ -182,6 +185,23 @@ static void loadmedia_step(void *ptr) {
 	stat(this->filename, &path_stat);
 	if (S_ISDIR(path_stat.st_mode)) {
 		DIR *dirp;
+		// check media file count
+		uint32_t count = 0;
+		uint32_t index = 0;
+		dirp = opendir(this->filename);
+		while (dirp) {
+			struct dirent *d;
+			if ((d = readdir(dirp)) != NULL) {
+				if (is_known_mediafile(d->d_name)) {
+					count++;
+				}
+			}
+			else {
+				closedir(dirp);
+				break;
+			}
+		}
+
 		dirp = opendir(this->filename);
 		while(dirp) {
 			struct dirent *d;
@@ -189,7 +209,8 @@ static void loadmedia_step(void *ptr) {
 				if (is_known_mediafile(d->d_name)) {
 					char str[1024];
 					sprintf(str, "%s/%s", this->filename, d->d_name);
-					load(str);
+					load(str, count, index);
+					index++;
 				}
 			}
 			else {
@@ -199,7 +220,7 @@ static void loadmedia_step(void *ptr) {
 		}
 	}
 	else if (S_ISREG(path_stat.st_mode)) {
-		load(this->filename);
+		load(this->filename, 1, 0);
 	}
 	else {
 		printf("Unknown file '%s' given to *loadmedia*\n", this->filename);
