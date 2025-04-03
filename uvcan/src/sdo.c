@@ -112,7 +112,7 @@ void sdoread(void *ptr) {
 				this->mindex, this->sindex, (this->datalen == 0) ? 4 : this->datalen,
 						databuffer);
 		if (e != ERR_NONE) {
-			fprintf(stderr, "SDO read returned an error:\n");
+			PRINT("SDO read returned an error:\n");
 			printf("0x%x, %u: 0x%x: %s\n",
 					_canopen.sdo.client.mindex,
 					_canopen.sdo.client.sindex,

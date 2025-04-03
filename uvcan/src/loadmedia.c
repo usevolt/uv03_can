@@ -39,18 +39,8 @@ static bool is_known_mediafile(char *filename);
 bool cmd_loadmedia(const char *arg) {
 	bool ret = true;
 
-	if (!arg) {
-		printf("ERROR: Give media file path as an argument.\n");
-	}
-	else {
-		printf("Media file %s selected\n", arg);
-		strcpy(this->filename, arg);
-		if (this->filename[strlen(arg) - 1] == '/') {
-			this->filename[strlen(arg) - 1] = '\0';
-		}
-		add_task(loadmedia_step);
-		uv_can_set_up(false);
-	}
+	add_task(loadmedia_step);
+	uv_can_set_up(false);
 
 	return ret;
 }
@@ -75,11 +65,11 @@ static void load(char *filename, uint32_t count, uint32_t index) {
 
 	if (fptr == NULL) {
 		// failed to open the file, exit this task
-		printf("Failed to open media file %s.\n", filename);
-		fflush(stdout);
+		PRINT("Failed to open media file %s.\n", filename);
+		fflush(stderr);
 	}
 	else {
-		fflush(stdout);
+		fflush(stderr);
 		CANOPEN_TYPEOF(CONFIG_CANOPEN_EXMEM_FILESIZE_TYPE) size;
 		fseek(fptr, 0, SEEK_END);
 		size = ftell(fptr);
@@ -181,49 +171,52 @@ static void load(char *filename, uint32_t count, uint32_t index) {
 
 
 static void loadmedia_step(void *ptr) {
-	struct stat path_stat;
-	stat(this->filename, &path_stat);
-	if (S_ISDIR(path_stat.st_mode)) {
-		DIR *dirp;
-		// check media file count
-		uint32_t count = 0;
-		uint32_t index = 0;
-		dirp = opendir(this->filename);
-		while (dirp) {
-			struct dirent *d;
-			if ((d = readdir(dirp)) != NULL) {
-				if (is_known_mediafile(d->d_name)) {
-					count++;
+	char *str;
+	for (uint16_t i = 0; i < dev.argv_count; i++) {
+		str = dev.nonopt_argv[i];
+		struct stat path_stat;
+		stat(str, &path_stat);
+		if (S_ISDIR(path_stat.st_mode)) {
+			DIR *dirp;
+			// check media file count
+			uint32_t count = 0;
+			uint32_t index = 0;
+			dirp = opendir(str);
+			while (dirp) {
+				struct dirent *d;
+				if ((d = readdir(dirp)) != NULL) {
+					if (is_known_mediafile(d->d_name)) {
+						count++;
+					}
+				}
+				else {
+					closedir(dirp);
+					break;
 				}
 			}
-			else {
-				closedir(dirp);
-				break;
-			}
-		}
 
-		dirp = opendir(this->filename);
-		while(dirp) {
-			struct dirent *d;
-			if ((d = readdir(dirp)) != NULL) {
-				if (is_known_mediafile(d->d_name)) {
-					char str[1024];
-					sprintf(str, "%s/%s", this->filename, d->d_name);
-					load(str, count, index);
-					index++;
+			dirp = opendir(str);
+			while(dirp) {
+				struct dirent *d;
+				if ((d = readdir(dirp)) != NULL) {
+					if (is_known_mediafile(d->d_name)) {
+						char s[1024];
+						sprintf(s, "%s/%s", str, d->d_name);
+						load(s, count, index);
+						index++;
+					}
+				}
+				else {
+					closedir(dirp);
+					break;
 				}
 			}
-			else {
-				closedir(dirp);
-				break;
-			}
+		}
+		else if (S_ISREG(path_stat.st_mode)) {
+			load(str, 1, 0);
+		}
+		else {
+			printf("Unknown file '%s' given to *loadmedia*\n", str);
 		}
 	}
-	else if (S_ISREG(path_stat.st_mode)) {
-		load(this->filename, 1, 0);
-	}
-	else {
-		printf("Unknown file '%s' given to *loadmedia*\n", this->filename);
-	}
-
 }

@@ -26,7 +26,6 @@
 
 
 typedef struct {
-	char filename[256];
 } loadmedia_st;
 
 

@@ -107,7 +107,7 @@ static bool wait_for_response(void) {
 	}
 	if (ret == false) {
 		uv_mutex_lock(&mutex);
-		fprintf(stderr, "\n*** NO RESPONSE ***\n");
+		PRINT("\n*** NO RESPONSE ***\n");
 		responded = true;
 		fflush(stdout);
 		uv_mutex_unlock(&mutex);
@@ -186,7 +186,7 @@ static void command_tx(void *ptr) {
 
 
 static void command_step(void *ptr) {
-	fprintf(stderr, "Terminal opened for node ID 0x%x\n", db_get_nodeid(&dev.db));
+	PRINT("Terminal opened for node ID 0x%x\n", db_get_nodeid(&dev.db));
 	uv_canopen_set_can_callback(&can_callb);
 	uv_mutex_init(&mutex);
 	uv_mutex_unlock(&mutex);
@@ -210,7 +210,7 @@ static void command_step(void *ptr) {
 				fflush(stdout);
 			}
 			if (dev.argv_count != 0 && uv_delay(&end_delay, step_ms)) {
-				fprintf(stderr, "Done\n");
+				PRINT("Done\n");
 				fflush(stdout);
 				br = true;
 				break;

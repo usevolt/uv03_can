@@ -36,10 +36,11 @@ void init(void *me) {
 	// initialize the default settings
 
 	strcpy(this->can_channel, "can0");
-	char cmd[128];
+	char cmd[256];
 #if CONFIG_TARGET_LINUX
 	// get the net dev baudrate. If dev was not available, baudrate will be 0.
-	sprintf(cmd, "ip -det link show %s | grep bitrate | awk '{print $2}'", this->can_channel);
+	sprintf(cmd, "ip -det link show %s 2> /dev/null | grep bitrate | awk '{print $2}'",
+			this->can_channel);
 	FILE *fp = popen(cmd, "r");
 	if (fgets(cmd, sizeof(cmd), fp)) {
 		this->baudrate = strtol(cmd, NULL, 0);
@@ -51,7 +52,6 @@ void init(void *me) {
 	}
 	strcpy(this->srcdest, ".");
 	strcpy(this->incdest, ".");
-
 
 	uv_can_set_baudrate(this->can_channel, this->baudrate);
 	uv_vector_init(&this->tasks, this->task_buffer, TASKS_LEN, sizeof(task_st));
@@ -95,10 +95,10 @@ void step(void *me) {
 
 	if (!uv_rtos_idle_task_set()) {
 		db_deinit();
-		fprintf(stderr, "Finished\n");
+		PRINT("Finished\n");
 		exit(0);
 	}
-	fprintf(stderr, "step done\n");
+	PRINT("step done\n");
 	while(1) {
 		uv_rtos_task_delay(1);
 	}

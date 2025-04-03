@@ -76,10 +76,10 @@ struct _dev_st {
 
 	char **nonopt_argv;
 	uint32_t argv_count;
+
 };
 
 
-extern struct _dev_st dev;
 
 
 extern const canopen_object_st obj_dict[];

@@ -24,6 +24,10 @@
 #define CONFIG_INTERFACE_REVISION					1
 
 
+#include <stdbool.h>
+extern bool silent;
+#define PRINT(...)	do {if (!silent) { fprintf(stderr, __VA_ARGS__); }} while (0)
+
 
 #define CONFIG_NON_VOLATILE_MEMORY					1
 #define CONFIG_MAIN_H								"main.h"

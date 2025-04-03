@@ -39,6 +39,7 @@ bool cmd_baud(const char *arg);
 bool cmd_node(const char *arg);
 bool cmd_srcdest(const char *arg);
 bool cmd_incdest(const char *arg);
+bool cmd_silent(const char *arg);
 
 commands_st commands[] = {
 		{
@@ -189,7 +190,7 @@ commands_st commands[] = {
 						"that the media should be in the same directory where uvcan is run or in a subdirectory.\n"
 						"If a directory is given to this command, all recognized media files will be loaded from \n"
 						"that directory. Recursive loading from subdirectories is not supported.",
-				.args = ARG_REQUIRE,
+				.args = ARG_NONE,
 				.callback = &cmd_loadmedia
 		},
 		{
@@ -246,6 +247,13 @@ commands_st commands[] = {
 						"Reads also CANOpen 301 specified params.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_saveparamall
+		},
+		{
+				.cmd_long = "silent",
+				.cmd_short = 's',
+				.str = "Excecutes uvcan silent, without logging process information",
+				.args = ARG_NONE,
+				.callback = &cmd_silent
 		}
 };
 
@@ -256,10 +264,10 @@ unsigned int commands_count(void) {
 
 
 bool cmd_can(const char *arg) {
-	fprintf(stderr, "selecting '%s' as CAN dev\n", arg);
+	PRINT("selecting '%s' as CAN dev\n", arg);
 	strcpy(this->can_channel, arg);
 
-	fprintf(stderr, "Setting CAN dev name and baudrate: %u\n", arg, this->baudrate);
+	PRINT("Setting CAN dev name and baudrate: %u\n", arg, this->baudrate);
 	uv_can_set_baudrate(this->can_channel, this->baudrate);
 
 	return true;
@@ -268,11 +276,11 @@ bool cmd_can(const char *arg) {
 bool cmd_baud(const char *arg) {
 	bool ret = false;
 	if (!arg) {
-		fprintf(stderr, "Bad baudrate\n");
+		PRINT("Bad baudrate\n");
 	}
 	else {
 		unsigned int baudrate = strtol(arg, NULL, 0);
-		fprintf(stderr, "Setting CAN baudrate: %u\n", baudrate);
+		PRINT("Setting CAN baudrate: %u\n", baudrate);
 		this->baudrate = baudrate;
 		uv_can_set_baudrate(this->can_channel, baudrate);
 		// force bus state up
@@ -286,12 +294,12 @@ bool cmd_baud(const char *arg) {
 bool cmd_node(const char *arg) {
 	bool ret = true;
 	if (!arg) {
-		fprintf(stderr, "Give Node ID.\n");
+		PRINT("Give Node ID.\n");
 		ret = false;
 	}
 	else {
 		uint8_t nodeid = strtol(arg, NULL, 0);
-		fprintf(stderr, "Selected Node ID 0x%x\n", nodeid);
+		PRINT("Selected Node ID 0x%x\n", nodeid);
 		db_set_nodeid(&dev.db, nodeid);
 	}
 
@@ -300,15 +308,19 @@ bool cmd_node(const char *arg) {
 
 bool cmd_srcdest(const char *arg) {
 	strcpy(dev.srcdest, arg);
-	fprintf(stderr, "Source destination file path set to '%s'\n", arg);
+	PRINT("Source destination file path set to '%s'\n", arg);
 	return true;
 }
 
 bool cmd_incdest(const char *arg) {
 	strcpy(dev.incdest, arg);
-	fprintf(stderr, "Include destination file path set to '%s'\n", arg);
+	PRINT("Include destination file path set to '%s'\n", arg);
 	return true;
 }
 
 
+bool silent = true;
+bool cmd_silent(const char *arg) {
+	silent = false;
+}
 

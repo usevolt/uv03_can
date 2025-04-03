@@ -1352,6 +1352,7 @@ static bool parse_json(db_st *this, char *json, char *path) {
 	// RXPDOs
 	obj = uv_jsonreader_find_child(data, "RXPDO");
 	if ((obj != NULL) && (uv_jsonreader_get_type(obj) == JSON_ARRAY)) {
+		uint16_t rxpdo_count = 0;
 		for (int32_t i = 0; i < uv_jsonreader_array_get_size(obj); i++) {
 			char *pdojson = uv_jsonreader_array_at(obj, i);
 			if (pdojson == NULL) {
@@ -1371,14 +1372,28 @@ static bool parse_json(db_st *this, char *json, char *path) {
 			CHECK_RXPDO(mappingsjson, "mappings", i);
 			ret = pdo_parse_mappings(mappingsjson, &pdo.mappings);
 
+			char *index = uv_jsonreader_find_child(pdojson, "index");
+			if (index != NULL) {
+				int16_t in = uv_jsonreader_get_int(index);
+				for (int16_t i = uv_vector_size(&this->rxpdos); i < in; i++) {
+					db_rxpdo_st p = {};
+					strcpy(p.cobid, "CANOPEN_PDO_DISABLED");
+					p.transmission = CANOPEN_PDO_TRANSMISSION_ASYNC;
+					printf("RXPDO %u initialized as empty\n", rxpdo_count + 1);
+					uv_vector_push_back(&this->rxpdos, &p);
+					rxpdo_count++;
+				}
+			}
+
 			if (ret) {
 				int32_t bytes = 0;
 				for (int32_t i = 0; i < 8; i++) {
 					bytes += pdo.mappings.mappings[i].length;
 				}
-				printf("RXPDO %u used bytes: %u / 8\n", i + 1, bytes);
+				printf("RXPDO %u used bytes: %u / 8\n", rxpdo_count + 1, bytes);
 
 				uv_vector_push_back(&this->rxpdos, &pdo);
+				rxpdo_count++;
 			}
 		}
 	}

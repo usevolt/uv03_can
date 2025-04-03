@@ -45,7 +45,7 @@ bool cmd_loadparam(const char *arg) {
 	this->dev_count = 0;
 
 	if (!arg) {
-		fprintf(stderr, "ERROR: Give parameter file as a file path to binary file.\n");
+		PRINT("ERROR: Give parameter file as a file path to binary file.\n");
 	}
 	else {
 		strcpy(this->files[0], arg);
@@ -203,7 +203,7 @@ static uv_errors_e load_param(char *json_obj) {
 					ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), mindex, i + 1 + sindex_offset,
 							CANOPEN_SIZEOF(type), &d);
 					if (ret != ERR_NONE) {
-						fprintf(stderr, "*** ERROR ***\n"
+						PRINT("*** ERROR ***\n"
 								"Array loading failed for subindex %u\n", i + 1 + sindex_offset);
 					}
 				}
@@ -225,7 +225,7 @@ static uv_errors_e load_param(char *json_obj) {
 				ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
 						mindex, 0, strlen(str) + 1, str);
 				if (ret != ERR_NONE) {
-					fprintf(stderr, "*** ERROR ***\n"
+					PRINT("*** ERROR ***\n"
 							"Loading string '%s' failed.\n", str);
 				}
 			}
@@ -244,20 +244,20 @@ static uv_errors_e load_param(char *json_obj) {
 				ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
 						mindex, sindex, CANOPEN_SIZEOF(type), &d);
 				if (ret != ERR_NONE) {
-					fprintf(stderr, "*** ERROR ***\n"
+					PRINT("*** ERROR ***\n"
 							"Parameter loading failed for sub index %u\n", sindex);
 				}
 			}
 		}
 	}
 	else {
-		fprintf(stderr, "\n**** ERROR ****\n"
+		PRINT("\n**** ERROR ****\n"
 				"Parameter in a wrong format\n");
 		if (info != NULL) {
-			fprintf(stderr, "Parameter info: '%s'\n\n", info);
+			PRINT("Parameter info: '%s'\n\n", info);
 		}
 		else {
-			fprintf(stderr, "'INFO' value not found from the parameter.\n\n");
+			PRINT("'INFO' value not found from the parameter.\n\n");
 		}
 		fflush(stderr);
 	}
@@ -278,7 +278,7 @@ static uv_errors_e parse_dev(char *json) {
 	}
 	else {
 		if (db_get_nodeid(&dev.db) == 0) {
-			fprintf(stderr, "ERROR: NODEID not set. Set it either from the param file"
+			PRINT("ERROR: NODEID not set. Set it either from the param file"
 					"or with --nodeid or --db commands.\n");
 			fflush(stderr);
 			ret = ERR_CANOPEN_NODE_ID_ENTRY_INVALID;
@@ -297,7 +297,7 @@ static uv_errors_e parse_dev(char *json) {
 					uv_jsonreader_get_int(sindex), CANOPEN_SIZEOF(CANOPEN_UNSIGNED16),
 					&dev_if) == ERR_NONE) {
 				if (dev_if != can_if) {
-					fprintf(stderr, "\n**** ALERT ****\n"
+					PRINT("\n**** ALERT ****\n"
 							"CAN interface revision differ between parameter file (%i) and device (%i).\n"
 							"Some parameters might load incorrectly.\n\n"
 							"Press anything to continue or type 'skip' to skip this device\n\n",
@@ -317,7 +317,7 @@ static uv_errors_e parse_dev(char *json) {
 				}
 			}
 			else {
-				fprintf(stderr, "\n**** ALERT ****\n"
+				PRINT("\n**** ALERT ****\n"
 						"Failed to read CAN interface from the device. \n"
 						"The CAN IF VERSION object dictionary entry might not be defined.\n"
 						"Press anything to continue or 'skip' to ship this device.\n\n");
@@ -332,7 +332,7 @@ static uv_errors_e parse_dev(char *json) {
 			}
 		}
 		else {
-			fprintf(stderr, "\n**** ALERT ****\n"
+			PRINT("\n**** ALERT ****\n"
 					"\"CAN IF MINDEX\" or \"CAN IF SINDEX\" not found in the parameter file.\n\n"
 					"Press anything to continue or type 'skip' to skip this device.\n\n");
 			portDISABLE_INTERRUPTS();
@@ -347,7 +347,7 @@ static uv_errors_e parse_dev(char *json) {
 
 	}
 	else {
-		fprintf(stderr, "****** ALERT ******\n"
+		PRINT("****** ALERT ******\n"
 				"Parameter file didn't contain CAN interface version number for device 0x%x.\n"
 				"Undefined behaviour might occur while loading the parameters.\n\n"
 				"Press anything to continue or type 'skip' to skip this device.\n\n",
@@ -390,7 +390,7 @@ static uv_errors_e parse_dev(char *json) {
 						ret |= load_param(obj);
 					}
 					else {
-						fprintf(stderr, "**** ERROR ****\n"
+						PRINT("**** ERROR ****\n"
 								"PARAMS array contained something else\n"
 								"than objects at index %i\n", i + 1);
 						ret |= ERR_ABORTED;
@@ -406,7 +406,7 @@ static uv_errors_e parse_dev(char *json) {
 			}
 		}
 		else {
-			fprintf(stderr, "**** ERROR ****\n"
+			PRINT("**** ERROR ****\n"
 					"Couldn't find array type object 'PARAMS' from the json file.\n");
 			fflush(stdout);
 			ret = ERR_ABORTED;
@@ -461,7 +461,7 @@ static uv_errors_e parse_dev(char *json) {
 						ret |= load_param(obj);
 					}
 					else {
-						fprintf(stderr, "*** ERROR ***\n"
+						PRINT("*** ERROR ***\n"
 								"OPERATORS array contained something else\n"
 								"than object at operator %u, parameter index %u\n",
 								i + 1, j + 1);
@@ -474,7 +474,7 @@ static uv_errors_e parse_dev(char *json) {
 				ret |= uv_canopen_sdo_store_params(db_get_nodeid(&dev.db),
 						MEMORY_ALL_PARAMS);
 				if (ret != ERR_NONE) {
-					fprintf(stderr, "*** ERROR ***\n"
+					PRINT("*** ERROR ***\n"
 							"Error encountered when storing the parameters for op %u\n", i + 1);
 				}
 				// wait for the parameters to be saved
@@ -537,7 +537,7 @@ void loadparam_step(void *ptr) {
 			fclose(fptr);
 
 			if (!ret) {
-				fprintf(stderr, "ERROR: Reading file failed. "
+				PRINT("ERROR: Reading file failed. "
 						"Parameter download cancelled.\n");
 				fflush(stderr);
 			}
@@ -659,7 +659,7 @@ void loadparam_step(void *ptr) {
 				}
 
 				if (e != ERR_NONE) {
-					fprintf(stderr, "\n**** ERROR ****\n"
+					PRINT("\n**** ERROR ****\n"
 							"Error when fetching operator settings.\n"
 							"Loading the parameters might have failed\n");
 					fflush(stderr);
