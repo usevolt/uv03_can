@@ -297,7 +297,7 @@ static uv_errors_e parse_dev(char *json) {
 					uv_jsonreader_get_int(sindex), CANOPEN_SIZEOF(CANOPEN_UNSIGNED16),
 					&dev_if) == ERR_NONE) {
 				if (dev_if != can_if) {
-					PRINT("\n**** ALERT ****\n"
+					printf("\n**** ALERT ****\n"
 							"CAN interface revision differ between parameter file (%i) and device (%i).\n"
 							"Some parameters might load incorrectly.\n\n"
 							"Press anything to continue or type 'skip' to skip this device\n\n",
@@ -317,7 +317,7 @@ static uv_errors_e parse_dev(char *json) {
 				}
 			}
 			else {
-				PRINT("\n**** ALERT ****\n"
+				printf("\n**** ALERT ****\n"
 						"Failed to read CAN interface from the device. \n"
 						"The CAN IF VERSION object dictionary entry might not be defined.\n"
 						"Press anything to continue or 'skip' to ship this device.\n\n");
@@ -332,7 +332,7 @@ static uv_errors_e parse_dev(char *json) {
 			}
 		}
 		else {
-			PRINT("\n**** ALERT ****\n"
+			printf("\n**** ALERT ****\n"
 					"\"CAN IF MINDEX\" or \"CAN IF SINDEX\" not found in the parameter file.\n\n"
 					"Press anything to continue or type 'skip' to skip this device.\n\n");
 			portDISABLE_INTERRUPTS();
@@ -347,7 +347,7 @@ static uv_errors_e parse_dev(char *json) {
 
 	}
 	else {
-		PRINT("****** ALERT ******\n"
+		printf("****** ALERT ******\n"
 				"Parameter file didn't contain CAN interface version number for device 0x%x.\n"
 				"Undefined behaviour might occur while loading the parameters.\n\n"
 				"Press anything to continue or type 'skip' to skip this device.\n\n",

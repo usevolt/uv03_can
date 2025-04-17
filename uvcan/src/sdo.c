@@ -113,7 +113,7 @@ void sdoread(void *ptr) {
 						databuffer);
 		if (e != ERR_NONE) {
 			PRINT("SDO read returned an error:\n");
-			printf("0x%x, %u: 0x%x: %s\n",
+			PRINT("0x%x, %u: 0x%x: %s\n",
 					_canopen.sdo.client.mindex,
 					_canopen.sdo.client.sindex,
 					uv_canopen_sdo_get_error(),

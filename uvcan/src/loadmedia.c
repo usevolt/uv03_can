@@ -201,7 +201,11 @@ static void loadmedia_step(void *ptr) {
 				if ((d = readdir(dirp)) != NULL) {
 					if (is_known_mediafile(d->d_name)) {
 						char s[1024];
-						sprintf(s, "%s/%s", str, d->d_name);
+						sprintf(s, "%s", str);
+						if (str[strlen(str) - 1] != '/') {
+							strcat(s, "/");
+						}
+						strcat(s, d->d_name);
 						load(s, count, index);
 						index++;
 					}
@@ -213,7 +217,7 @@ static void loadmedia_step(void *ptr) {
 			}
 		}
 		else if (S_ISREG(path_stat.st_mode)) {
-			load(str, 1, 0);
+			load(str, dev.argv_count, i);
 		}
 		else {
 			printf("Unknown file '%s' given to *loadmedia*\n", str);
