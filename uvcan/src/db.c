@@ -34,6 +34,7 @@ static void remove_defines(db_st *this, char *obj);
 
 static bool is_loaded = false;
 static bool is_nodeid_set = false;
+static bool nodeid_force_set = false;
 
 static void str_to_upper_nonspace(char *str) {
 	while (*str != '\0') {
@@ -392,10 +393,8 @@ void db_permission_to_longstr(canopen_permissions_e permissions, char *dest) {
 }
 
 
-canopen_object_type_e db_jsonval_to_type(char *json_child) {
-	char str[128];
+canopen_object_type_e db_str_to_type(char *str) {
 	canopen_object_type_e ret;
-	uv_jsonreader_get_string(json_child, str, sizeof(str));
 	if (strcmp(str, "CANOPEN_UNSIGNED32") == 0 || strcmp(str, "CANOPEN_SIGNED32") == 0) {
 		ret = CANOPEN_UNSIGNED32;
 	}
@@ -426,6 +425,14 @@ canopen_object_type_e db_jsonval_to_type(char *json_child) {
 	else {
 		ret = CANOPEN_UNSIGNED8;
 	}
+	return ret;
+}
+
+canopen_object_type_e db_jsonval_to_type(char *json_child) {
+	char str[128];
+	canopen_object_type_e ret;
+	uv_jsonreader_get_string(json_child, str, sizeof(str));
+	ret = db_str_to_type(str);
 	return ret;
 }
 
@@ -1526,8 +1533,16 @@ uint8_t db_get_nodeid(db_st *this) {
 
 
 void db_set_nodeid(db_st *this, uint8_t value) {
+	if (!nodeid_force_set) {
+		this->node_id = value;
+		is_nodeid_set = true;
+	}
+}
+
+void db_set_nodeid_force(db_st *this, uint8_t value) {
 	this->node_id = value;
 	is_nodeid_set = true;
+	nodeid_force_set = true;
 }
 
 

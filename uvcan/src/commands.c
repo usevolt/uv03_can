@@ -300,7 +300,7 @@ bool cmd_node(const char *arg) {
 	else {
 		uint8_t nodeid = strtol(arg, NULL, 0);
 		PRINT("Selected Node ID 0x%x\n", nodeid);
-		db_set_nodeid(&dev.db, nodeid);
+		db_set_nodeid_force(&dev.db, nodeid);
 	}
 
 	return ret;

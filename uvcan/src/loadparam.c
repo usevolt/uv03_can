@@ -23,6 +23,7 @@
 #include <uv_json.h>
 #include "loadparam.h"
 #include "main.h"
+#include "db.h"
 
 #define this (&dev.loadparam)
 
@@ -60,24 +61,40 @@ bool cmd_loadparam(const char *arg) {
 /// @brief: Gets and returns the query value. Integer values are returned,
 /// string values are copied to *dest_str*.
 ///
-/// @param dest_str: If type is JSON_STRING, the resulting string is copied to this
-/// @param array_obj: If type is JSON_ARRAY, the resulting array object is copied to this
+/// @param dest_str: If *type* is JSON_STRING, the resulting string is copied to this
+/// @param array_obj: If *type* is JSON_ARRAY, the resulting array object is copied to this
 static int query_get(char *json_obj, char *dest_str, int dest_len, char **array_obj) {
 	int ret = 0;
 	switch (uv_jsonreader_get_type(json_obj)) {
 	case JSON_OBJECT:
 	{
+		char name[32];
+		uv_jsonreader_get_obj_name(json_obj, name, sizeof(name));
 		// query object
+		// For object types, search all object's children and if any child's
+		// name matches with query name, fetch that value
 		for (uint8_t i = 0; i < uv_vector_size(&this->queries); i++) {
 			query_st *q = uv_vector_at(&this->queries, i);
 			char *query_array = uv_jsonreader_find_child(json_obj, q->name);
 			if (query_array != NULL) {
+				printf("Query %s answered: (%u) %s\n",
+						q->name,
+						q->correct_answer + 1,
+						q->answers[q->correct_answer]);
+				// matching query found, fetch the answer
 				switch(uv_jsonreader_array_get_type(query_array, q->correct_answer)) {
+				case JSON_OBJECT:
+				{
+					char *newquery = uv_jsonreader_array_at(
+							query_array, q->correct_answer);
+					// found new query inside query, parse it recursively
+					ret = query_get(newquery, dest_str, dest_len, array_obj);
+					break;
+				}
 				case JSON_INT:
 					ret = uv_jsonreader_array_get_int(query_array, q->correct_answer);
 					break;
 				case JSON_STRING:
-					// matching query found, fetch the answer
 					if (uv_jsonreader_array_get_size(query_array) > q->correct_answer) {
 						uv_jsonreader_array_get_string(query_array,
 								q->correct_answer,
@@ -156,8 +173,9 @@ static uv_errors_e load_param(char *json_obj) {
 	if (val == NULL) {
 		ret = ERR_ABORTED;
 	}
-
-	type = db_jsonval_to_type(val);
+	char typestr[64];
+	query_get(val, typestr, sizeof(typestr), NULL);
+	type = db_str_to_type(typestr);
 
 	data = uv_jsonreader_find_child(json_obj, "DATA");
 
@@ -275,6 +293,18 @@ static uv_errors_e parse_dev(char *json) {
 		nodeid = query_get(obj, NULL, 0, NULL);
 		printf("The NODEID set to 0x%x from the param file\n", nodeid);
 		db_set_nodeid(&dev.db, nodeid);
+		if (db_get_nodeid(&dev.db) != nodeid) {
+			// setting nodeid failed, means that it was force set manually.
+			// write new nodeid to device
+			printf("Writing new NODEID 0x%x to device 0x%x\n",
+					nodeid,
+					db_get_nodeid(&dev.db));
+			uv_canopen_sdo_write(db_get_nodeid(&dev.db),
+					CONFIG_CANOPEN_NODEID_INDEX,
+					0,
+					1,
+					&nodeid);
+		}
 	}
 	else {
 		if (db_get_nodeid(&dev.db) == 0) {

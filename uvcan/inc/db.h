@@ -275,6 +275,8 @@ uint8_t db_get_nodeid(db_st *this);
 
 void db_set_nodeid(db_st *this, uint8_t value);
 
+void db_set_nodeid_force(db_st *this, uint8_t value);
+
 static inline uint32_t db_get_vendor_id(db_st *this) {
 	return this->vendor_id;
 }
@@ -335,6 +337,7 @@ void db_permission_to_longstr(canopen_permissions_e permissions, char *dest);
 void db_type_to_str(canopen_object_type_e type, char *dest);
 void db_type_to_stdint(canopen_object_type_e type, char *dest);
 void db_transmission_to_str(canopen_pdo_transmission_types_e transmission, char *dest);
+canopen_object_type_e db_str_to_type(char *str);
 canopen_object_type_e db_jsonval_to_type(char *json_child);
 
 /// @brief: Deinitializes the database and frees all allocated memory
