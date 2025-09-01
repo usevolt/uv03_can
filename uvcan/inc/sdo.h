@@ -30,6 +30,8 @@ typedef struct {
 	uint32_t datalen;
 	int32_t value;
 	char *str;
+	// when true, reads as string
+	bool is_str;
 } sdo_st;
 
 
@@ -38,6 +40,7 @@ bool cmd_sindex(const char *arg);
 bool cmd_datalen(const char *arg);
 
 bool cmd_sdoread(const char *arg);
+bool cmd_sdoreadstr(const char *arg);
 bool cmd_sdowrite(const char *arg);
 
 

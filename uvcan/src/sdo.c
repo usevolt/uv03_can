@@ -28,6 +28,7 @@
 
 void sdowrite(void *ptr);
 void sdoread(void *ptr);
+void sdoreadstr(void *ptr);
 
 
 
@@ -78,6 +79,16 @@ bool cmd_sdoread(const char *arg) {
 	return ret;
 }
 
+bool cmd_sdoreadstr(const char *arg) {
+	bool ret = true;
+
+	uv_can_set_up(false);
+
+	add_task(&sdoreadstr);
+
+	return ret;
+}
+
 
 bool cmd_sdowrite(const char *arg) {
 	bool ret = true;
@@ -99,6 +110,11 @@ bool cmd_sdowrite(const char *arg) {
 }
 
 
+void sdoreadstr(void *ptr) {
+	this->is_str = true;
+	sdoread(ptr);
+}
+
 
 void sdoread(void *ptr) {
 
@@ -107,32 +123,50 @@ void sdoread(void *ptr) {
 				"Error: The CANOpen main index has to be set with *--mindex* command\n");
 	}
 	else {
-		uint8_t *databuffer = malloc((this->datalen == 0) ? 4 : this->datalen);
-		uv_errors_e e = uv_canopen_sdo_read(db_get_nodeid(&dev.db),
-				this->mindex, this->sindex, (this->datalen == 0) ? 4 : this->datalen,
-						databuffer);
-		if (e != ERR_NONE) {
-			PRINT("SDO read returned an error:\n");
-			PRINT("0x%x, %u: 0x%x: %s\n",
-					_canopen.sdo.client.mindex,
-					_canopen.sdo.client.sindex,
-					uv_canopen_sdo_get_error(),
-					uv_canopen_sdo_error_code_to_str(uv_canopen_sdo_get_error()));
-		}
-		else {
-			if (this->datalen <= 4) {
-				int32_t val = 0;
-				memcpy(&val, databuffer, (this->datalen == 0) ? 4 : this->datalen);
-				printf("0x%x\n", val);
+		if (this->is_str) {
+			char c[257] = {};
+			uv_errors_e e = uv_canopen_sdo_read(db_get_nodeid(&dev.db),
+					this->mindex, this->sindex,
+					this->datalen ? this->datalen : (256 - this->sindex), &c);
+			if (e != ERR_NONE) {
+				PRINT("SDO read returned an error:\n");
+				PRINT("0x%x, %u: 0x%x: %s",
+						_canopen.sdo.client.mindex,
+						_canopen.sdo.client.sindex,
+						uv_canopen_sdo_get_error(),
+						uv_canopen_sdo_error_code_to_str(uv_canopen_sdo_get_error()));
 			}
 			else {
-				for (uint32_t i = 0; i < this->datalen; i++) {
-					printf("0x%x ", databuffer[i]);
-				}
+				printf("%s\n", c);
 			}
 		}
-		free(databuffer);
-
+		else {
+			uint8_t *databuffer = malloc((this->datalen == 0) ? 4 : this->datalen);
+			uv_errors_e e = uv_canopen_sdo_read(db_get_nodeid(&dev.db),
+					this->mindex, this->sindex, (this->datalen == 0) ? 4 : this->datalen,
+							databuffer);
+			if (e != ERR_NONE) {
+				PRINT("SDO read returned an error:\n");
+				PRINT("0x%x, %u: 0x%x: %s\n",
+						_canopen.sdo.client.mindex,
+						_canopen.sdo.client.sindex,
+						uv_canopen_sdo_get_error(),
+						uv_canopen_sdo_error_code_to_str(uv_canopen_sdo_get_error()));
+			}
+			else {
+				if (this->datalen <= 4) {
+					int32_t val = 0;
+					memcpy(&val, databuffer, (this->datalen == 0) ? 4 : this->datalen);
+					printf("0x%x\n", val);
+				}
+				else {
+					for (uint32_t i = 0; i < this->datalen; i++) {
+						printf("0x%x ", databuffer[i]);
+					}
+				}
+			}
+			free(databuffer);
+		}
 	}
 }
 

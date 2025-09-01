@@ -224,6 +224,12 @@ commands_st commands[] = {
 				.callback = &cmd_sdoread
 		},
 		{
+				.cmd_long = "sdoreadstr",
+				.str = "Reads string from a device with CANOpen SDO request",
+				.args = ARG_NONE,
+				.callback = &cmd_sdoreadstr
+		},
+		{
 				.cmd_long = "sdowrite",
 				.str = "Writes data to a device with CANOpen SDO request",
 				.args = ARG_REQUIRE,
