@@ -47,10 +47,8 @@ bool get_header_objs(char *dest, const char *filename) {
 	strcat(dest, "#include <stdint.h>\n"
 			"#include <string.h>\n\n");
 
-	// create symbol for node id
 	char nameupper[1024] = {};
 	char namelower[1024] = {};
-	strcat(dest, "#define ");
 	for (int i = 0; i < strlen(db_get_dev_name(&dev.db)); i++) {
 		char c[2];
 		c[0] = toupper(db_get_dev_name(&dev.db)[i]);
@@ -59,6 +57,15 @@ bool get_header_objs(char *dest, const char *filename) {
 		c[0] = tolower(db_get_dev_name(&dev.db)[i]);
 		strcat(namelower, c);
 	}
+
+	// wrap everything in device name macro
+	sprintf(dest + strlen(dest), "#ifndef %s\n"
+			"#define %s 1\n\n",
+			nameupper,
+			nameupper);
+
+	// create symbol for node id
+	strcat(dest, "#define ");
 	strcat(dest, nameupper);
 	strcat(dest, "_NODEID");
 	sprintf(&dest[strlen(dest)], "           0x%x\n\n\n\n", db_get_nodeid(&dev.db));
@@ -347,7 +354,8 @@ bool get_header_objs(char *dest, const char *filename) {
 	strcat(dest, "\n/// @brief: returns the length of object dictionary in objects.\n"
 			"uint32_t obj_dict_len(void);\n\n");
 
-	strcat(dest, "#endif");
+	strcat(dest, "#endif\n");
+	strcat(dest, "#endif\n");
 
 	return true;
 }

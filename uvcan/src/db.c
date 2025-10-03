@@ -576,7 +576,6 @@ static bool pdo_parse_mappings(char *mappingsjson, canopen_pdo_mapping_parameter
 				char name[128] = {};
 				uv_jsonreader_get_string(data, name, sizeof(name));
 				str_to_upper_nonspace(name);
-				printf("%s %i\n", name, index);
 				char *len = uv_jsonreader_find_child(mapping, "length");
 				bool match = false;
 				for (int32_t i = 0; i < db_get_object_count(&dev.db); i++) {
