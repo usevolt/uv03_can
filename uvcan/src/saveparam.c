@@ -23,6 +23,7 @@
 #include "saveparam.h"
 #include "main.h"
 #include "db.h"
+#include <libgen.h>
 
 #define this (&dev.saveparam)
 
@@ -457,7 +458,11 @@ void saveparam_step(void *ptr) {
 		fflush(stdout);
 		char cmd[1024];
 		char tempname[270];
-		sprintf(tempname, "__%s_temp", this->file);
+		char file[256];
+		strcpy(file, this->file);
+		char *base = basename(file);
+		char *dir = dirname(file);
+		sprintf(tempname, "%s/__%s_temp", dir, base);
 		sprintf(cmd, "jq '.' %s > %s", this->file, tempname);
 		printf("Running the command: %s\n", cmd);
 		fflush(stdout);
