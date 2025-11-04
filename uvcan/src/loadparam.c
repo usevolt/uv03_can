@@ -32,7 +32,8 @@ void loadparam_step(void *dev);
 
 
 
-
+#define ERROR(str, ...) printf(PRINT_BOLDRED str PRINT_RESET, __VA_ARGS__)
+#define ERRORSTR(str) printf(PRINT_BOLDRED str PRINT_RESET)
 
 bool cmd_loadparam(const char *arg) {
 	bool ret = true;
@@ -131,37 +132,37 @@ static int query_get(char *json_obj, char *dest_str, int dest_len, char **array_
 }
 
 
-// loads the given param from the JSON file to the target device
-static uv_errors_e load_param(char *json_obj) {
+static uv_errors_e load_param(char *json_obj,
+							  uint16_t mindex,
+							  canopen_object_type_e objtype) {
 	uv_errors_e ret = ERR_NONE;
-	uint32_t mindex;
-	uint32_t sindex = 0;
-	uint32_t sindex_offset = 0;
-	canopen_object_type_e type;
-	char *data;
-	char info[128] = { };
+	uint8_t sindex = 0;
+	uint8_t sindex_offset = 0;
 
-
-	char *val = uv_jsonreader_find_child(json_obj, "MAININDEX");
-	if (val == NULL) {
-		ret = ERR_ABORTED;
+	char *val = uv_jsonreader_find_child(json_obj, "INFO");
+	char info[128] = {};
+	if (val != NULL) {
+		uv_jsonreader_get_string(val, info, sizeof(info));
 	}
-	mindex = query_get(val, NULL, 0, NULL);
+
+
+	val = uv_jsonreader_find_child(json_obj, "MAININDEX");
+	if (val) {
+		mindex = query_get(val, NULL, 0, NULL);
+	}
+
+
+	val = uv_jsonreader_find_child(json_obj, "TYPE");
+	if (val) {
+		char typestr[64];
+		query_get(val, typestr, sizeof(typestr), NULL);
+		objtype = db_str_to_type(typestr);
+	}
 
 	val = uv_jsonreader_find_child(json_obj, "SUBINDEX");
 	if (val != NULL) {
 		sindex = query_get(val, NULL, 0, NULL);
 	}
-
-	val = uv_jsonreader_find_child(json_obj, "INFO");
-	if (val == NULL) {
-		printf("\"INFO\" not found\n");
-		ret = ERR_ABORTED;
-	}
-	else {
-		uv_jsonreader_get_string(val, info, sizeof(info));
-	}
-
 	// SUBINDEX_OFFSET is used for array objects to not start writing the data
 	// to the first element in array.
 	val = uv_jsonreader_find_child(json_obj, "SUBINDEX_OFFSET");
@@ -169,15 +170,7 @@ static uv_errors_e load_param(char *json_obj) {
 		sindex_offset = query_get(val, NULL, 0, NULL);
 	}
 
-	val = uv_jsonreader_find_child(json_obj, "TYPE");
-	if (val == NULL) {
-		ret = ERR_ABORTED;
-	}
-	char typestr[64];
-	query_get(val, typestr, sizeof(typestr), NULL);
-	type = db_str_to_type(typestr);
-
-	data = uv_jsonreader_find_child(json_obj, "DATA");
+	char *data = uv_jsonreader_find_child(json_obj, "DATA");
 
 	char *query_array = NULL;
 	query_st *query = NULL;
@@ -193,89 +186,145 @@ static uv_errors_e load_param(char *json_obj) {
 			}
 		}
 		if (query_array == NULL) {
-			printf("no \"DATA\" or queries found\n");
+			ERRORSTR("no \"DATA\" or queries found\n");
 			ret = ERR_ABORTED;
 		}
 	}
 
-	if (ret == ERR_NONE) {
-		if (mindex != 0) {
-			char t[64];
-			db_type_to_str(type, t);
-			printf("Writing object '%s'\n"
-					"    of type %s to target.\n", info, t);
-			fflush(stdout);
-			if (CANOPEN_IS_ARRAY(type)) {
-				char *array = NULL;
-				if (data != NULL) {
-					query_get(data, NULL, 0, &array);
-				}
-				else if (query_array != NULL) {
-					array = uv_jsonreader_array_at(query_array, query->correct_answer);
-				}
-				else {
+	// at this point either *data* or *query_array* should contain
+	// object to load
 
-				}
-				for (uint32_t i = 0; i < uv_jsonreader_array_get_size(array); i++) {
-					uint32_t d = uv_jsonreader_array_get_int(array, i);
-					ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), mindex, i + 1 + sindex_offset,
-							CANOPEN_SIZEOF(type), &d);
-					if (ret != ERR_NONE) {
-						PRINT("*** ERROR ***\n"
-								"Array loading failed for subindex %u\n", i + 1 + sindex_offset);
-					}
-				}
-			}
-			else if (CANOPEN_IS_STRING(type)) {
-				char str[1024] = {};
-				if (data != NULL) {
-					query_get(data, str, sizeof(str), NULL);
-				}
-				else if (query_array != NULL) {
-					char s[128] = {};
-					uv_jsonreader_array_get_string(query_array,
-							query->correct_answer, s, sizeof(s));
-					strcpy(str, s);
-				}
-				else {
-
-				}
-				ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
-						mindex, 0, strlen(str) + 1, str);
-				if (ret != ERR_NONE) {
-					PRINT("*** ERROR ***\n"
-							"Loading string '%s' failed.\n", str);
-				}
-			}
-			else {
-				// data is integer data
-				uint32_t d;
-				if (data != NULL) {
-					d = query_get(data, NULL, 0, NULL);
-				}
-				else if (query_array != NULL) {
-					d = uv_jsonreader_array_get_int(query_array, query->correct_answer);
-				}
-				else {
-
-				}
-				ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
-						mindex, sindex, CANOPEN_SIZEOF(type), &d);
-				if (ret != ERR_NONE) {
-					PRINT("*** ERROR ***\n"
-							"Parameter loading failed for sub index %u\n", sindex);
-				}
-			}
-		}
+	uv_json_types_e type;
+	if (data) {
+		type = uv_jsonreader_get_type(data);
 	}
 	else {
-		PRINT("\n**** ERROR ****\n"
-				"Parameter in a wrong format\n");
-		if (info != NULL) {
-			PRINT("Parameter info: '%s'\n\n", info);
+		type = uv_jsonreader_array_get_type(
+				query_array, query->correct_answer);
+	}
+
+	// check that all necessary data is set
+	if (type != JSON_OBJECT) {
+		if (objtype == CANOPEN_UNDEFINED) {
+			ERROR("Object '%s': TYPE not defined\n", info);
+			ret = ERR_ABORTED;
+		}
+		else if (mindex == 0) {
+			ERROR("Object '%s': Mainindex not set\n", info);
+			ret = ERR_ABORTED;
 		}
 		else {
-			PRINT("'INFO' value not found from the parameter.\n\n");
+
+		}
+	}
+
+
+	if (ret == ERR_NONE) {
+		printf("Writing %s '%s': ",
+			   uv_json_type_to_str(type),
+			   info);
+		fflush(stdout);
+
+		if (type == JSON_ARRAY) {
+			printf("\n");
+			char *array = NULL;
+			if (data != NULL) {
+				query_get(data, NULL, 0, &array);
+			}
+			else if (query_array != NULL) {
+				array = uv_jsonreader_array_at(query_array, query->correct_answer);
+			}
+			else {
+
+			}
+			// *array* holds pointer to JSON array object
+			for (uint32_t i = 0; i < uv_jsonreader_array_get_size(array); i++) {
+				switch (uv_jsonreader_array_get_type(array, i)) {
+					case JSON_INT:
+						uint32_t d = uv_jsonreader_array_get_int(array, i);
+						printf("0x%x ", d, i + 1 + sindex_offset, mindex);
+						ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
+													mindex,
+													i + 1 + sindex_offset,
+													CANOPEN_SIZEOF(objtype), &d);
+						break;
+						case JSON_OBJECT: {
+							char *obj = uv_jsonreader_array_at(array, i);
+							// child objects are loaded recursively
+							ret |= load_param(
+									obj,
+									mindex,
+									objtype);
+						break;
+						}
+					default:
+						ERROR("\narray of object type '%s' not supported\n",
+								uv_json_type_to_str(
+										uv_jsonreader_array_get_type(array, i)));
+						fflush(stdout);
+						break;
+				}
+				if (ret != ERR_NONE) {
+					ERROR("\nArray loading failed for subindex %u\n",
+						  i + 1 + sindex_offset);
+				}
+			}
+		}
+		else if (type == JSON_OBJECT) {
+			// DATA was OBJECT type, which means it need to be parsed
+			// recursively
+			ret |= load_param(data, mindex, objtype);
+		}
+		else if (type == JSON_STRING) {
+			char str[1024] = {};
+			if (data != NULL) {
+				query_get(data, str, sizeof(str), NULL);
+			}
+			else if (query_array != NULL) {
+				char s[128] = {};
+				uv_jsonreader_array_get_string(query_array,
+						query->correct_answer, s, sizeof(s));
+				strcpy(str, s);
+			}
+			else {
+
+			}
+			printf("'%s'", str);
+			ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
+					mindex, sindex + sindex_offset, strlen(str) + 1, str);
+			if (ret != ERR_NONE) {
+				ERROR("\nLoading string '%s' failed.\n", str);
+			}
+		}
+		else {
+			// data is integer data
+			uint32_t d;
+			if (data != NULL) {
+				d = query_get(data, NULL, 0, NULL);
+			}
+			else if (query_array != NULL) {
+				d = uv_jsonreader_array_get_int(query_array, query->correct_answer);
+			}
+			else {
+
+			}
+			printf("0x%x", d);
+			printf("0x%x %u %u\n", mindex, sindex + sindex_offset, CANOPEN_SIZEOF(objtype));
+			ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
+					mindex, sindex + sindex_offset, CANOPEN_SIZEOF(objtype), &d);
+			if (ret != ERR_NONE) {
+				ERROR("\nParameter loading failed for sub index %u\n", sindex);
+			}
+		}
+		printf("\n");
+	}
+	else {
+		ERRORSTR("Parameter in a wrong format\n");
+		if (strlen(info) != 0) {
+			ERROR("Parameter info: '%s'\n\n", info);
+		}
+		else {
+			ERRORSTR("'INFO' value not found from the parameter.\n\n");
 		}
 		fflush(stderr);
 	}
@@ -283,6 +332,7 @@ static uv_errors_e load_param(char *json_obj) {
 
 	return ret;
 }
+
 
 
 static uv_errors_e parse_dev(char *json) {
@@ -327,10 +377,11 @@ static uv_errors_e parse_dev(char *json) {
 					uv_jsonreader_get_int(sindex), CANOPEN_SIZEOF(CANOPEN_UNSIGNED16),
 					&dev_if) == ERR_NONE) {
 				if (dev_if != can_if) {
-					printf("\n**** ALERT ****\n"
+					printf(PRINT_YELLOW
 							"CAN interface revision differ between parameter file (%i) and device (%i).\n"
 							"Some parameters might load incorrectly.\n\n"
-							"Press anything to continue or type 'skip' to skip this device\n\n",
+							"Press anything to continue or type 'skip' to skip this device\n\n"
+						    PRINT_RESET,
 							can_if,
 							dev_if);
 					portDISABLE_INTERRUPTS();
@@ -347,10 +398,11 @@ static uv_errors_e parse_dev(char *json) {
 				}
 			}
 			else {
-				printf("\n**** ALERT ****\n"
-						"Failed to read CAN interface from the device. \n"
+				printf(PRINT_YELLOW
+					   "Failed to read CAN interface from the device. \n"
 						"The CAN IF VERSION object dictionary entry might not be defined.\n"
-						"Press anything to continue or 'skip' to ship this device.\n\n");
+						"Press anything to continue or 'skip' to ship this device.\n\n"
+					   PRINT_RESET);
 				portDISABLE_INTERRUPTS();
 				char str[128] = {};
 				fgets(str, sizeof(str) - 1, stdin);
@@ -362,9 +414,10 @@ static uv_errors_e parse_dev(char *json) {
 			}
 		}
 		else {
-			printf("\n**** ALERT ****\n"
-					"\"CAN IF MINDEX\" or \"CAN IF SINDEX\" not found in the parameter file.\n\n"
-					"Press anything to continue or type 'skip' to skip this device.\n\n");
+			printf(PRINT_YELLOW
+				   "\"CAN IF MINDEX\" or \"CAN IF SINDEX\" not found in the parameter file.\n\n"
+				   "Press anything to continue or type 'skip' to skip this device.\n\n"
+				   PRINT_RESET);
 			portDISABLE_INTERRUPTS();
 			fflush(stdout);
 			char str[128] = {};
@@ -377,10 +430,11 @@ static uv_errors_e parse_dev(char *json) {
 
 	}
 	else {
-		printf("****** ALERT ******\n"
-				"Parameter file didn't contain CAN interface version number for device 0x%x.\n"
+		printf(PRINT_YELLOW
+			   "Parameter file didn't contain CAN interface version number for device 0x%x.\n"
 				"Undefined behaviour might occur while loading the parameters.\n\n"
-				"Press anything to continue or type 'skip' to skip this device.\n\n",
+				"Press anything to continue or type 'skip' to skip this device.\n\n"
+			   PRINT_RESET,
 				db_get_nodeid(&dev.db));
 		fflush(stdout);
 		portDISABLE_INTERRUPTS();
@@ -417,11 +471,10 @@ static uv_errors_e parse_dev(char *json) {
 				obj = uv_jsonreader_array_at(arr, 0);
 				for (int32_t i = 0; i < uv_jsonreader_array_get_size(arr); i++) {
 					if (uv_jsonreader_get_type(obj) == JSON_OBJECT) {
-						ret |= load_param(obj);
+						ret |= load_param(obj, 0, CANOPEN_UNDEFINED);
 					}
 					else {
-						PRINT("**** ERROR ****\n"
-								"PARAMS array contained something else\n"
+						ERROR("PARAMS array contained something else\n"
 								"than objects at index %i\n", i + 1);
 						ret |= ERR_ABORTED;
 					}
@@ -436,8 +489,7 @@ static uv_errors_e parse_dev(char *json) {
 			}
 		}
 		else {
-			PRINT("**** ERROR ****\n"
-					"Couldn't find array type object 'PARAMS' from the json file.\n");
+			ERRORSTR("Couldn't find array type object 'PARAMS' from the json file.\n");
 			fflush(stdout);
 			ret = ERR_ABORTED;
 		}
@@ -488,11 +540,10 @@ static uv_errors_e parse_dev(char *json) {
 				// cycle through all this operators parameters
 				for (uint32_t j = 0; j < uv_jsonreader_array_get_size(op); j++) {
 					if (uv_jsonreader_get_type(obj) == JSON_OBJECT) {
-						ret |= load_param(obj);
+						ret |= load_param(obj, 0, CANOPEN_UNDEFINED);
 					}
 					else {
-						PRINT("*** ERROR ***\n"
-								"OPERATORS array contained something else\n"
+						ERROR("OPERATORS array contained something else\n"
 								"than object at operator %u, parameter index %u\n",
 								i + 1, j + 1);
 					}
@@ -504,8 +555,7 @@ static uv_errors_e parse_dev(char *json) {
 				ret |= uv_canopen_sdo_store_params(db_get_nodeid(&dev.db),
 						MEMORY_ALL_PARAMS);
 				if (ret != ERR_NONE) {
-					PRINT("*** ERROR ***\n"
-							"Error encountered when storing the parameters for op %u\n", i + 1);
+					ERROR("Error encountered when storing the parameters for op %u\n", i + 1);
 				}
 				// wait for the parameters to be saved
 				uv_rtos_task_delay(100);
@@ -520,8 +570,7 @@ static uv_errors_e parse_dev(char *json) {
 			uv_rtos_task_delay(300);
 		}
 		else {
-			printf("**** WARNING ****\n"
-					"OPERATORS array not found from the JSON.\n\n");
+			ERRORSTR("OPERATORS array not found from the JSON.\n\n");
 			fflush(stdout);
 		}
 	}
@@ -567,7 +616,7 @@ void loadparam_step(void *ptr) {
 			fclose(fptr);
 
 			if (!ret) {
-				PRINT("ERROR: Reading file failed. "
+				ERRORSTR("Reading file failed. "
 						"Parameter download cancelled.\n");
 				fflush(stderr);
 			}
@@ -614,7 +663,7 @@ void loadparam_step(void *ptr) {
 						}
 
 						if (valid == false) {
-							printf("*** ERROR in query '%s'. All values not implemented.\n\n",
+							ERROR("ERROR in query '%s'. All values not implemented.\n\n",
 									q.name);
 						}
 						else {
@@ -650,7 +699,7 @@ void loadparam_step(void *ptr) {
 									}
 
 									if (ans < 1 || ans > q.answer_count) {
-										printf("ERR: Answer out of bounds. Defaulting to 1.\n");
+										ERRORSTR("Answer out of bounds. Defaulting to 1.\n");
 									}
 									else {
 										printf("Saving answer %i\n", ans);
@@ -689,8 +738,7 @@ void loadparam_step(void *ptr) {
 				}
 
 				if (e != ERR_NONE) {
-					PRINT("\n**** ERROR ****\n"
-							"Error when fetching operator settings.\n"
+					ERRORSTR("Error when fetching operator settings.\n"
 							"Loading the parameters might have failed\n");
 					fflush(stderr);
 				}
@@ -715,9 +763,10 @@ void loadparam_step(void *ptr) {
 					CANOPEN_NMT_CMD_RESET_NODE);
 		}
 		else {
-			printf("\n**** NOTICE ****\n"
-					"The device 0x%x was not reset due to errors. \n"
-					"Manual reset is necessary.\n\n",
+			printf(PRINT_YELLOW
+				   "The device 0x%x was not reset due to errors. \n"
+					"Manual reset is necessary.\n\n"
+				   PRINT_RESET,
 					nodeid);
 			fflush(stdout);
 		}

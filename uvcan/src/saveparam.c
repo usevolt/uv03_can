@@ -28,6 +28,8 @@
 #define this (&dev.saveparam)
 
 
+#define ERROR(str, ...) printf(PRINT_BOLDRED str PRINT_RESET, __VA_ARGS__)
+#define ERRORSTR(str) printf(PRINT_BOLDRED str PRINT_RESET)
 
 
 void saveparam_step(void *dev);
@@ -67,7 +69,7 @@ bool cmd_saveparam(const char *arg) {
 /// @brief: fetches the CANopen parameter from the device and writes it into the json
 static uv_errors_e json_add_obj(uv_json_st *dest_json, db_obj_st *obj, char *info_str) {
 	uv_errors_e ret = ERR_NONE;
-	char bfr[1024] = {};
+	char bfr[20240] = {};
 	uv_json_st json;
 	// we create object on an own json file. Since JSON file itself wraps the data
 	// inside an object, we dont need to create additional object for the data
@@ -107,19 +109,28 @@ static uv_errors_e json_add_obj(uv_json_st *dest_json, db_obj_st *obj, char *inf
 					break;
 				}
 				else {
-					printf("0x%x ", data);
+					printf("    %s: 0x%x %u\n", dbvalue_get_string(&child->name), data);
 					fflush(stdout);
+					uv_errors_e e = uv_jsonwriter_begin_object(&json);
+					e |= uv_jsonwriter_add_string(&json, "INFO",
+											 dbvalue_get_string(&child->name));
+					e |= uv_jsonwriter_add_int(&json, "SUBINDEX", i + 1);
 					if ((child &&
 							child->numsys == DB_OBJ_NUMSYS_HEX) ||
 							(!child &&
 								obj->numsys == DB_OBJ_NUMSYS_HEX)) {
-						uv_jsonwriter_array_add_int_hex(&json, data);
+						e |= uv_jsonwriter_add_int_hex(&json, "DATA", data);
 					}
 					else {
-						uv_jsonwriter_array_add_int(&json, data);
+						e |= uv_jsonwriter_add_int(&json, "DATA", data);
 					}
+					e |= uv_jsonwriter_end_object(&json);
 					if (child) {
 						child = child->next_sibling;
+					}
+					if (e != ERR_NONE) {
+						ERROR("Parameter '%s' too large to fit to buffer",
+							  info_str);
 					}
 				}
 			}
