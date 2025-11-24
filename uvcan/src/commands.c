@@ -236,6 +236,12 @@ commands_st commands[] = {
 				.callback = &cmd_sdowrite
 		},
 		{
+				.cmd_long = "sdowritestr",
+				.str = "Writes string to a device with CANOpen SDO request",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_sdowrite
+		},
+		{
 				.cmd_long = "loadparam",
 				.str = "Writes parameters to a UVCan device from the given file.",
 				.args = ARG_REQUIRE,

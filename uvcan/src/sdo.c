@@ -110,6 +110,7 @@ bool cmd_sdowrite(const char *arg) {
 }
 
 
+
 void sdoreadstr(void *ptr) {
 	this->is_str = true;
 	sdoread(ptr);

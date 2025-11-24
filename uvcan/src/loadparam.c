@@ -186,7 +186,10 @@ static uv_errors_e load_param(char *json_obj,
 			}
 		}
 		if (query_array == NULL) {
-			ERRORSTR("no \"DATA\" or queries found\n");
+			char name[64] = {};
+			uv_jsonreader_get_obj_name(json_obj, name, sizeof(name));
+			ERROR("no \"DATA\" or queries found in object '%s'\n",
+				  name);
 			ret = ERR_ABORTED;
 		}
 	}
@@ -201,17 +204,10 @@ static uv_errors_e load_param(char *json_obj,
 	else {
 		type = uv_jsonreader_array_get_type(
 				query_array, query->correct_answer);
-	}
-
-	// check that all necessary data is set
-	if (type != JSON_OBJECT) {
-		if (objtype == CANOPEN_UNDEFINED) {
-			ERROR("Object '%s': TYPE not defined\n", info);
-			ret = ERR_ABORTED;
-		}
-		else if (mindex == 0) {
-			ERROR("Object '%s': Mainindex not set\n", info);
-			ret = ERR_ABORTED;
+		if (type == JSON_OBJECT) {
+			// set data to point to selected object. *load_param* is
+			// then called for this object recursively.
+			data = uv_jsonreader_array_at(query_array, query->correct_answer);
 		}
 		else {
 
@@ -309,11 +305,10 @@ static uv_errors_e load_param(char *json_obj,
 
 			}
 			printf("0x%x", d);
-			printf("0x%x %u %u\n", mindex, sindex + sindex_offset, CANOPEN_SIZEOF(objtype));
 			ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
 					mindex, sindex + sindex_offset, CANOPEN_SIZEOF(objtype), &d);
 			if (ret != ERR_NONE) {
-				ERROR("\nParameter loading failed for sub index %u\n", sindex);
+				ERROR("\nParameter loading failed for subindex %u\n", sindex);
 			}
 		}
 		printf("\n");
@@ -570,6 +565,10 @@ static uv_errors_e parse_dev(char *json) {
 			uv_rtos_task_delay(300);
 		}
 		else {
+			if (opdb_mindex_json == NULL) {
+				ERRORSTR("OPDB_MAININDEX filed not found\n");
+			}
+			if (opdb_type_json)
 			ERRORSTR("OPERATORS array not found from the JSON.\n\n");
 			fflush(stdout);
 		}
