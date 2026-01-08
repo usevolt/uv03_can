@@ -34,6 +34,8 @@ void loadparam_step(void *dev);
 
 #define ERROR(str, ...) printf(PRINT_BOLDRED str PRINT_RESET, __VA_ARGS__)
 #define ERRORSTR(str) printf(PRINT_BOLDRED str PRINT_RESET)
+#define WARNING(str, ...) printf(PRINT_BOLDYELLOW str PRINT_RESET, __VA_ARGS__)
+#define WARNINGSTR(str) printf(PRINT_BOLDYELLOW str PRINT_RESET)
 
 bool cmd_loadparam(const char *arg) {
 	bool ret = true;
@@ -333,6 +335,8 @@ static uv_errors_e load_param(char *json_obj,
 static uv_errors_e parse_dev(char *json) {
 	uv_errors_e ret = ERR_NONE;
 	char *obj = uv_jsonreader_find_child(json, "NODEID");
+	char *query_array = NULL;
+	query_st *query = NULL;
 	if (obj != NULL) {
 		uint8_t nodeid = 0;
 		nodeid = query_get(obj, NULL, 0, NULL);
@@ -352,6 +356,22 @@ static uv_errors_e parse_dev(char *json) {
 		}
 	}
 	else {
+		// NODEID not found, try to find queries
+		// DATA object not found. Check if any queries are defined
+		for (uint16_t i = 0; i < uv_vector_size(&this->queries); i++) {
+			query = uv_vector_at(&this->queries, i);
+			char *obj = uv_jsonreader_find_child(json, query->name);
+			if (obj != NULL) {
+				// matching query found
+				query_array = obj;
+				break;
+			}
+		}
+		if (query_array == NULL) {
+			ERRORSTR("no \"DATA\" or queries found in device\n");
+			ret = ERR_ABORTED;
+		}
+
 		if (db_get_nodeid(&dev.db) == 0) {
 			PRINT("ERROR: NODEID not set. Set it either from the param file"
 					"or with --nodeid or --db commands.\n");
@@ -360,61 +380,93 @@ static uv_errors_e parse_dev(char *json) {
 		}
 	}
 
-	obj = uv_jsonreader_find_child(json, "CAN IF VERSION");
-	if (obj != NULL) {
-		uint16_t can_if = query_get(obj, NULL, 0, NULL);
-		uint16_t dev_if = 0;
-		char *mindex = uv_jsonreader_find_child(json, "CAN IF MINDEX");
-		char *sindex = uv_jsonreader_find_child(json, "CAN IF SINDEX");
-		if (mindex != NULL &&
-				sindex != NULL) {
-			if (uv_canopen_sdo_read(db_get_nodeid(&dev.db), uv_jsonreader_get_int(mindex),
-					uv_jsonreader_get_int(sindex), CANOPEN_SIZEOF(CANOPEN_UNSIGNED16),
-					&dev_if) == ERR_NONE) {
-				if (dev_if != can_if) {
+	// parse recursively queried object
+	if (query_array != NULL) {
+		json = uv_jsonreader_array_at(query_array, query->correct_answer);
+		if (json != NULL) {
+			ret = parse_dev(json);
+		}
+		else {
+			WARNING("Query '%s' didn't contain selected answer index %i,\n"
+					"Skipping this device.\n",
+					query->name,
+					query->correct_answer);
+		}
+	}
+	else {
+		obj = uv_jsonreader_find_child(json, "CAN IF VERSION");
+		if (obj != NULL) {
+			uint16_t can_if = query_get(obj, NULL, 0, NULL);
+			uint16_t dev_if = 0;
+			char *mindex = uv_jsonreader_find_child(json, "CAN IF MINDEX");
+			char *sindex = uv_jsonreader_find_child(json, "CAN IF SINDEX");
+			if (mindex != NULL &&
+					sindex != NULL) {
+				if (uv_canopen_sdo_read(db_get_nodeid(&dev.db), uv_jsonreader_get_int(mindex),
+						uv_jsonreader_get_int(sindex), CANOPEN_SIZEOF(CANOPEN_UNSIGNED16),
+						&dev_if) == ERR_NONE) {
+					if (dev_if != can_if) {
+						printf(PRINT_YELLOW
+								"CAN interface revision differ between parameter file (%i) and device (%i).\n"
+								"Some parameters might load incorrectly.\n\n"
+								"Press anything to continue or type 'skip' to skip this device\n\n"
+								PRINT_RESET,
+								can_if,
+								dev_if);
+						portDISABLE_INTERRUPTS();
+						char str[256] = {};
+						fgets(str, sizeof(str) - 1, stdin);
+						portENABLE_INTERRUPTS();
+						printf("got '%s'\n", str);
+						if (strstr(str, "skip")) {
+							ret = ERR_SKIPPED;
+						}
+					}
+					else {
+						printf("CAN interface version %i\n", can_if);
+					}
+				}
+				else {
 					printf(PRINT_YELLOW
-							"CAN interface revision differ between parameter file (%i) and device (%i).\n"
-							"Some parameters might load incorrectly.\n\n"
-							"Press anything to continue or type 'skip' to skip this device\n\n"
-						    PRINT_RESET,
-							can_if,
-							dev_if);
+						   "Failed to read CAN interface from the device. \n"
+							"The CAN IF VERSION object dictionary entry might not be defined.\n"
+							"Press anything to continue or 'skip' to ship this device.\n\n"
+						   PRINT_RESET);
 					portDISABLE_INTERRUPTS();
-					char str[256] = {};
+					char str[128] = {};
 					fgets(str, sizeof(str) - 1, stdin);
 					portENABLE_INTERRUPTS();
-					printf("got '%s'\n", str);
+					printf("'%s'\n", str);
 					if (strstr(str, "skip")) {
 						ret = ERR_SKIPPED;
 					}
 				}
-				else {
-					printf("CAN interface version %i\n", can_if);
-				}
 			}
 			else {
 				printf(PRINT_YELLOW
-					   "Failed to read CAN interface from the device. \n"
-						"The CAN IF VERSION object dictionary entry might not be defined.\n"
-						"Press anything to continue or 'skip' to ship this device.\n\n"
+					   "\"CAN IF MINDEX\" or \"CAN IF SINDEX\" not found in the parameter file.\n\n"
+					   "Press anything to continue or type 'skip' to skip this device.\n\n"
 					   PRINT_RESET);
 				portDISABLE_INTERRUPTS();
+				fflush(stdout);
 				char str[128] = {};
 				fgets(str, sizeof(str) - 1, stdin);
 				portENABLE_INTERRUPTS();
-				printf("'%s'\n", str);
 				if (strstr(str, "skip")) {
 					ret = ERR_SKIPPED;
 				}
 			}
+
 		}
 		else {
 			printf(PRINT_YELLOW
-				   "\"CAN IF MINDEX\" or \"CAN IF SINDEX\" not found in the parameter file.\n\n"
-				   "Press anything to continue or type 'skip' to skip this device.\n\n"
-				   PRINT_RESET);
-			portDISABLE_INTERRUPTS();
+				   "Parameter file didn't contain CAN interface version number for device 0x%x.\n"
+					"Undefined behaviour might occur while loading the parameters.\n\n"
+					"Press anything to continue or type 'skip' to skip this device.\n\n"
+				   PRINT_RESET,
+					db_get_nodeid(&dev.db));
 			fflush(stdout);
+			portDISABLE_INTERRUPTS();
 			char str[128] = {};
 			fgets(str, sizeof(str) - 1, stdin);
 			portENABLE_INTERRUPTS();
@@ -423,156 +475,141 @@ static uv_errors_e parse_dev(char *json) {
 			}
 		}
 
-	}
-	else {
-		printf(PRINT_YELLOW
-			   "Parameter file didn't contain CAN interface version number for device 0x%x.\n"
-				"Undefined behaviour might occur while loading the parameters.\n\n"
-				"Press anything to continue or type 'skip' to skip this device.\n\n"
-			   PRINT_RESET,
-				db_get_nodeid(&dev.db));
-		fflush(stdout);
-		portDISABLE_INTERRUPTS();
-		char str[128] = {};
-		fgets(str, sizeof(str) - 1, stdin);
-		portENABLE_INTERRUPTS();
-		if (strstr(str, "skip")) {
-			ret = ERR_SKIPPED;
-		}
-	}
-
-	if (ret == ERR_NONE) {
-		// add this dev to modified dev list
-		bool match = false;
-		for (uint8_t i = 0; i < this->dev_count; i++) {
-			if (this->modified_dev_nodeids[i] == db_get_nodeid(&dev.db)) {
-				match = true;
-				break;
-			}
-		}
-		if (!match) {
-			this->modified_dev_nodeids[this->dev_count++] = db_get_nodeid(&dev.db);
-		}
-
-		obj = uv_jsonreader_find_child(json, "PARAMS");
-		if (obj != NULL && uv_jsonreader_get_type(obj) == JSON_ARRAY) {
-			char *arr = obj;
-			unsigned int count = uv_jsonreader_array_get_size(arr);
-			if (count != 0) {
-				printf("Found %u params. Downloading them to the target device 0x%x.\n",
-						uv_jsonreader_array_get_size(arr),
-						db_get_nodeid(&dev.db));
-				fflush(stdout);
-				obj = uv_jsonreader_array_at(arr, 0);
-				for (int32_t i = 0; i < uv_jsonreader_array_get_size(arr); i++) {
-					if (uv_jsonreader_get_type(obj) == JSON_OBJECT) {
-						ret |= load_param(obj, 0, CANOPEN_UNDEFINED);
-					}
-					else {
-						ERROR("PARAMS array contained something else\n"
-								"than objects at index %i\n", i + 1);
-						ret |= ERR_ABORTED;
-					}
-
-					uv_jsonreader_get_next_sibling(obj, &obj);
+		if (ret == ERR_NONE) {
+			// add this dev to modified dev list
+			bool match = false;
+			for (uint8_t i = 0; i < this->dev_count; i++) {
+				if (this->modified_dev_nodeids[i] == db_get_nodeid(&dev.db)) {
+					match = true;
+					break;
 				}
-				printf("\n\n");
-				fflush(stdout);
+			}
+			if (!match) {
+				this->modified_dev_nodeids[this->dev_count++] = db_get_nodeid(&dev.db);
+			}
+
+			obj = uv_jsonreader_find_child(json, "PARAMS");
+			if (obj != NULL && uv_jsonreader_get_type(obj) == JSON_ARRAY) {
+				char *arr = obj;
+				unsigned int count = uv_jsonreader_array_get_size(arr);
+				if (count != 0) {
+					printf("Found %u params. Downloading them to the target device 0x%x.\n",
+							uv_jsonreader_array_get_size(arr),
+							db_get_nodeid(&dev.db));
+					fflush(stdout);
+					obj = uv_jsonreader_array_at(arr, 0);
+					for (int32_t i = 0; i < uv_jsonreader_array_get_size(arr); i++) {
+						if (uv_jsonreader_get_type(obj) == JSON_OBJECT) {
+							ret |= load_param(obj, 0, CANOPEN_UNDEFINED);
+						}
+						else {
+							ERROR("PARAMS array contained something else\n"
+									"than objects at index %i\n", i + 1);
+							ret |= ERR_ABORTED;
+						}
+
+						uv_jsonreader_get_next_sibling(obj, &obj);
+					}
+					printf("\n\n");
+					fflush(stdout);
+				}
+				else {
+					printf("PARAMS array empty, moving to operator specific parameters.\n");
+				}
 			}
 			else {
-				printf("PARAMS array empty, moving to operator specific parameters.\n");
-			}
-		}
-		else {
-			ERRORSTR("Couldn't find array type object 'PARAMS' from the json file.\n");
-			fflush(stdout);
-			ret = ERR_ABORTED;
-		}
-
-		obj = uv_jsonreader_find_child(json, "OPERATORS");
-		char *opdb_mindex_json = uv_jsonreader_find_child(json, "OPDB_MAININDEX");
-		char *current_op_json = uv_jsonreader_find_child(json, "CURRENT_OP");
-		char *opdb_type_json = uv_jsonreader_find_child(json, "OPDB_TYPE");
-
-		if (obj != NULL && uv_jsonreader_get_type(obj) == JSON_ARRAY &&
-				opdb_mindex_json != NULL && uv_jsonreader_get_type(opdb_mindex_json) == JSON_INT &&
-				current_op_json != NULL && uv_jsonreader_get_type(current_op_json) == JSON_INT &&
-				opdb_type_json != NULL && uv_jsonreader_get_type(opdb_type_json) == JSON_STRING) {
-
-			char *operators = obj;
-			uint32_t opdb_mindex = uv_jsonreader_get_int(opdb_mindex_json);
-			canopen_object_type_e opdb_type = db_jsonval_to_type(opdb_type_json);
-
-			// check how many ops dev has
-			uint16_t devopcount = 1;
-			ret |= uv_canopen_sdo_read(db_get_nodeid(&dev.db),
-					opdb_mindex + 1, 0, sizeof(devopcount), &devopcount);
-
-			// copy as many times as necessary to have all the operators
-			uint8_t op_count = uv_jsonreader_array_get_size(operators);
-			for (uint32_t i = devopcount; i < op_count; i++) {
-				printf("Creating new operator by copying operator %u\n", 1);
+				ERRORSTR("Couldn't find array type object 'PARAMS' from the json file.\n");
 				fflush(stdout);
-				uint32_t data = 1;
-				ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
-						opdb_mindex, 3, CANOPEN_SIZEOF(opdb_type), &data);
-				// small delay to wait for the device to copy te operators
-				uv_rtos_task_delay(200);
+				ret = ERR_ABORTED;
 			}
 
-			// cycle through all the operators
-			for (uint32_t i = 0; i < op_count; i++) {
-				// todo: load this op
-				printf("Loading operator %i\n", i + 1);
+			obj = uv_jsonreader_find_child(json, "OPERATORS");
+			char *opdb_mindex_json = uv_jsonreader_find_child(json, "OPDB_MAININDEX");
+			char *current_op_json = uv_jsonreader_find_child(json, "CURRENT_OP");
+			char *opdb_type_json = uv_jsonreader_find_child(json, "OPDB_TYPE");
+
+			if (obj != NULL && uv_jsonreader_get_type(obj) == JSON_ARRAY &&
+					opdb_mindex_json != NULL && uv_jsonreader_get_type(opdb_mindex_json) == JSON_INT &&
+					current_op_json != NULL && uv_jsonreader_get_type(current_op_json) == JSON_INT &&
+					opdb_type_json != NULL && uv_jsonreader_get_type(opdb_type_json) == JSON_STRING) {
+
+				char *operators = obj;
+				uint32_t opdb_mindex = uv_jsonreader_get_int(opdb_mindex_json);
+				canopen_object_type_e opdb_type = db_jsonval_to_type(opdb_type_json);
+
+				// check how many ops dev has
+				uint16_t devopcount = 1;
+				ret |= uv_canopen_sdo_read(db_get_nodeid(&dev.db),
+						opdb_mindex + 1, 0, sizeof(devopcount), &devopcount);
+
+				// copy as many times as necessary to have all the operators
+				uint8_t op_count = uv_jsonreader_array_get_size(operators);
+				for (uint32_t i = devopcount; i < op_count; i++) {
+					printf("Creating new operator by copying operator %u\n", 1);
+					fflush(stdout);
+					uint32_t data = 1;
+					ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
+							opdb_mindex, 3, CANOPEN_SIZEOF(opdb_type), &data);
+					// small delay to wait for the device to copy te operators
+					uv_rtos_task_delay(200);
+				}
+
+				// cycle through all the operators
+				for (uint32_t i = 0; i < op_count; i++) {
+					// todo: load this op
+					printf("Loading operator %i\n", i + 1);
+					fflush(stdout);
+					uint32_t data = i + 1;
+					uv_canopen_sdo_write(db_get_nodeid(&dev.db), opdb_mindex,
+							1, CANOPEN_SIZEOF(opdb_type), &data);
+					uv_rtos_task_delay(300);
+
+					char *op = uv_jsonreader_array_at(operators, i);
+					obj = uv_jsonreader_array_at(op, 0);
+					// cycle through all this operators parameters
+					for (uint32_t j = 0; j < uv_jsonreader_array_get_size(op); j++) {
+						if (uv_jsonreader_get_type(obj) == JSON_OBJECT) {
+							ret |= load_param(obj, 0, CANOPEN_UNDEFINED);
+						}
+						else {
+							ERROR("OPERATORS array contained something else\n"
+									"than object at operator %u, parameter index %u\n",
+									i + 1, j + 1);
+						}
+
+						uv_jsonreader_get_next_sibling(obj, &obj);
+					}
+					printf("Saving the parameters for op %u...\n", i + 1);
+					fflush(stdout);
+					ret |= uv_canopen_sdo_store_params(db_get_nodeid(&dev.db),
+							MEMORY_ALL_PARAMS);
+					if (ret != ERR_NONE) {
+						ERROR("Error encountered when storing the parameters for op %u\n", i + 1);
+					}
+					// wait for the parameters to be saved
+					uv_rtos_task_delay(100);
+				}
+
+				// todo: load the current op
+				uint32_t data = uv_jsonreader_get_int(current_op_json) + 1;
+				printf("Setting the current operator to op %i\n", data);
 				fflush(stdout);
-				uint32_t data = i + 1;
-				uv_canopen_sdo_write(db_get_nodeid(&dev.db), opdb_mindex,
-						1, CANOPEN_SIZEOF(opdb_type), &data);
+				ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), opdb_mindex, 1,
+						 CANOPEN_SIZEOF(opdb_type), &data);
 				uv_rtos_task_delay(300);
-
-				char *op = uv_jsonreader_array_at(operators, i);
-				obj = uv_jsonreader_array_at(op, 0);
-				// cycle through all this operators parameters
-				for (uint32_t j = 0; j < uv_jsonreader_array_get_size(op); j++) {
-					if (uv_jsonreader_get_type(obj) == JSON_OBJECT) {
-						ret |= load_param(obj, 0, CANOPEN_UNDEFINED);
-					}
-					else {
-						ERROR("OPERATORS array contained something else\n"
-								"than object at operator %u, parameter index %u\n",
-								i + 1, j + 1);
-					}
-
-					uv_jsonreader_get_next_sibling(obj, &obj);
+			}
+			else {
+				if (opdb_mindex_json == NULL) {
+					ERRORSTR("OPDB_MAININDEX filed not found\n");
 				}
-				printf("Saving the parameters for op %u...\n", i + 1);
+				if (opdb_type_json)
+				ERRORSTR("OPERATORS array not found from the JSON.\n\n");
 				fflush(stdout);
-				ret |= uv_canopen_sdo_store_params(db_get_nodeid(&dev.db),
-						MEMORY_ALL_PARAMS);
-				if (ret != ERR_NONE) {
-					ERROR("Error encountered when storing the parameters for op %u\n", i + 1);
-				}
-				// wait for the parameters to be saved
-				uv_rtos_task_delay(100);
 			}
+		}
 
-			// todo: load the current op
-			uint32_t data = uv_jsonreader_get_int(current_op_json) + 1;
-			printf("Setting the current operator to op %i\n", data);
-			fflush(stdout);
-			ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), opdb_mindex, 1,
-					 CANOPEN_SIZEOF(opdb_type), &data);
-			uv_rtos_task_delay(300);
-		}
-		else {
-			if (opdb_mindex_json == NULL) {
-				ERRORSTR("OPDB_MAININDEX filed not found\n");
-			}
-			if (opdb_type_json)
-			ERRORSTR("OPERATORS array not found from the JSON.\n\n");
-			fflush(stdout);
-		}
 	}
+
 
 	return ret;
 }
