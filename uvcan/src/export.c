@@ -31,6 +31,10 @@
 
 #define this (&dev)
 
+#define ERROR(str, ...) printf(PRINT_BOLDRED str PRINT_RESET, __VA_ARGS__)
+#define ERRORSTR(str) printf(PRINT_BOLDRED str PRINT_RESET)
+#define WARNING(str, ...) printf(PRINT_BOLDYELLOW str PRINT_RESET, __VA_ARGS__)
+#define WARNINGSTR(str) printf(PRINT_BOLDYELLOW str PRINT_RESET)
 
 
 bool get_header_objs(char *dest, const char *filename) {
@@ -195,7 +199,7 @@ bool get_header_objs(char *dest, const char *filename) {
 			strcat(dest, line);
 		}
 		else {
-			printf("ERROR in export: Unknown define type\n");
+			ERRORSTR("Unknown define type in export\n");
 		}
 	}
 	strcat(dest, "\n\n\n\n");
@@ -640,7 +644,7 @@ bool cmd_exporth(const char *arg) {
 	FILE *headerfile = fopen(filename, "w");
 	if (headerfile == NULL) {
 		// failed to open the file, exit this task
-		printf("Failed to open header file '%s'.\n", filename);
+		ERROR("Failed to open header file '%s'.\n", filename);
 	}
 	else {
 		char objs[2000000] = "";
@@ -672,7 +676,7 @@ bool cmd_exportc(const char *arg) {
 
 	if (sourcefile == NULL) {
 		// failed to open source file
-		printf("Failed to open source file '%s'.\n", filename);
+		ERROR("Failed to open source file '%s'.\n", filename);
 	}
 	else {
 		char objs[2000000] = "";

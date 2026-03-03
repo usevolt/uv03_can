@@ -26,6 +26,11 @@
 #include "main.h"
 #include <libgen.h>
 
+#define ERROR(str, ...) printf(PRINT_BOLDRED str PRINT_RESET, __VA_ARGS__)
+#define ERRORSTR(str) printf(PRINT_BOLDRED str PRINT_RESET)
+#define WARNING(str, ...) printf(PRINT_BOLDYELLOW str PRINT_RESET, __VA_ARGS__)
+#define WARNINGSTR(str) printf(PRINT_BOLDYELLOW str PRINT_RESET)
+
 
 static bool parse_defines(db_st *this, char *obj);
 static void remove_defines(db_st *this, char *obj);
@@ -186,7 +191,7 @@ void dbvalue_set_string(dbvalue_st *this, char *str, uint32_t str_len) {
 				// check if the dbvalue string starts with the same substring as d
 				if (strstr(s, d->name) == s) {
 					if (strlen(s) < (strlen(d->name) + 1)) {
-						printf("**** ERROR **** Define with ENUM type not found with a name of '%s'\n",
+						ERROR("Define with ENUM type not found with a name of '%s'\n",
 								s);
 					}
 					else {
@@ -208,7 +213,7 @@ void dbvalue_set_string(dbvalue_st *this, char *str, uint32_t str_len) {
 							}
 						}
 						if (!m) {
-							printf("**** ERROR **** No ENUM define found with name of '%s' for define '%s'\n",
+							ERROR("No ENUM define found with name of '%s' for define '%s'\n",
 									s, d->name);
 						}
 						else {
@@ -518,7 +523,7 @@ static bool check_obj(char *object, char *objname, char *parametername, bool ech
 	bool ret = true;
 	if (object == NULL) {
 		if (echo) {
-			printf("*** ERROR *** \"%s\" field not found in parameter \"%s\"\n",
+			ERROR("\"%s\" field not found in parameter \"%s\"\n",
 					objname, parametername);
 		}
 		ret = false;
@@ -528,7 +533,7 @@ static bool check_obj(char *object, char *objname, char *parametername, bool ech
 
 #define CHECK_EMCY(object, objname, index) { \
 		if (object == NULL) { \
-			printf("*** ERROR *** \"%s\" field not found in emcy %u\n", \
+			ERROR("\"%s\" field not found in emcy %u\n", \
 					objname, index); \
 			return false; \
 		} \
@@ -536,7 +541,7 @@ static bool check_obj(char *object, char *objname, char *parametername, bool ech
 
 #define CHECK_RXPDO(object, objname, pdoindex) { \
 		if (object == NULL) { \
-			printf("*** ERROR *** \"%s\" field not found in rxpdo at index \"%u\"\n", \
+			ERROR("\"%s\" field not found in rxpdo at index \"%u\"\n", \
 					objname, pdoindex); \
 			return false; \
 		} \
@@ -544,7 +549,7 @@ static bool check_obj(char *object, char *objname, char *parametername, bool ech
 
 #define CHECK_TXPDO(object, objname, pdoindex) { \
 		if (object == NULL) { \
-			printf("*** ERROR *** \"%s\" field not found in txpdo at index \"%u\"\n", \
+			ERROR("\"%s\" field not found in txpdo at index \"%u\"\n", \
 					objname, pdoindex); \
 			return false; \
 		} \
@@ -555,7 +560,7 @@ static bool pdo_parse_mappings(char *mappingsjson, canopen_pdo_mapping_parameter
 	memset(mappings, 0, sizeof(*mappings));
 
 	if (uv_jsonreader_get_type(mappingsjson) != JSON_ARRAY) {
-		printf("PDO \"mappings\" object should be an array\n");
+		ERRORSTR("PDO \"mappings\" object should be an array\n");
 		ret = false;
 	}
 	else {
@@ -563,13 +568,13 @@ static bool pdo_parse_mappings(char *mappingsjson, canopen_pdo_mapping_parameter
 		char *mapping;
 		while ((mapping = uv_jsonreader_array_at(mappingsjson, index)) != NULL) {
 			if (uv_jsonreader_get_type(mapping) != JSON_OBJECT) {
-				printf("**** ERROR ****: PDO \"mappings\" has to be an array of JSON objects\n");
+				ERRORSTR("PDO \"mappings\" has to be an array of JSON objects\n");
 				ret = false;
 				break;
 			}
 			char *data = uv_jsonreader_find_child(mapping, "param");
 			if (data == NULL) {
-				printf("*** ERROR *** PDO mapping parameter doesnt have \"param\" field\n");
+				ERRORSTR("PDO mapping parameter doesnt have \"param\" field\n");
 				ret = false;
 			}
 			else {
@@ -603,7 +608,7 @@ static bool pdo_parse_mappings(char *mappingsjson, canopen_pdo_mapping_parameter
 									child = child->next_sibling;
 								}
 								if (!match) {
-									printf("*** ERROR *** PDO mapping subindex name not found in array\n");
+									ERRORSTR("PDO mapping subindex name not found in array\n");
 									ret = false;
 									return ret;
 								}
@@ -612,7 +617,7 @@ static bool pdo_parse_mappings(char *mappingsjson, canopen_pdo_mapping_parameter
 								mappings->mappings[index].sub_index = uv_jsonreader_get_int(data);
 							}
 							else {
-								printf("*** ERROR *** PDO mapping subindex has to be integer or a string.\n");
+								ERRORSTR("PDO mapping subindex has to be integer or a string.\n");
 								ret = false;
 								return ret;
 							}
@@ -637,7 +642,7 @@ static bool pdo_parse_mappings(char *mappingsjson, canopen_pdo_mapping_parameter
 						};
 					}
 					else {
-						printf("*** ERROR *** PDO mapping parameter refers to a parameter \"%s\" "
+						ERROR("PDO mapping parameter refers to a parameter \"%s\" "
 								"which doesn't exist in object dictionary\n", name);
 						ret = false;
 						return ret;
@@ -671,8 +676,7 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 					uv_jsonreader_array_get_string(require, i, str, sizeof(str) - 1);
 					db_define_st *def = db_define_find(this, str);
 					if (def == NULL) {
-						fprintf(stderr,
-								"*** ERROR *** CONTAINER requires define '%s' to be defined\n",
+						ERROR("CONTAINER requires define '%s' to be defined\n",
 								str);
 						ret = false;
 						break;
@@ -687,7 +691,7 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 					ret = parse_obj_dict_obj(this, child, path);
 				}
 				else {
-					printf("*** ERROR *** 'content' array in CONTAINER contained\n"
+					ERRORSTR("'content' array in CONTAINER contained\n"
 							"other types than objects.\n");
 					ret = false;
 				}
@@ -712,7 +716,7 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 
 				if (fptr == NULL) {
 					// failed to open the file, exit this task
-					printf("Failed to open content file '%s'.\n", name);
+					ERROR("Failed to open content file '%s'.\n", name);
 				}
 				else {
 					int32_t size;
@@ -728,7 +732,7 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 				}
 			}
 			else {
-				printf("*** ERROR *** Skipping content file '%s' because of error in defines\n",
+				ERROR("Skipping content file '%s' because of error in defines\n",
 						name);
 			}
 			if (defines != NULL) {
@@ -736,7 +740,7 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 			}
 		}
 		else {
-			printf("*** ERROR *** 'content' not array or string in CONTAINER\n");
+			ERRORSTR("'content' not array or string in CONTAINER\n");
 			ret = false;
 		}
 
@@ -757,7 +761,7 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 	else {
 		char *data = uv_jsonreader_find_child(child, "name");
 		if (data == NULL) {
-			printf("### ERROR ### Object without name found.\n");
+			ERRORSTR("Object without name found.\n");
 			return false;
 		}
 		char name[128] = {};
@@ -914,7 +918,7 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 			char *children = uv_jsonreader_find_child(child, "data");
 
 			if (children == NULL && dbvalue_get_int(&obj->array_max_size) == 0) {
-				printf("ERROR: array type object '%s' should define children count\n"
+				ERROR("array type object '%s' should define children count\n"
 						"either with \"arraysize\" or \"data\".\n",
 						dbvalue_get_string(&obj->name));
 			}
@@ -1044,7 +1048,7 @@ static bool define_push(db_st *this, char *define_name, char *v,
 	}
 	else {
 		ret = false;
-		printf("*** ERROR *** DEFINES array '%s' had an illegal type of value. "
+		ERROR("DEFINES array '%s' had an illegal type of value. "
 				"Only integers, strings and arrays are supported\n",
 				parentname);
 	}
@@ -1058,7 +1062,7 @@ static bool parse_defines(db_st *this, char *obj) {
 		uv_jsonreader_get_obj_name(obj, name, sizeof(name));
 
 		if (uv_jsonreader_get_type(obj) != JSON_ARRAY) {
-			printf("*** JSON ERROR **** DEFINES array '%s' is not an array\n",
+			ERROR("DEFINES array '%s' is not an array\n",
 					name);
 			ret = false;
 		}
@@ -1077,7 +1081,7 @@ static bool parse_defines(db_st *this, char *obj) {
 							ret = define_push(this, dname, define, NULL, name);
 						}
 						else {
-							printf("*** ERROR *** Define '%s' contained empty definition\n",
+							ERROR("Define '%s' contained empty definition\n",
 									name);
 							ret = false;
 						}
@@ -1092,7 +1096,7 @@ static bool parse_defines(db_st *this, char *obj) {
 				}
 				else {
 					ret = false;
-					printf("*** ERROR *** DEFINES array '%s' member was not an object at index %u\n",
+					ERROR("DEFINES array '%s' member was not an object at index %u\n",
 							name, i);
 				}
 			}
@@ -1109,7 +1113,7 @@ static void remove_defines(db_st *this, char *obj) {
 	if (obj != NULL) {
 		char name[128] = "";
 		if (uv_jsonreader_get_type(obj) != JSON_ARRAY) {
-			printf("*** JSON ERROR **** DEFINES array is not an array\n");
+			ERRORSTR("DEFINES array is not an array\n");
 		}
 		else {
 			for (unsigned int i = 0; i < uv_jsonreader_array_get_size(obj); i++) {
@@ -1158,7 +1162,7 @@ static bool parse_json(db_st *this, char *json, char *path) {
 		uv_jsonreader_get_string(obj, this->dev_name, sizeof(this->dev_name));
 	}
 	else {
-		printf("*** ERROR *** 'DEV' object not found in the JSON\n");
+		ERRORSTR("'DEV' object not found in the JSON\n");
 		strcpy(this->dev_name, "");
 	}
 	for (int i = 0; i < strlen(this->dev_name) + 1; i++) {
@@ -1215,7 +1219,7 @@ static bool parse_json(db_st *this, char *json, char *path) {
 		this->node_id = uv_jsonreader_get_int(obj);
 	}
 	else {
-		printf("*** ERROR *** 'NODEID' object not found in the JSON\n");
+		ERRORSTR("'NODEID' object not found in the JSON\n");
 	}
 
 
@@ -1224,7 +1228,7 @@ static bool parse_json(db_st *this, char *json, char *path) {
 	if (obj == NULL ||
 			(uv_jsonreader_get_type(obj) != JSON_INT &&
 					uv_jsonreader_get_type(obj) != JSON_STRING)) {
-		printf("No EMCY_INDEX integer parameter defined. Skipping EMCY handling.\n");
+		WARNINGSTR("No EMCY_INDEX integer parameter defined. Skipping EMCY handling.\n");
 	}
 	else {
 		this->emcys_index = uv_jsonreader_get_int(obj);
@@ -1232,7 +1236,7 @@ static bool parse_json(db_st *this, char *json, char *path) {
 		obj = uv_jsonreader_find_child(data, "EMCY");
 		uint8_t str_count = 1;
 		if (uv_jsonreader_get_type(obj) != JSON_ARRAY) {
-			printf("*** JSON ERROR **** EMCY array is not an array\n");
+			ERRORSTR("EMCY array is not an array\n");
 		}
 		else if (obj != NULL) {
 			for (unsigned int i = 0; i < uv_jsonreader_array_get_size(obj); i++) {
@@ -1258,7 +1262,7 @@ static bool parse_json(db_st *this, char *json, char *path) {
 							}
 						}
 						else {
-							printf("** JSON ERROR *** EMCY \"str\" object "
+							ERROR("EMCY \"str\" object "
 									"has to be array (in emcy %u).\n", i);
 						}
 					}
@@ -1296,7 +1300,7 @@ static bool parse_json(db_st *this, char *json, char *path) {
 
 	}
 	else {
-		printf("ERROR: OBJ_DICT array not found from JSON.\n");
+		ERRORSTR("OBJ_DICT array not found from JSON.\n");
 		ret = false;
 	}
 
@@ -1330,8 +1334,8 @@ static bool parse_json(db_st *this, char *json, char *path) {
 
 			uv_errors_e e = uv_vector_push_back(&dev.db.objects, &obj);
 			if (e != ERR_NONE) {
-				printf("**** Error adding a new object to object dictionary. \n"
-						"Object dictionary full. ***\n");
+				ERRORSTR("Error adding a new object to object dictionary. \n"
+						"Object dictionary full.\n");
 				br = true;
 				break;
 			}
@@ -1433,7 +1437,7 @@ static bool parse_json(db_st *this, char *json, char *path) {
 		printf("%i RXPDO's initialized\n", count);
 	}
 	else {
-		printf("WARNING: RXPDO array not found in JSON.\n");
+		WARNINGSTR("RXPDO array not found in JSON.\n");
 	}
 
 
@@ -1495,7 +1499,7 @@ static bool parse_json(db_st *this, char *json, char *path) {
 		printf("%i TXPDO's initialized\n", count);
 	}
 	else {
-		printf("WARNING: TXPDO array not found in JSON.\n");
+		WARNINGSTR("TXPDO array not found in JSON.\n");
 	}
 
 
@@ -1600,7 +1604,7 @@ bool cmd_db(const char *arg) {
 
 	if (fptr == NULL) {
 		// failed to open the file, exit this task
-		printf("Failed to open database file %s.\n", arg);
+		ERROR("Failed to open database file %s.\n", arg);
 	}
 	else {
 		char *path = malloc(strlen(dirname(arg) + 2));
@@ -1620,11 +1624,11 @@ bool cmd_db(const char *arg) {
 				ret = true;
 			}
 			else {
-				printf("ERROR: Parsing the JSON file failed.\n");
+				ERRORSTR("Parsing the JSON file failed.\n");
 			}
 		}
 		else {
-			printf("ERROR: Reading the JSON file failed.\n");
+			ERRORSTR("Reading the JSON file failed.\n");
 		}
 		free(data);
 		free(path);
