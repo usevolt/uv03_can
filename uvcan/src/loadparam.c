@@ -49,7 +49,7 @@ bool cmd_loadparam(const char *arg) {
 	this->dev_count = 0;
 
 	if (!arg) {
-		PRINT("ERROR: Give parameter file as a file path to binary file.\n");
+		ERRORSTR("Give parameter file as a file path to binary file.\n");
 	}
 	else {
 		strcpy(this->files[0], arg);
@@ -373,9 +373,8 @@ static uv_errors_e parse_dev(char *json) {
 		}
 
 		if (db_get_nodeid(&dev.db) == 0) {
-			PRINT("ERROR: NODEID not set. Set it either from the param file"
+			ERRORSTR("NODEID not set. Set it either from the param file "
 					"or with --nodeid or --db commands.\n");
-			fflush(stderr);
 			ret = ERR_CANOPEN_NODE_ID_ENTRY_INVALID;
 		}
 	}
@@ -634,9 +633,7 @@ void loadparam_step(void *ptr) {
 
 		if (fptr == NULL) {
 			// failed to open the file
-			fprintf(stderr,
-					"Failed to open parameter file '%s'.\n", file);
-			fflush(stderr);
+			ERROR("Failed to open parameter file '%s'.\n", file);
 		}
 		else {
 			int32_t size;
@@ -761,9 +758,7 @@ void loadparam_step(void *ptr) {
 							e |= parse_dev(dev);
 						}
 						else {
-							fprintf(stderr,
-									"Parsing DEVS array with index %i resulted in NULL pointer", i);
-							fflush(stderr);
+							ERROR("Parsing DEVS array with index %i resulted in NULL pointer\n", i);
 						}
 					}
 				}
