@@ -494,7 +494,7 @@ bool get_source_objs(char *dest, const char *filename) {
 	strcat(dest, "\n"
 			"\n"
 			"\n"
-			"canopen_object_st obj_dict[] = {\n");
+			"const canopen_object_st obj_dict[] = {\n");
 
 	for (int i = 0; i < db_get_object_count(&dev.db); i++) {
 		if (i != 0) {
