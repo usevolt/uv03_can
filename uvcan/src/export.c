@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdarg.h>
 #include <ctype.h>
 #include <uv_terminal.h>
 #include <libgen.h>
@@ -35,6 +36,55 @@
 #define ERRORSTR(str) printf(PRINT_BOLDRED str PRINT_RESET)
 #define WARNING(str, ...) printf(PRINT_BOLDYELLOW str PRINT_RESET, __VA_ARGS__)
 #define WARNINGSTR(str) printf(PRINT_BOLDYELLOW str PRINT_RESET)
+
+// Minimum column where #define values start (total line width including "#define ")
+#define DEFINE_VALUE_COL		80
+
+// Appends "#define <name>" padded to DEFINE_VALUE_COL, then the value and newline
+static void append_define(char *dest, const char *name, const char *value) {
+	char buf[4096];
+	int len = sprintf(buf, "#define %s", name);
+	int pad = DEFINE_VALUE_COL - len;
+	if (pad < 1) {
+		pad = 1;
+	}
+	sprintf(buf + len, "%*s%s\n", pad, "", value);
+	strcat(dest, buf);
+}
+
+// Appends "    <name> = <value>" padded to DEFINE_VALUE_COL for enum entries
+static void append_enum_value(char *dest, const char *name, const char *value,
+		bool comma) {
+	char buf[4096];
+	int len = sprintf(buf, "    %s", name);
+	int pad = DEFINE_VALUE_COL - len;
+	if (pad < 1) {
+		pad = 1;
+	}
+	sprintf(buf + len, "%*s= %s%s\n", pad, "", value, comma ? "," : "");
+	strcat(dest, buf);
+}
+
+// Same as append_enum_value but with formatted value
+static void append_enum_value_fmt(char *dest, const char *name, bool comma,
+		const char *fmt, ...) {
+	char value[1024];
+	va_list args;
+	va_start(args, fmt);
+	vsnprintf(value, sizeof(value), fmt, args);
+	va_end(args);
+	append_enum_value(dest, name, value, comma);
+}
+
+// Same but for formatted values
+static void append_define_fmt(char *dest, const char *name, const char *fmt, ...) {
+	char value[1024];
+	va_list args;
+	va_start(args, fmt);
+	vsnprintf(value, sizeof(value), fmt, args);
+	va_end(args);
+	append_define(dest, name, value);
+}
 
 
 bool get_header_objs(char *dest, const char *filename) {
@@ -69,22 +119,25 @@ bool get_header_objs(char *dest, const char *filename) {
 			nameupper);
 
 	// create symbol for node id
-	strcat(dest, "#define ");
-	strcat(dest, nameupper);
-	strcat(dest, "_NODEID");
-	sprintf(&dest[strlen(dest)], "           0x%x\n\n\n\n", db_get_nodeid(&dev.db));
+	char defname[2048];
+	sprintf(defname, "%s_NODEID", nameupper);
+	append_define_fmt(dest, defname, "0x%x", db_get_nodeid(&dev.db));
+	strcat(dest, "\n\n\n");
 
 	// create symbol for vendor id
-	sprintf(dest + strlen(dest), "#define %s_VENDOR_ID    0x%x\n\n\n",
-			nameupper, db_get_vendor_id(&dev.db));
+	sprintf(defname, "%s_VENDOR_ID", nameupper);
+	append_define_fmt(dest, defname, "0x%x", db_get_vendor_id(&dev.db));
+	strcat(dest, "\n\n");
 
 	// for product code
-	sprintf(dest + strlen(dest), "#define %s_PRODUCT_CODE    0x%x\n\n\n",
-			nameupper, db_get_product_code(&dev.db));
+	sprintf(defname, "%s_PRODUCT_CODE", nameupper);
+	append_define_fmt(dest, defname, "0x%x", db_get_product_code(&dev.db));
+	strcat(dest, "\n\n");
 
 	// for revision number
-	sprintf(dest + strlen(dest), "#define %s_REVISION_NUMBER    0x%x\n\n\n",
-			nameupper, db_get_revision_number(&dev.db));
+	sprintf(defname, "%s_REVISION_NUMBER", nameupper);
+	append_define_fmt(dest, defname, "0x%x", db_get_revision_number(&dev.db));
+	strcat(dest, "\n\n");
 
 	char line[65536];
 
@@ -93,36 +146,34 @@ bool get_header_objs(char *dest, const char *filename) {
 	fflush(stdout);
 
 	// create symbol for EMCY start index
-	sprintf(dest + strlen(dest), "#define %s_EMCY_START_INDEX    0x%x\n\n",
-			nameupper, db_get_emcy_index(&dev.db));
+	sprintf(defname, "%s_EMCY_START_INDEX", nameupper);
+	append_define_fmt(dest, defname, "0x%x", db_get_emcy_index(&dev.db));
+	strcat(dest, "\n");
 
 	// create symbol for emcy str language count
 	uint8_t str_count;
 	for (str_count = 0;
 			db_get_emcy(&dev.db, 0)->info_strs[str_count][0] != '\0';
 			str_count++) { };
-	sprintf(&dest[strlen(dest)], "#define %s_EMCYSTR_INFO_STR_COUNT    %u\n\n",
-			nameupper,
-			str_count);
+	sprintf(defname, "%s_EMCYSTR_INFO_STR_COUNT", nameupper);
+	append_define_fmt(dest, defname, "%u", str_count);
+	strcat(dest, "\n");
 
 	// create enum for emcy err codes
 	strcat(dest, "typedef enum {\n");
 	for (int i = 0; i < db_get_emcy_count(&dev.db); i++) {
 		db_emcy_st *emcy = db_get_emcy(&dev.db, i);
 
-		line[0] = '\0';
-		strcat(line, "    ");
-		strcat(line, nameupper);
-		strcat(line, "_EMCY_");
-		strcat(line, emcy->name);
-		strcat(line, " =            ");
-		sprintf(&line[strlen(line)], "%i,\n", emcy->value);
-
-		strcat(dest, line);
+		char ename[2048];
+		sprintf(ename, "%s_EMCY_%s", nameupper, emcy->name);
+		append_enum_value_fmt(dest, ename, true, "%i", emcy->value);
 	}
-	sprintf(&(dest[strlen(dest)]),
-			"    %s_EMCY_COUNT =            %u\n} %s_emcy_err_codes_e;\n\n",
-			nameupper, db_get_emcy_count(&dev.db), namelower);
+	{
+		char ename[2048];
+		sprintf(ename, "%s_EMCY_COUNT", nameupper);
+		append_enum_value_fmt(dest, ename, false, "%u", db_get_emcy_count(&dev.db));
+	}
+	sprintf(&(dest[strlen(dest)]), "} %s_emcy_err_codes_e;\n\n", namelower);
 
 
 	strcat(dest, "\n\n\n\n");
@@ -134,21 +185,13 @@ bool get_header_objs(char *dest, const char *filename) {
 		db_define_st *define = db_get_define(&dev.db, i);
 
 		if (define->type == DB_DEFINE_INT) {
-			line[0] = '\0';
-			strcat(line, "#define ");
-			strcat(line, nameupper);
-			strcat(line, "_");
-			strcat(line, define->name);
-			strcat(line, "            ");
-			sprintf(&line[strlen(line)], "%i\n\n", define->value);
-			strcat(dest, line);
+			sprintf(defname, "%s_%s", nameupper, define->name);
+			append_define_fmt(dest, defname, "%i", define->value);
+			strcat(dest, "\n");
 		}
 		else if (define->type == DB_DEFINE_STRING) {
-			sprintf(line, "#define %s_%s            %s\n",
-					nameupper,
-					define->name,
-					define->str);
-			strcat(dest, line);
+			sprintf(defname, "%s_%s", nameupper, define->name);
+			append_define(dest, defname, define->str);
 		}
 		else if (define->type == DB_DEFINE_ENUM) {
 			if (define->data_type == CANOPEN_UNDEFINED) {
@@ -160,27 +203,30 @@ bool get_header_objs(char *dest, const char *filename) {
 			strcat(dest, line);
 			bool value_given = false;
 			for (int32_t i = 0; i < define->child_count; i++) {
-				sprintf(line, "    %s_%s_%s",
+				bool comma = (i < define->child_count - 1);
+				char ename[2048];
+				sprintf(ename, "%s_%s_%s",
 						nameupper, define->name, define->childs[i]);
-				// only write the value is it is not defined
+				// only write the value if it is not defined
 				if (strstr(define->childs[i], "=") != NULL) {
+					// value already embedded in name, just pad and append
 					value_given = true;
+					int len = sprintf(line, "    %s", ename);
+					sprintf(line + len, "%s\n", comma ? "," : "");
+					strcat(dest, line);
 				}
 				else if (i == 0) {
-					strcat(line, " = 0");
+					append_enum_value(dest, ename, "0", comma);
+				}
+				else if ((i == define->child_count - 1) && value_given) {
+					append_enum_value_fmt(dest, ename, comma, "%u", i);
 				}
 				else {
-
+					// no explicit value, just the name
+					int len = sprintf(line, "    %s", ename);
+					sprintf(line + len, "%s\n", comma ? "," : "");
+					strcat(dest, line);
 				}
-				if ((i == define->child_count - 1) &&
-						value_given) {
-					sprintf(line + strlen(line), " = %u", i);
-				}
-				if (i < define->child_count - 1) {
-					strcat(line, ",");
-				}
-				strcat(line, "\n");
-				strcat(dest, line);
 			}
 			char n[128] = {};
 			for (int i = 0; i < strlen(define->name); i++) {
@@ -207,10 +253,11 @@ bool get_header_objs(char *dest, const char *filename) {
 	// create symbols for PDO counts
 	printf("Creating header symbols for PDO counts\n");
 	fflush(stdout);
-	sprintf(&dest[strlen(dest)], "#define %s_RXPDO_COUNT            %u\n",
-			nameupper, db_get_rxpdo_count(&dev.db));
-	sprintf(&dest[strlen(dest)], "#define %s_TXPDO_COUNT            %u\n\n\n",
-			nameupper, db_get_txpdo_count(&dev.db));
+	sprintf(defname, "%s_RXPDO_COUNT", nameupper);
+	append_define_fmt(dest, defname, "%u", db_get_rxpdo_count(&dev.db));
+	sprintf(defname, "%s_TXPDO_COUNT", nameupper);
+	append_define_fmt(dest, defname, "%u", db_get_txpdo_count(&dev.db));
+	strcat(dest, "\n\n");
 
 
 	// create header objects from object dictionary objects
@@ -236,7 +283,7 @@ bool get_header_objs(char *dest, const char *filename) {
 		}
 		name[j] = '\0';
 		namel[j] = '\0';
-		strcpy(line, "#define ");
+		line[0] = '\0';
 		char objnameh[1024] = {};
 		char objnamel[1024] = {};
 		if (strncmp(name, nameupper, strlen(nameupper)) != 0) {
@@ -248,44 +295,36 @@ bool get_header_objs(char *dest, const char *filename) {
 		strcat(objnameh, name);
 		strcat(objnamel, namel);
 
-		strcat(line, objnameh);
-		strcat(line, "_INDEX           ");
-		sprintf(&line[strlen(line)], "0x%x\n", obj->obj.main_index);
-		strcat(line, "#define ");
-		strcat(line, objnameh);
+		sprintf(defname, "%s_INDEX", objnameh);
+		append_define_fmt(line, defname, "0x%x", obj->obj.main_index);
 		if (uv_canopen_is_array(&obj->obj)) {
-			strcat(line, "_ARRAY_MAX_SIZE            ");
-			sprintf(&line[strlen(line)], "%s\n", dbvalue_get(&obj->array_max_size));
+			sprintf(defname, "%s_ARRAY_MAX_SIZE", objnameh);
+			append_define(line, defname, dbvalue_get(&obj->array_max_size));
 		}
 		else {
 			if (CANOPEN_IS_STRING(obj->obj.type)) {
-				strcat(line, "_STRING_LEN            ");
-				sprintf(&line[strlen(line)], "%s\n", dbvalue_get(&obj->string_len));
+				sprintf(defname, "%s_STRING_LEN", objnameh);
+				append_define(line, defname, dbvalue_get(&obj->string_len));
 			}
 			else {
-				strcat(line, "_SUBINDEX            ");
-				sprintf(&line[strlen(line)], "%u\n", obj->obj.sub_index);
+				sprintf(defname, "%s_SUBINDEX", objnameh);
+				append_define_fmt(line, defname, "%u", obj->obj.sub_index);
 			}
 		}
-		strcat(line, "#define ");
-		strcat(line, objnameh);
-		strcat(line, "_TYPE            ");
-		strcat(line, obj->type_str);
-		strcat(line, "\n");
+		sprintf(defname, "%s_TYPE", objnameh);
+		append_define(line, defname, obj->type_str);
 
-		strcat(line, "#define ");
-		strcat(line, objnameh);
-		strcat(line, "_PERMISSIONS            ");
-		db_permission_to_str(obj->obj.permissions, &line[strlen(line)]);
-		strcat(line, "\n");
+		sprintf(defname, "%s_PERMISSIONS", objnameh);
+		{
+			char permbuf[128] = {};
+			db_permission_to_str(obj->obj.permissions, permbuf);
+			append_define(line, defname, permbuf);
+		}
 
 		if (uv_canopen_is_array(&obj->obj)) {
 			db_array_child_st *child = obj->child_ptr;
 			int index = 0;
 			while (child != NULL) {
-				strcat(line, "#define ");
-				strcat(line, objnameh);
-				strcat(line, "_");
 				char childname[1024] = { '\0' };
 				char *c = dbvalue_get_string(&child->name);
 				while (*c != '\0') {
@@ -297,26 +336,18 @@ bool get_header_objs(char *dest, const char *filename) {
 					}
 					c++;
 				}
-				strcat(line, childname);
-				strcat(line, "_SUBINDEX            ");
-				sprintf(&line[strlen(line)], "%u\n", index + 1);
+				sprintf(defname, "%s_%s_SUBINDEX", objnameh, childname);
+				append_define_fmt(line, defname, "%u", index + 1);
 				if (dbvalue_is_set(&child->min)) {
-					sprintf(line + strlen(line), "#define %s_%s_MIN            ",
-							objnameh, childname);
-					sprintf(line + strlen(line), "%s\n",
-							dbvalue_get(&child->min));
+					sprintf(defname, "%s_%s_MIN", objnameh, childname);
+					append_define(line, defname, dbvalue_get(&child->min));
 				}
 				if (dbvalue_is_set(&child->max)) {
-					sprintf(line + strlen(line), "#define %s_%s_MAX            ",
-							objnameh, childname);
-					sprintf(line + strlen(line), "%s\n",
-							dbvalue_get(&child->max));
+					sprintf(defname, "%s_%s_MAX", objnameh, childname);
+					append_define(line, defname, dbvalue_get(&child->max));
 				}
-				sprintf(line + strlen(line), "#define %s_%s_DEFAULT            ",
-						objnameh, childname);
-				sprintf(line + strlen(line), "%s\n",
-						dbvalue_get(&child->def));
-
+				sprintf(defname, "%s_%s_DEFAULT", objnameh, childname);
+				append_define(line, defname, dbvalue_get(&child->def));
 
 				index++;
 				child = child->next_sibling;
@@ -330,18 +361,20 @@ bool get_header_objs(char *dest, const char *filename) {
 
 		}
 		else if (CANOPEN_IS_INTEGER(obj->obj.type)) {
-			sprintf(&line[strlen(line)], "#define %s_VALUE            %s\n",
-					objnameh, dbvalue_get(&obj->value));
-			sprintf(&line[strlen(line)], "#define %s_DEFAULT            %s\n",
-					objnameh, dbvalue_get(&obj->def));
-			sprintf(&line[strlen(line)], "#define %s_MIN            %s\n",
-					objnameh, dbvalue_get(&obj->min));
-			sprintf(&line[strlen(line)], "#define %s_MAX            %s\n",
-					objnameh, dbvalue_get(&obj->max));
+			sprintf(defname, "%s_VALUE", objnameh);
+			append_define(line, defname, dbvalue_get(&obj->value));
+			sprintf(defname, "%s_DEFAULT", objnameh);
+			append_define(line, defname, dbvalue_get(&obj->def));
+			sprintf(defname, "%s_MIN", objnameh);
+			append_define(line, defname, dbvalue_get(&obj->min));
+			sprintf(defname, "%s_MAX", objnameh);
+			append_define(line, defname, dbvalue_get(&obj->max));
 		}
 		else if (CANOPEN_IS_STRING(obj->obj.type)) {
-			sprintf(&line[strlen(line)], "#define %s_DEFAULT				\"%s\"\n",
-					objnameh, dbvalue_get(&obj->string_def));
+			sprintf(defname, "%s_DEFAULT", objnameh);
+			char strbuf[1024];
+			sprintf(strbuf, "\"%s\"", dbvalue_get(&obj->string_def));
+			append_define(line, defname, strbuf);
 		}
 		else {
 

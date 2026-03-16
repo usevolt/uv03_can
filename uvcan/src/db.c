@@ -726,9 +726,16 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 					char *data = malloc(size);
 					if (fread(data, 1, size, fptr)) {
 						uv_jsonreader_init(data, size);
-						parse_obj_dict_obj(this, data, path);
+						// compute the path for nested content references
+						char namecopy[128] = {};
+						strcpy(namecopy, name);
+						char newpath[128] = {};
+						strcpy(newpath, dirname(namecopy));
+						strcat(newpath, "/");
+						parse_obj_dict_obj(this, data, newpath);
 					}
 					free(data);
+					fclose(fptr);
 				}
 			}
 			else {
@@ -767,6 +774,7 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 		char name[128] = {};
 		uv_jsonreader_get_string(data, name, sizeof(name));
 		str_to_upper_nonspace(name);
+		printf("parse_obj_dict_obj: '%s'\n", name);
 
 
 		// check if any same named objects were already loaded
@@ -1019,6 +1027,31 @@ static bool define_push(db_st *this, char *define_name, char *v,
 		define.type = DB_DEFINE_STRING;
 		memset(define.str, 0, sizeof(define.str));
 		uv_jsonreader_get_string(v, define.str, sizeof(define.str));
+		// resolve define references in the value: if the string value
+		// matches an existing define, use that define's value instead.
+		// This allows passing defines forward recursively.
+		char str_upper[1024] = {};
+		strcpy(str_upper, define.str);
+		str_to_upper_nonspace(str_upper);
+		db_define_st *existing = db_define_find(this, str_upper);
+		if (existing != NULL) {
+			if (existing->type == DB_DEFINE_INT) {
+				define.type = DB_DEFINE_INT;
+				define.value = existing->value;
+			}
+			else if (existing->type == DB_DEFINE_STRING) {
+				strcpy(define.str, existing->str);
+			}
+			else if (existing->type == DB_DEFINE_ENUM) {
+				define.type = DB_DEFINE_ENUM;
+				define.child_count = existing->child_count;
+				define.data_type = existing->data_type;
+				define.childs = malloc(128 * existing->child_count);
+				for (int32_t i = 0; i < existing->child_count; i++) {
+					strcpy(define.childs[i], existing->childs[i]);
+				}
+			}
+		}
 		uv_vector_push_back(&this->defines, &define);
 	}
 	else if (type == JSON_ARRAY) {
@@ -1132,11 +1165,14 @@ static void remove_defines(db_st *this, char *obj) {
 					}
 					if (strlen(name) != 0) {
 						str_to_upper_nonspace(name);
-						// remove define from vector
-						for (uint16_t i = 0; i < uv_vector_size(&this->defines); i++) {
+						// remove define from vector, iterating in reverse
+						// to remove the most recently added (local) define
+						// first when shadowing parent defines
+						for (int32_t i = uv_vector_size(&this->defines) - 1; i >= 0; i--) {
 							db_define_st *def = uv_vector_at(&this->defines, i);
 							if (strcmp(def->name, name) == 0) {
 								uv_vector_remove(&this->defines, i, 1);
+								break;
 							}
 						}
 					}
@@ -1607,7 +1643,7 @@ bool cmd_db(const char *arg) {
 		ERROR("Failed to open database file %s.\n", arg);
 	}
 	else {
-		char *path = malloc(strlen(dirname(arg) + 2));
+		char *path = malloc(strlen(dirname(arg)) + 2);
 		strcpy(path, dirname(arg));
 		strcat(path, "/");
 		int32_t size;
