@@ -774,7 +774,6 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 		char name[128] = {};
 		uv_jsonreader_get_string(data, name, sizeof(name));
 		str_to_upper_nonspace(name);
-		printf("parse_obj_dict_obj: '%s'\n", name);
 
 
 		// check if any same named objects were already loaded
