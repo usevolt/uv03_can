@@ -172,6 +172,17 @@ void db_obj_init(db_obj_st *this);
 void db_obj_deinit(db_obj_st *this);
 
 
+#define DB_REVNOTE_MAX_NOTES	8
+#define DB_REVNOTE_MAX_LEN		256
+#define DB_REVNOTE_MAX_COUNT	16
+
+/// @brief: A single revision note entry
+typedef struct {
+	uint32_t revision;
+	char notes[DB_REVNOTE_MAX_NOTES][DB_REVNOTE_MAX_LEN];
+	uint8_t note_count;
+} db_revnote_st;
+
 /// @brief: A single EMCY object
 typedef struct {
 	char name[128 - sizeof(int32_t)];
@@ -246,6 +257,9 @@ typedef struct {
 	uint32_t product_code;
 	uint32_t revision_number;
 
+	db_revnote_st revnotes_buffer[DB_REVNOTE_MAX_COUNT];
+	uv_vector_st revnotes;
+
 } db_st;
 
 /// @brief: Database command provides uvcan with CANOpen device database file.
@@ -287,6 +301,14 @@ static inline uint32_t db_get_product_code(db_st *this) {
 
 static inline uint32_t db_get_revision_number(db_st *this) {
 	return this->revision_number;
+}
+
+static inline uint32_t db_get_revnote_count(db_st *this) {
+	return uv_vector_size(&this->revnotes);
+}
+
+static inline db_revnote_st *db_get_revnote(db_st *this, uint32_t index) {
+	return (db_revnote_st*) uv_vector_at(&this->revnotes, index);
 }
 
 static inline char *db_get_dev_name(db_st *this) {

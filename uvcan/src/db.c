@@ -1248,6 +1248,33 @@ static bool parse_json(db_st *this, char *json, char *path) {
 		this->revision_number = 0;
 	}
 
+	// revision notes
+	obj = uv_jsonreader_find_child(data, "REVISION_NOTES");
+	if (obj != NULL && uv_jsonreader_get_type(obj) == JSON_ARRAY) {
+		for (uint16_t i = 0; i < uv_jsonreader_array_get_size(obj); i++) {
+			char *entry = uv_jsonreader_array_at(obj, i);
+			if (entry != NULL) {
+				db_revnote_st revnote = {};
+				char *rev = uv_jsonreader_find_child(entry, "revision");
+				if (rev != NULL) {
+					revnote.revision = uv_jsonreader_get_int(rev);
+				}
+				char *notes = uv_jsonreader_find_child(entry, "notes");
+				if (notes != NULL && uv_jsonreader_get_type(notes) == JSON_ARRAY) {
+					revnote.note_count = uv_jsonreader_array_get_size(notes);
+					if (revnote.note_count > DB_REVNOTE_MAX_NOTES) {
+						revnote.note_count = DB_REVNOTE_MAX_NOTES;
+					}
+					for (uint8_t j = 0; j < revnote.note_count; j++) {
+						uv_jsonreader_array_get_string(notes, j,
+								revnote.notes[j], sizeof(revnote.notes[j]));
+					}
+				}
+				uv_vector_push_back(&this->revnotes, &revnote);
+			}
+		}
+	}
+
 	// nodeid
 	obj = uv_jsonreader_find_child(data, "NODEID");
 	if (obj != NULL) {
@@ -1624,6 +1651,10 @@ bool cmd_db(const char *arg) {
 	uv_vector_init(&this->defines, this->defines_buffer,
 			sizeof(this->defines_buffer) / sizeof(this->defines_buffer[0]),
 			sizeof(this->defines_buffer[0]));
+
+	uv_vector_init(&this->revnotes, this->revnotes_buffer,
+			sizeof(this->revnotes_buffer) / sizeof(this->revnotes_buffer[0]),
+			sizeof(this->revnotes_buffer[0]));
 
 	uv_vector_init(&this->txpdos, this->txpdo_buffer,
 			sizeof(this->txpdo_buffer) / sizeof(this->txpdo_buffer[0]),
