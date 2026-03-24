@@ -362,6 +362,13 @@ void db_transmission_to_str(canopen_pdo_transmission_types_e transmission, char 
 canopen_object_type_e db_str_to_type(char *str);
 canopen_object_type_e db_jsonval_to_type(char *json_child);
 
+/// @brief: Checks if the CAN interface versions match between two sources
+/// (e.g. parameter file vs device, or database vs device). If they differ,
+/// prints revision notes between the two versions and prompts the user
+/// to continue or skip. Returns ERR_SKIPPED if user typed 'skip'.
+uv_errors_e db_check_can_if_version(db_st *db, uint16_t file_version,
+		uint16_t dev_version, const char *file_source, const char *dev_source);
+
 /// @brief: Deinitializes the database and frees all allocated memory
 void db_deinit(void);
 

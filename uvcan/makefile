@@ -94,7 +94,7 @@ $(BINARY): $(OBJECTS)
 	@echo ""
 	@echo "Linking target"
 	@echo ""
-	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJECTS) -pthread -o "$(BINARY)" -lncurses $(LIB_DIRS) $(LIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJECTS) -pthread -o "$(BINARY)" -lncurses -lreadline $(LIB_DIRS) $(LIBS)
 
 
 post-build:

@@ -206,19 +206,10 @@ void saveparam_step(void *ptr) {
 		if (if_obj->obj_type == DB_OBJ_TYPE_IF_VERSION) {
 			if (uv_canopen_sdo_read(db_get_nodeid(&dev.db), if_obj->obj.main_index, if_obj->obj.sub_index,
 					CANOPEN_SIZEOF(if_obj->obj.type), &can_if) == ERR_NONE) {
-				if (db_get_revision_number(&dev.db) != can_if) {
-					WARNING("ALERT:\n"
-							"CAN Database interface version number differs in database (%i) and device (%i).\n"
-							"All parameters might not be saved correctly.\n"
-							"\n"
-							"Press anything to continue...\n\n",
-							db_get_revision_number(&dev.db), can_if);
-					portDISABLE_INTERRUPTS();
-					fgetc(stdin);
-					portENABLE_INTERRUPTS();
-				}
-				else {
-					printf("CAN interface version %i\n", can_if);
+				uv_errors_e e = db_check_can_if_version(&dev.db,
+						db_get_revision_number(&dev.db), can_if,
+						"database", "device");
+				if (e == ERR_NONE) {
 					if_found = true;
 				}
 			}

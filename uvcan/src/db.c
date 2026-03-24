@@ -19,12 +19,15 @@
 
 #include <db.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <uv_terminal.h>
 #include <uv_json.h>
 #include <ctype.h>
 #include "main.h"
 #include <libgen.h>
+#include <wordexp.h>
+#include <readline/readline.h>
 
 #define ERROR(str, ...) printf(PRINT_BOLDRED str PRINT_RESET, __VA_ARGS__)
 #define ERRORSTR(str) printf(PRINT_BOLDRED str PRINT_RESET)
@@ -1766,6 +1769,110 @@ void db_deinit(void) {
 		db_obj_st *obj = db_get_obj(this, i);
 		db_obj_deinit(obj);
 	}
+}
+
+
+/// @brief: Prints revision notes between two version numbers from
+/// a revnotes vector.
+/// Returns true if any notes were found and printed.
+static bool print_revnotes(uv_vector_st *revnotes,
+		uint16_t low, uint16_t high) {
+	bool notes_found = false;
+	for (uint32_t ri = 0; ri < uv_vector_size(revnotes); ri++) {
+		db_revnote_st *rn = uv_vector_at(revnotes, ri);
+		if (rn->revision > low && rn->revision <= high) {
+			if (!notes_found) {
+				WARNINGSTR("Revision notes:\n");
+				notes_found = true;
+			}
+			WARNING("  rev %u:\n", rn->revision);
+			for (uint8_t ni = 0; ni < rn->note_count; ni++) {
+				WARNING("    - %s\n", rn->notes[ni]);
+			}
+		}
+	}
+	return notes_found;
+}
+
+
+uv_errors_e db_check_can_if_version(db_st *db, uint16_t file_version,
+		uint16_t dev_version, const char *file_source, const char *dev_source) {
+	uv_errors_e ret = ERR_NONE;
+	if (file_version != dev_version) {
+		WARNING(
+				"CAN interface revision differ between %s (%i) and %s (%i).\n"
+				"Some parameters might load incorrectly.\n\n",
+				file_source, file_version, dev_source, dev_version);
+		uint16_t low = (dev_version < file_version) ? dev_version : file_version;
+		uint16_t high = (dev_version < file_version) ? file_version : dev_version;
+
+		if (db_is_loaded(db)) {
+			print_revnotes(&db->revnotes, low, high);
+			WARNINGSTR(
+					"\nPress ENTER to continue or type 'skip' to skip this device\n\n");
+			// FreeRTOS POSIX port uses signals for context switching.
+			// Without disabling interrupts, fgets gets interrupted by
+			// these signals and returns empty, causing default answer 1.
+			portDISABLE_INTERRUPTS();
+			char str[256] = {};
+			fgets(str, sizeof(str) - 1, stdin);
+			portENABLE_INTERRUPTS();
+			if (strstr(str, "skip")) {
+				ret = ERR_SKIPPED;
+			}
+		}
+		else {
+			// use readline for file path tab-completion
+			rl_bind_key('\t', rl_complete);
+			while (true) {
+				WARNINGSTR(
+						"\nPress ENTER to continue, enter path to database JSON file\n"
+						"to load it and show revision notes, or type 'skip' to skip this device\n\n");
+				fflush(stdout);
+				// FreeRTOS POSIX port uses signals for context switching.
+				// Without disabling interrupts, readline gets interrupted by
+				// these signals and returns empty, causing default answer.
+				portDISABLE_INTERRUPTS();
+				char *line = readline("> ");
+				portENABLE_INTERRUPTS();
+				if (line == NULL || strlen(line) == 0) {
+					// user pressed ENTER or Ctrl+D, continue
+					free(line);
+					break;
+				}
+				else if (strcmp(line, "skip") == 0) {
+					ret = ERR_SKIPPED;
+					free(line);
+					break;
+				}
+				else {
+					// expand ~ and resolve the path
+					wordexp_t exp = {};
+					char *path = line;
+					if (wordexp(line, &exp, WRDE_NOCMD) == 0 &&
+							exp.we_wordc > 0) {
+						path = exp.we_wordv[0];
+					}
+					char resolved[PATH_MAX] = {};
+					if (realpath(path, resolved) != NULL) {
+						path = resolved;
+					}
+					// load the database from the resolved file path
+					printf("Loading database from '%s'\n", path);
+					fflush(stdout);
+					if (cmd_db(path)) {
+						print_revnotes(&db->revnotes, low, high);
+					}
+					wordfree(&exp);
+					free(line);
+				}
+			}
+		}
+	}
+	else {
+		printf("CAN interface version %i\n", file_version);
+	}
+	return ret;
 }
 
 

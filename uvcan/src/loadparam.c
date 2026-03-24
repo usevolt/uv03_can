@@ -404,40 +404,9 @@ static uv_errors_e parse_dev(char *json) {
 				if (uv_canopen_sdo_read(db_get_nodeid(&dev.db), uv_jsonreader_get_int(mindex),
 						uv_jsonreader_get_int(sindex), CANOPEN_SIZEOF(CANOPEN_UNSIGNED16),
 						&dev_if) == ERR_NONE) {
-					if (dev_if != can_if) {
-						WARNING(
-								"CAN interface revision differ between parameter file (%i) and device (%i).\n"
-								"Some parameters might load incorrectly.\n\n",
-								can_if,
-								dev_if);
-						uint16_t low = (dev_if < can_if) ? dev_if : can_if;
-						uint16_t high = (dev_if < can_if) ? can_if : dev_if;
-						bool notes_found = false;
-						for (uint32_t ri = 0; ri < db_get_revnote_count(&dev.db); ri++) {
-							db_revnote_st *rn = db_get_revnote(&dev.db, ri);
-							if (rn->revision > low && rn->revision <= high) {
-								if (!notes_found) {
-									WARNINGSTR("Revision notes:\n");
-									notes_found = true;
-								}
-								WARNING("  rev %u:\n", rn->revision);
-								for (uint8_t ni = 0; ni < rn->note_count; ni++) {
-									WARNING("    - %s\n", rn->notes[ni]);
-								}
-							}
-						}
-						WARNINGSTR(
-								"\nPress anything to continue or type 'skip' to skip this device\n\n");
-						char str[256] = {};
-						fgets(str, sizeof(str) - 1, stdin);
-						printf("got '%s'\n", str);
-						if (strstr(str, "skip")) {
-							ret = ERR_SKIPPED;
-						}
-					}
-					else {
-						printf("CAN interface version %i\n", can_if);
-					}
+					ret = db_check_can_if_version(&dev.db,
+							can_if, dev_if,
+							"parameter file", "device");
 				}
 				else {
 					printf(PRINT_YELLOW
@@ -445,8 +414,12 @@ static uv_errors_e parse_dev(char *json) {
 							"The CAN IF VERSION object dictionary entry might not be defined.\n"
 							"Press anything to continue or 'skip' to ship this device.\n\n"
 						   PRINT_RESET);
+					// Disable FreeRTOS scheduler signals so fgets can
+					// block for real user input without being interrupted
+					portDISABLE_INTERRUPTS();
 					char str[128] = {};
 					fgets(str, sizeof(str) - 1, stdin);
+					portENABLE_INTERRUPTS();
 					printf("'%s'\n", str);
 					if (strstr(str, "skip")) {
 						ret = ERR_SKIPPED;
@@ -458,9 +431,13 @@ static uv_errors_e parse_dev(char *json) {
 					   "\"CAN IF MINDEX\" or \"CAN IF SINDEX\" not found in the parameter file.\n\n"
 					   "Press anything to continue or type 'skip' to skip this device.\n\n"
 					   PRINT_RESET);
+				// Disable FreeRTOS scheduler signals so fgets can
+				// block for real user input without being interrupted
+				portDISABLE_INTERRUPTS();
 				fflush(stdout);
 				char str[128] = {};
 				fgets(str, sizeof(str) - 1, stdin);
+				portENABLE_INTERRUPTS();
 				if (strstr(str, "skip")) {
 					ret = ERR_SKIPPED;
 				}
@@ -475,8 +452,12 @@ static uv_errors_e parse_dev(char *json) {
 				   PRINT_RESET,
 					db_get_nodeid(&dev.db));
 			fflush(stdout);
+			// Disable FreeRTOS scheduler signals so fgets can
+			// block for real user input without being interrupted
+			portDISABLE_INTERRUPTS();
 			char str[128] = {};
 			fgets(str, sizeof(str) - 1, stdin);
+			portENABLE_INTERRUPTS();
 			if (strstr(str, "skip")) {
 				ret = ERR_SKIPPED;
 			}
@@ -721,6 +702,9 @@ void loadparam_step(void *ptr) {
 								}
 							}
 							if (already_answered == false) {
+								// Disable FreeRTOS scheduler signals so fgets can
+								// block for real user input without being interrupted
+								portDISABLE_INTERRUPTS();
 								while (true) {
 									printf("\n\n "
 											"User input requested: \n"
@@ -747,6 +731,7 @@ void loadparam_step(void *ptr) {
 										break;
 									}
 								}
+								portENABLE_INTERRUPTS();
 
 								uv_vector_push_back(&this->queries, &q);
 							}
