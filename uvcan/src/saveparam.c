@@ -87,11 +87,9 @@ static uv_errors_e json_add_obj(uv_json_st *dest_json, db_obj_st *obj, char *inf
 	db_type_to_str(obj->obj.type, type);
 	uv_jsonwriter_add_string(&json, "TYPE", type);
 
-	printf("Reading parameter %s 0x%x, type: %s\n"
-			"data: ",
+	printf("\rReading %s (0x%x)...\033[K",
 			info_str,
-			obj->obj.main_index,
-			type);
+			obj->obj.main_index);
 	fflush(stdout);
 
 	if (CANOPEN_IS_ARRAY(obj->obj.type)) {
@@ -111,7 +109,8 @@ static uv_errors_e json_add_obj(uv_json_st *dest_json, db_obj_st *obj, char *inf
 					break;
 				}
 				else {
-					printf("    %s: 0x%x %u\n", dbvalue_get_string(&child->name), data);
+					printf("\rReading %s (0x%x) [%u/%u]...\033[K",
+							info_str, obj->obj.main_index, i + 1, arr_len);
 					fflush(stdout);
 					uv_errors_e e = uv_jsonwriter_begin_object(&json);
 					e |= uv_jsonwriter_add_string(&json, "INFO",
@@ -152,8 +151,6 @@ static uv_errors_e json_add_obj(uv_json_st *dest_json, db_obj_st *obj, char *inf
 		if (ret == ERR_NONE) {
 			uv_jsonwriter_add_string(&json, "DATA", str);
 		}
-		printf("%s\n", str);
-		fflush(stdout);
 		free(str);
 	}
 	else {
@@ -170,8 +167,6 @@ static uv_errors_e json_add_obj(uv_json_st *dest_json, db_obj_st *obj, char *inf
 				uv_jsonwriter_add_int(&json, "DATA", data);
 			}
 		}
-		printf("0x%x\n", data);
-		fflush(stdout);
 	}
 	uv_json_errors_e e = ERR_NONE;
 	uv_jsonwriter_end(&json, &e);
@@ -184,6 +179,7 @@ static uv_errors_e json_add_obj(uv_json_st *dest_json, db_obj_st *obj, char *inf
 	}
 
 	if (ret != ERR_NONE) {
+		printf("\n");
 		ERROR("Error in obj 0x%x\n", obj->obj.main_index);
 	}
 
@@ -444,8 +440,9 @@ void saveparam_step(void *ptr) {
 		// end the whole JSON file
 		e |= uv_jsonwriter_end(&json, NULL);
 
+		printf("\n");
 		if (e != ERR_NONE) {
-			ERRORSTR("\nERROR: Some or all of the parameters returned an error. \n"
+			ERRORSTR("ERROR: Some or all of the parameters returned an error. \n"
 					"Some parameters might not be stored correctly.\n\n");
 			fflush(stdout);
 		}

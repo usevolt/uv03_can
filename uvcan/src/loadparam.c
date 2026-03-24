@@ -218,13 +218,13 @@ static uv_errors_e load_param(char *json_obj,
 
 
 	if (ret == ERR_NONE) {
-		printf("Writing %s '%s': ",
+		printf("\rWriting %s '%s' (0x%x)...\033[K",
 			   uv_json_type_to_str(type),
-			   info);
+			   info,
+			   mindex);
 		fflush(stdout);
 
 		if (type == JSON_ARRAY) {
-			printf("\n");
 			char *array = NULL;
 			if (data != NULL) {
 				query_get(data, NULL, 0, &array);
@@ -240,7 +240,9 @@ static uv_errors_e load_param(char *json_obj,
 				switch (uv_jsonreader_array_get_type(array, i)) {
 					case JSON_INT:
 						uint32_t d = uv_jsonreader_array_get_int(array, i);
-						printf("0x%x ", d, i + 1 + sindex_offset, mindex);
+						printf("\rWriting '%s' (0x%x) [%u]...\033[K",
+								info, mindex, i + 1 + sindex_offset);
+						fflush(stdout);
 						ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
 													mindex,
 													i + 1 + sindex_offset,
@@ -256,14 +258,16 @@ static uv_errors_e load_param(char *json_obj,
 						break;
 						}
 					default:
-						ERROR("\narray of object type '%s' not supported\n",
+						printf("\n");
+						ERROR("array of object type '%s' not supported\n",
 								uv_json_type_to_str(
 										uv_jsonreader_array_get_type(array, i)));
 						fflush(stdout);
 						break;
 				}
 				if (ret != ERR_NONE) {
-					ERROR("\nArray loading failed for subindex %u\n",
+					printf("\n");
+					ERROR("Array loading failed for subindex %u\n",
 						  i + 1 + sindex_offset);
 				}
 			}
@@ -287,11 +291,11 @@ static uv_errors_e load_param(char *json_obj,
 			else {
 
 			}
-			printf("'%s'", str);
 			ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
 					mindex, sindex + sindex_offset, strlen(str) + 1, str);
 			if (ret != ERR_NONE) {
-				ERROR("\nLoading string '%s' failed.\n", str);
+				printf("\n");
+				ERROR("Loading string '%s' failed.\n", str);
 			}
 		}
 		else {
@@ -306,16 +310,16 @@ static uv_errors_e load_param(char *json_obj,
 			else {
 
 			}
-			printf("0x%x", d);
 			ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
 					mindex, sindex + sindex_offset, CANOPEN_SIZEOF(objtype), &d);
 			if (ret != ERR_NONE) {
-				ERROR("\nParameter loading failed for subindex %u\n", sindex);
+				printf("\n");
+				ERROR("Parameter loading failed for subindex %u\n", sindex);
 			}
 		}
-		printf("\n");
 	}
 	else {
+		printf("\n");
 		ERRORSTR("Parameter in a wrong format\n");
 		if (strlen(info) != 0) {
 			ERROR("Parameter info: '%s'\n\n", info);
@@ -491,6 +495,7 @@ static uv_errors_e parse_dev(char *json) {
 							ret |= load_param(obj, 0, CANOPEN_UNDEFINED);
 						}
 						else {
+							printf("\n");
 							ERROR("PARAMS array contained something else\n"
 									"than objects at index %i\n", i + 1);
 							ret |= ERR_ABORTED;
@@ -560,6 +565,7 @@ static uv_errors_e parse_dev(char *json) {
 							ret |= load_param(obj, 0, CANOPEN_UNDEFINED);
 						}
 						else {
+							printf("\n");
 							ERROR("OPERATORS array contained something else\n"
 									"than object at operator %u, parameter index %u\n",
 									i + 1, j + 1);
@@ -567,7 +573,7 @@ static uv_errors_e parse_dev(char *json) {
 
 						uv_jsonreader_get_next_sibling(obj, &obj);
 					}
-					printf("Saving the parameters for op %u...\n", i + 1);
+					printf("\nSaving the parameters for op %u...\n", i + 1);
 					fflush(stdout);
 					ret |= uv_canopen_sdo_store_params(db_get_nodeid(&dev.db),
 							MEMORY_ALL_PARAMS);
