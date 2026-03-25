@@ -136,7 +136,8 @@ static int query_get(char *json_obj, char *dest_str, int dest_len, char **array_
 
 static uv_errors_e load_param(char *json_obj,
 							  uint16_t mindex,
-							  canopen_object_type_e objtype) {
+							  canopen_object_type_e objtype,
+							  const char *parent_info) {
 	uv_errors_e ret = ERR_NONE;
 	uint8_t sindex = 0;
 	uint8_t sindex_offset = 0;
@@ -145,6 +146,9 @@ static uv_errors_e load_param(char *json_obj,
 	char info[128] = {};
 	if (val != NULL) {
 		uv_jsonreader_get_string(val, info, sizeof(info));
+	}
+	else if (parent_info != NULL) {
+		strncpy(info, parent_info, sizeof(info) - 1);
 	}
 
 
@@ -218,12 +222,6 @@ static uv_errors_e load_param(char *json_obj,
 
 
 	if (ret == ERR_NONE) {
-		printf("\rWriting %s '%s' (0x%x)...\033[K",
-			   uv_json_type_to_str(type),
-			   info,
-			   mindex);
-		fflush(stdout);
-
 		if (type == JSON_ARRAY) {
 			char *array = NULL;
 			if (data != NULL) {
@@ -240,9 +238,8 @@ static uv_errors_e load_param(char *json_obj,
 				switch (uv_jsonreader_array_get_type(array, i)) {
 					case JSON_INT:
 						uint32_t d = uv_jsonreader_array_get_int(array, i);
-						printf("\rWriting '%s' (0x%x) [%u]...\033[K",
-								info, mindex, i + 1 + sindex_offset);
-						fflush(stdout);
+						LOG("Writing '%s' (0x%x) [%u] = 0x%x",
+								info, mindex, i + 1 + sindex_offset, d);
 						ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
 													mindex,
 													i + 1 + sindex_offset,
@@ -254,11 +251,12 @@ static uv_errors_e load_param(char *json_obj,
 							ret |= load_param(
 									obj,
 									mindex,
-									objtype);
+									objtype,
+									info);
 						break;
 						}
 					default:
-						printf("\n");
+						LOG_END();
 						ERROR("array of object type '%s' not supported\n",
 								uv_json_type_to_str(
 										uv_jsonreader_array_get_type(array, i)));
@@ -266,7 +264,7 @@ static uv_errors_e load_param(char *json_obj,
 						break;
 				}
 				if (ret != ERR_NONE) {
-					printf("\n");
+					LOG_END();
 					ERROR("Array loading failed for subindex %u\n",
 						  i + 1 + sindex_offset);
 				}
@@ -275,7 +273,7 @@ static uv_errors_e load_param(char *json_obj,
 		else if (type == JSON_OBJECT) {
 			// DATA was OBJECT type, which means it need to be parsed
 			// recursively
-			ret |= load_param(data, mindex, objtype);
+			ret |= load_param(data, mindex, objtype, info);
 		}
 		else if (type == JSON_STRING) {
 			char str[1024] = {};
@@ -291,10 +289,12 @@ static uv_errors_e load_param(char *json_obj,
 			else {
 
 			}
+			LOG("Writing '%s' (0x%x) = \"%s\"",
+					info, mindex, str);
 			ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
 					mindex, sindex + sindex_offset, strlen(str) + 1, str);
 			if (ret != ERR_NONE) {
-				printf("\n");
+				LOG_END();
 				ERROR("Loading string '%s' failed.\n", str);
 			}
 		}
@@ -310,16 +310,18 @@ static uv_errors_e load_param(char *json_obj,
 			else {
 
 			}
+			LOG("Writing '%s' (0x%x) = 0x%x",
+					info, mindex, d);
 			ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
 					mindex, sindex + sindex_offset, CANOPEN_SIZEOF(objtype), &d);
 			if (ret != ERR_NONE) {
-				printf("\n");
+				LOG_END();
 				ERROR("Parameter loading failed for subindex %u\n", sindex);
 			}
 		}
 	}
 	else {
-		printf("\n");
+		LOG_END();
 		ERRORSTR("Parameter in a wrong format\n");
 		if (strlen(info) != 0) {
 			ERROR("Parameter info: '%s'\n\n", info);
@@ -413,57 +415,58 @@ static uv_errors_e parse_dev(char *json) {
 							"parameter file", "device");
 				}
 				else {
-					printf(PRINT_YELLOW
-						   "Failed to read CAN interface from the device. \n"
+					PROMPTSTR(
+						   "Failed to read CAN interface from the device.\n"
 							"The CAN IF VERSION object dictionary entry might not be defined.\n"
-							"Press anything to continue or 'skip' to ship this device.\n\n"
-						   PRINT_RESET);
-					// Disable FreeRTOS scheduler signals so fgets can
-					// block for real user input without being interrupted
+							"Press anything to continue or 'skip' to skip this device.\n\n");
 					portDISABLE_INTERRUPTS();
 					char str[128] = {};
 					fgets(str, sizeof(str) - 1, stdin);
 					portENABLE_INTERRUPTS();
-					printf("'%s'\n", str);
 					if (strstr(str, "skip")) {
+						printf("User selected: skip device\n");
 						ret = ERR_SKIPPED;
+					}
+					else {
+						printf("User selected: continue (CAN IF read failed)\n");
 					}
 				}
 			}
 			else {
-				printf(PRINT_YELLOW
+				PROMPTSTR(
 					   "\"CAN IF MINDEX\" or \"CAN IF SINDEX\" not found in the parameter file.\n\n"
-					   "Press anything to continue or type 'skip' to skip this device.\n\n"
-					   PRINT_RESET);
-				// Disable FreeRTOS scheduler signals so fgets can
-				// block for real user input without being interrupted
+					   "Press anything to continue or type 'skip' to skip this device.\n\n");
 				portDISABLE_INTERRUPTS();
-				fflush(stdout);
 				char str[128] = {};
 				fgets(str, sizeof(str) - 1, stdin);
 				portENABLE_INTERRUPTS();
 				if (strstr(str, "skip")) {
+					printf("User selected: skip device\n");
 					ret = ERR_SKIPPED;
+				}
+				else {
+					printf("User selected: continue (CAN IF MINDEX/SINDEX missing)\n");
 				}
 			}
 
 		}
 		else {
-			printf(PRINT_YELLOW
+			PROMPT(
 				   "Parameter file didn't contain CAN interface version number for device 0x%x.\n"
 					"Undefined behaviour might occur while loading the parameters.\n\n"
-					"Press anything to continue or type 'skip' to skip this device.\n\n"
-				   PRINT_RESET,
+					"Press anything to continue or type 'skip' to skip this device.\n\n",
 					db_get_nodeid(&dev.db));
-			fflush(stdout);
-			// Disable FreeRTOS scheduler signals so fgets can
-			// block for real user input without being interrupted
 			portDISABLE_INTERRUPTS();
 			char str[128] = {};
 			fgets(str, sizeof(str) - 1, stdin);
 			portENABLE_INTERRUPTS();
 			if (strstr(str, "skip")) {
+				printf("User selected: skip device 0x%x\n", db_get_nodeid(&dev.db));
 				ret = ERR_SKIPPED;
+			}
+			else {
+				printf("User selected: continue (no CAN IF version for device 0x%x)\n",
+						db_get_nodeid(&dev.db));
 			}
 		}
 
@@ -492,10 +495,10 @@ static uv_errors_e parse_dev(char *json) {
 					obj = uv_jsonreader_array_at(arr, 0);
 					for (int32_t i = 0; i < uv_jsonreader_array_get_size(arr); i++) {
 						if (uv_jsonreader_get_type(obj) == JSON_OBJECT) {
-							ret |= load_param(obj, 0, CANOPEN_UNDEFINED);
+							ret |= load_param(obj, 0, CANOPEN_UNDEFINED, NULL);
 						}
 						else {
-							printf("\n");
+							LOG_END();
 							ERROR("PARAMS array contained something else\n"
 									"than objects at index %i\n", i + 1);
 							ret |= ERR_ABORTED;
@@ -503,8 +506,7 @@ static uv_errors_e parse_dev(char *json) {
 
 						uv_jsonreader_get_next_sibling(obj, &obj);
 					}
-					printf("\n\n");
-					fflush(stdout);
+					LOG_END();
 				}
 				else {
 					printf("PARAMS array empty, moving to operator specific parameters.\n");
@@ -562,10 +564,10 @@ static uv_errors_e parse_dev(char *json) {
 					// cycle through all this operators parameters
 					for (uint32_t j = 0; j < uv_jsonreader_array_get_size(op); j++) {
 						if (uv_jsonreader_get_type(obj) == JSON_OBJECT) {
-							ret |= load_param(obj, 0, CANOPEN_UNDEFINED);
+							ret |= load_param(obj, 0, CANOPEN_UNDEFINED, NULL);
 						}
 						else {
-							printf("\n");
+							LOG_END();
 							ERROR("OPERATORS array contained something else\n"
 									"than object at operator %u, parameter index %u\n",
 									i + 1, j + 1);
@@ -573,7 +575,8 @@ static uv_errors_e parse_dev(char *json) {
 
 						uv_jsonreader_get_next_sibling(obj, &obj);
 					}
-					printf("\nSaving the parameters for op %u...\n", i + 1);
+					LOG_END();
+					printf("Saving the parameters for op %u...\n", i + 1);
 					fflush(stdout);
 					ret |= uv_canopen_sdo_store_params(db_get_nodeid(&dev.db),
 							MEMORY_ALL_PARAMS);
@@ -712,14 +715,13 @@ void loadparam_step(void *ptr) {
 								// block for real user input without being interrupted
 								portDISABLE_INTERRUPTS();
 								while (true) {
-									printf("\n\n "
+									PROMPT("\n\n "
 											"User input requested: \n"
 											"  ** %s **:\n",
 											q.question);
 									for (uint8_t i = 0; i < q.answer_count; i++) {
-										printf("    (%i): %s\n", i + 1, q.answers[i]);
+										PROMPT("    (%i): %s\n", i + 1, q.answers[i]);
 									}
-									fflush(stdout);
 
 									char ans_str[128] = {};
 									int32_t ans = 0;
@@ -729,10 +731,11 @@ void loadparam_step(void *ptr) {
 									}
 
 									if (ans < 1 || ans > q.answer_count) {
-										ERRORSTR("Answer out of bounds. Defaulting to 1.\n");
+										PROMPTSTR("Answer out of bounds. Defaulting to 1.\n");
 									}
 									else {
-										printf("Saving answer %i\n", ans);
+										printf("Query '%s': selected (%i) %s\n",
+												q.name, ans, q.answers[ans - 1]);
 										q.correct_answer = ans - 1;
 										break;
 									}

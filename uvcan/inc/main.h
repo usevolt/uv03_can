@@ -20,10 +20,47 @@
 #define MAIN_H_
 
 
+#include <stdio.h>
+#include <unistd.h>
 #include <uv_memory.h>
 #include <uv_rtos.h>
 #include <uv_utilities.h>
 #include <uv_canopen.h>
+
+
+/// @brief: Interactive prompt output to stderr so it is visible
+/// even when stdout is redirected to a file.
+#define PROMPT(fmt, ...) do { \
+	fprintf(stderr, PRINT_BOLD fmt PRINT_RESET, ##__VA_ARGS__); \
+	fflush(stderr); \
+} while (0)
+#define PROMPTSTR(str) do { \
+	fprintf(stderr, PRINT_BOLD str PRINT_RESET); \
+	fflush(stderr); \
+} while (0)
+
+
+/// @brief: Progress log that overwrites the same terminal line.
+/// On a terminal: uses \\r and erase-to-EOL so successive calls
+/// overwrite each other. When output is redirected (pipe/file),
+/// prints a normal line instead.
+#define LOG(fmt, ...) do { \
+	if (isatty(STDOUT_FILENO)) { \
+		printf("\r" fmt "\033[K", ##__VA_ARGS__); \
+	} \
+	else { \
+		printf(fmt "\n", ##__VA_ARGS__); \
+	} \
+	fflush(stdout); \
+} while (0)
+
+/// @brief: Finalize the current LOG line so that subsequent output
+/// (errors, warnings, final messages) starts on a fresh line.
+#define LOG_END() do { \
+	if (isatty(STDOUT_FILENO)) { \
+		printf("\n"); \
+	} \
+} while (0)
 #include "db.h"
 #include "listen.h"
 #include "load.h"

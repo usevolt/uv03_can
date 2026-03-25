@@ -87,10 +87,9 @@ static uv_errors_e json_add_obj(uv_json_st *dest_json, db_obj_st *obj, char *inf
 	db_type_to_str(obj->obj.type, type);
 	uv_jsonwriter_add_string(&json, "TYPE", type);
 
-	printf("\rReading %s (0x%x)...\033[K",
+	LOG("Reading %s (0x%x)...",
 			info_str,
 			obj->obj.main_index);
-	fflush(stdout);
 
 	if (CANOPEN_IS_ARRAY(obj->obj.type)) {
 		uint32_t arr_len = 0;
@@ -109,9 +108,8 @@ static uv_errors_e json_add_obj(uv_json_st *dest_json, db_obj_st *obj, char *inf
 					break;
 				}
 				else {
-					printf("\rReading %s (0x%x) [%u/%u]...\033[K",
+					LOG("Reading %s (0x%x) [%u/%u]...",
 							info_str, obj->obj.main_index, i + 1, arr_len);
-					fflush(stdout);
 					uv_errors_e e = uv_jsonwriter_begin_object(&json);
 					e |= uv_jsonwriter_add_string(&json, "INFO",
 											 dbvalue_get_string(&child->name));
@@ -179,7 +177,7 @@ static uv_errors_e json_add_obj(uv_json_st *dest_json, db_obj_st *obj, char *inf
 	}
 
 	if (ret != ERR_NONE) {
-		printf("\n");
+		LOG_END();
 		ERROR("Error in obj 0x%x\n", obj->obj.main_index);
 	}
 
@@ -210,25 +208,27 @@ void saveparam_step(void *ptr) {
 				}
 			}
 			else {
-				WARNINGSTR("ALERT: Could not read CAN interface version\n"
+				PROMPTSTR("ALERT: Could not read CAN interface version\n"
 						"number from device.\n"
 						"Press anything to continue...\n\n");
 				portDISABLE_INTERRUPTS();
 				fgetc(stdin);
 				portENABLE_INTERRUPTS();
+				printf("User acknowledged: CAN IF version read failed\n");
 			}
 			break;
 		}
 	}
 	if (!if_found) {
-		WARNINGSTR("ALERT: CAN interface version number not defined. \n"
-				"The database of device software does not define \n"
-				"CAN iterface version number. Parameter loading might result\n"
+		PROMPTSTR("ALERT: CAN interface version number not defined.\n"
+				"The database of device software does not define\n"
+				"CAN interface version number. Parameter saving might result\n"
 				"in undefined behaviour.\n\n"
 				"Press anything to continue...\n\n");
 		portDISABLE_INTERRUPTS();
 		fgetc(stdin);
 		portENABLE_INTERRUPTS();
+		printf("User acknowledged: CAN IF version not defined\n");
 	}
 
 
@@ -440,7 +440,7 @@ void saveparam_step(void *ptr) {
 		// end the whole JSON file
 		e |= uv_jsonwriter_end(&json, NULL);
 
-		printf("\n");
+		LOG_END();
 		if (e != ERR_NONE) {
 			ERRORSTR("ERROR: Some or all of the parameters returned an error. \n"
 					"Some parameters might not be stored correctly.\n\n");

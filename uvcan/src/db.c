@@ -1782,12 +1782,12 @@ static bool print_revnotes(uv_vector_st *revnotes,
 		db_revnote_st *rn = uv_vector_at(revnotes, ri);
 		if (rn->revision > low && rn->revision <= high) {
 			if (!notes_found) {
-				WARNINGSTR("Revision notes:\n");
+				PROMPTSTR("Revision notes:\n");
 				notes_found = true;
 			}
-			WARNING("  rev %u:\n", rn->revision);
+			PROMPT("  rev %u:\n", rn->revision);
 			for (uint8_t ni = 0; ni < rn->note_count; ni++) {
-				WARNING("    - %s\n", rn->notes[ni]);
+				PROMPT("    - %s\n", rn->notes[ni]);
 			}
 		}
 	}
@@ -1799,16 +1799,18 @@ uv_errors_e db_check_can_if_version(db_st *db, uint16_t file_version,
 		uint16_t dev_version, const char *file_source, const char *dev_source) {
 	uv_errors_e ret = ERR_NONE;
 	if (file_version != dev_version) {
-		WARNING(
+		PROMPT(
 				"CAN interface revision differ between %s (%i) and %s (%i).\n"
 				"Some parameters might load incorrectly.\n\n",
+				file_source, file_version, dev_source, dev_version);
+		printf("CAN interface revision mismatch: %s (%i) vs %s (%i)\n",
 				file_source, file_version, dev_source, dev_version);
 		uint16_t low = (dev_version < file_version) ? dev_version : file_version;
 		uint16_t high = (dev_version < file_version) ? file_version : dev_version;
 
 		if (db_is_loaded(db)) {
 			print_revnotes(&db->revnotes, low, high);
-			WARNINGSTR(
+			PROMPTSTR(
 					"\nPress ENTER to continue or type 'skip' to skip this device\n\n");
 			// FreeRTOS POSIX port uses signals for context switching.
 			// Without disabling interrupts, fgets gets interrupted by
@@ -1818,17 +1820,20 @@ uv_errors_e db_check_can_if_version(db_st *db, uint16_t file_version,
 			fgets(str, sizeof(str) - 1, stdin);
 			portENABLE_INTERRUPTS();
 			if (strstr(str, "skip")) {
+				printf("User selected: skip device\n");
 				ret = ERR_SKIPPED;
+			}
+			else {
+				printf("User selected: continue\n");
 			}
 		}
 		else {
 			// use readline for file path tab-completion
 			rl_bind_key('\t', rl_complete);
 			while (true) {
-				WARNINGSTR(
+				PROMPTSTR(
 						"\nPress ENTER to continue, enter path to database JSON file\n"
 						"to load it and show revision notes, or type 'skip' to skip this device\n\n");
-				fflush(stdout);
 				// FreeRTOS POSIX port uses signals for context switching.
 				// Without disabling interrupts, readline gets interrupted by
 				// these signals and returns empty, causing default answer.
@@ -1837,10 +1842,12 @@ uv_errors_e db_check_can_if_version(db_st *db, uint16_t file_version,
 				portENABLE_INTERRUPTS();
 				if (line == NULL || strlen(line) == 0) {
 					// user pressed ENTER or Ctrl+D, continue
+					printf("User selected: continue\n");
 					free(line);
 					break;
 				}
 				else if (strcmp(line, "skip") == 0) {
+					printf("User selected: skip device\n");
 					ret = ERR_SKIPPED;
 					free(line);
 					break;
