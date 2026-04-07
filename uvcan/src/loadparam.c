@@ -545,8 +545,8 @@ static uv_errors_e parse_dev(char *json) {
 					uint32_t data = 1;
 					ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
 							opdb_mindex, 3, CANOPEN_SIZEOF(opdb_type), &data);
-					// small delay to wait for the device to copy te operators
-					uv_rtos_task_delay(200);
+					// wait for the device to copy the operators
+					uv_rtos_task_delay(2000);
 				}
 
 				// cycle through all the operators
