@@ -144,11 +144,12 @@ static uv_errors_e load_param(char *json_obj,
 
 	char *val = uv_jsonreader_find_child(json_obj, "INFO");
 	char info[128] = {};
-	if (val != NULL) {
-		uv_jsonreader_get_string(val, info, sizeof(info));
+	if (parent_info != NULL) {
+		snprintf(info, sizeof(info), "%s: ", parent_info);
 	}
-	else if (parent_info != NULL) {
-		strncpy(info, parent_info, sizeof(info) - 1);
+	if (val != NULL) {
+		size_t len = strlen(info);
+		uv_jsonreader_get_string(val, info + len, sizeof(info) - len);
 	}
 
 
@@ -263,8 +264,8 @@ static uv_errors_e load_param(char *json_obj,
 						fflush(stdout);
 						break;
 				}
+				LOG_END();
 				if (ret != ERR_NONE) {
-					LOG_END();
 					ERROR("Array loading failed for subindex %u\n",
 						  i + 1 + sindex_offset);
 				}
