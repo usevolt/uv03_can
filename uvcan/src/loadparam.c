@@ -268,6 +268,7 @@ static uv_errors_e load_param(char *json_obj,
 				if (ret != ERR_NONE) {
 					ERROR("Array loading failed for subindex %u\n",
 						  i + 1 + sindex_offset);
+					LOG_SDO_ERROR();
 				}
 			}
 		}
@@ -297,6 +298,7 @@ static uv_errors_e load_param(char *json_obj,
 			if (ret != ERR_NONE) {
 				LOG_END();
 				ERROR("Loading string '%s' failed.\n", str);
+				LOG_SDO_ERROR();
 			}
 		}
 		else {
@@ -318,6 +320,7 @@ static uv_errors_e load_param(char *json_obj,
 			if (ret != ERR_NONE) {
 				LOG_END();
 				ERROR("Parameter loading failed for subindex %u\n", sindex);
+				LOG_SDO_ERROR();
 			}
 		}
 	}
@@ -416,6 +419,7 @@ static uv_errors_e parse_dev(char *json) {
 							"parameter file", "device");
 				}
 				else {
+					LOG_SDO_ERROR();
 					PROMPTSTR(
 						   "Failed to read CAN interface from the device.\n"
 							"The CAN IF VERSION object dictionary entry might not be defined.\n"
@@ -583,6 +587,7 @@ static uv_errors_e parse_dev(char *json) {
 							MEMORY_ALL_PARAMS);
 					if (ret != ERR_NONE) {
 						ERROR("Error encountered when storing the parameters for op %u\n", i + 1);
+						LOG_SDO_ERROR();
 					}
 					// wait for the parameters to be saved
 					uv_rtos_task_delay(100);

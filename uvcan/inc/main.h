@@ -61,6 +61,16 @@
 		printf("\n"); \
 	} \
 } while (0)
+
+/// @brief: Logs the last SDO error code and its string representation in red.
+/// Call this right after a failed uv_canopen_sdo_read/write to surface the
+/// underlying SDO abort reason.
+#define LOG_SDO_ERROR() do { \
+	uv_sdo_error_codes_e _sdo_err = uv_canopen_sdo_get_error(); \
+	printf(PRINT_BOLDRED "  SDO error 0x%08x: %s\n" PRINT_RESET, \
+			_sdo_err, uv_canopen_sdo_error_code_to_str(_sdo_err)); \
+	fflush(stdout); \
+} while (0)
 #include "db.h"
 #include "listen.h"
 #include "load.h"

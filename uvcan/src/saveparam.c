@@ -179,6 +179,7 @@ static uv_errors_e json_add_obj(uv_json_st *dest_json, db_obj_st *obj, char *inf
 	if (ret != ERR_NONE) {
 		LOG_END();
 		ERROR("Error in obj 0x%x\n", obj->obj.main_index);
+		LOG_SDO_ERROR();
 	}
 
 	return ret;
@@ -208,6 +209,7 @@ void saveparam_step(void *ptr) {
 				}
 			}
 			else {
+				LOG_SDO_ERROR();
 				PROMPTSTR("ALERT: Could not read CAN interface version\n"
 						"number from device.\n"
 						"Press anything to continue...\n\n");
