@@ -356,10 +356,12 @@ void saveparam_step(void *ptr) {
 			for (uint32_t i = 0; i < op_count; i++) {
 				// change the operator on the device
 				uint32_t val = i + 1;
+				LOG("Changing active operator to op %u...", val);
 				e |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), opdb_obj->obj.main_index,
 						1, CANOPEN_SIZEOF(opdb_obj->obj.type), &val);
-				// wait for the device to switch the operator
-				uv_rtos_task_delay(100);
+				// wait for the device to switch the operator before reading params
+				uv_rtos_task_delay(500);
+				LOG("Saving parameters for operator %u", val);
 
 				e |= uv_jsonwriter_begin_array(&json, "");
 				for (int32_t i = 0; i < db_get_object_count(&dev.db); i++) {

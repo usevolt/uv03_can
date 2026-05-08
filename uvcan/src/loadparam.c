@@ -411,6 +411,7 @@ static uv_errors_e parse_dev(char *json) {
 			char *sindex = uv_jsonreader_find_child(json, "CAN IF SINDEX");
 			if (mindex != NULL &&
 					sindex != NULL) {
+				LOG("Reading CAN IF from 0x%x\n", db_get_nodeid(&dev.db));
 				if (uv_canopen_sdo_read(db_get_nodeid(&dev.db), uv_jsonreader_get_int(mindex),
 						uv_jsonreader_get_int(sindex), CANOPEN_SIZEOF(CANOPEN_UNSIGNED16),
 						&dev_if) == ERR_NONE) {
@@ -551,18 +552,18 @@ static uv_errors_e parse_dev(char *json) {
 					ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
 							opdb_mindex, 3, CANOPEN_SIZEOF(opdb_type), &data);
 					// wait for the device to copy the operators
-					uv_rtos_task_delay(2000);
+					uv_rtos_task_delay(300);
 				}
 
 				// cycle through all the operators
 				for (uint32_t i = 0; i < op_count; i++) {
-					// todo: load this op
-					printf("Loading operator %i\n", i + 1);
-					fflush(stdout);
 					uint32_t data = i + 1;
+					LOG("Changing active operator to op %u...", data);
 					uv_canopen_sdo_write(db_get_nodeid(&dev.db), opdb_mindex,
 							1, CANOPEN_SIZEOF(opdb_type), &data);
-					uv_rtos_task_delay(300);
+					// wait for the device to switch operator before loading params
+					uv_rtos_task_delay(500);
+					LOG("Loading parameters for operator %u", data);
 
 					char *op = uv_jsonreader_array_at(operators, i);
 					obj = uv_jsonreader_array_at(op, 0);
