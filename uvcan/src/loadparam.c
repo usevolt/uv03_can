@@ -32,6 +32,9 @@ void loadparam_step(void *dev);
 
 
 
+// <windows.h> (via the FreeRTOS Win32 port) defines ERROR as 0; undef it so
+// this colored-print macro can be defined without a redefinition warning.
+#undef ERROR
 #define ERROR(str, ...) printf(PRINT_BOLDRED str PRINT_RESET, __VA_ARGS__)
 #define ERRORSTR(str) printf(PRINT_BOLDRED str PRINT_RESET)
 #define WARNING(str, ...) printf(PRINT_BOLDYELLOW str PRINT_RESET, __VA_ARGS__)

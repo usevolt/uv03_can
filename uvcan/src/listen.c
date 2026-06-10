@@ -30,7 +30,9 @@
 #define this (&dev.listen)
 
 
-void listen(void *);
+// named listen_task rather than listen to avoid clashing with the Winsock
+// listen() function on the Windows target.
+void listen_task(void *);
 
 
 bool cmd_listen(const char *arg) {
@@ -46,7 +48,7 @@ bool cmd_listen(const char *arg) {
 	}
 	uv_can_set_up(false);
 
-	add_task(&listen);
+	add_task(&listen_task);
 
 	return ret;
 }
@@ -79,7 +81,7 @@ void can_callb(void *ptr, uv_can_msg_st *msg) {
 }
 
 
-void listen(void *ptr) {
+void listen_task(void *ptr) {
 	uint64_t time = 0;
 	unsigned step_ms = 20;
 

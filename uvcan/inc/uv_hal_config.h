@@ -42,6 +42,50 @@ extern bool silent;
 #define CONFIG_UV_BOOTLOADER						1
 
 
+#define CONFIG_UI									1
+// The UI rendering backend (CONFIG_UI_OPENGL / CONFIG_UI_X11) is selected in
+// the makefile. Host fonts (font16..font108) are rendered from a TTF via
+// freetype; the fonts/ directory must sit next to the binary at runtime.
+#define CONFIG_UI_FGC								C(0xFF945dd2)
+#define CONFIG_UI_STYLES_COUNT						1
+#define CONFIG_UI_STYLE_FG_C_1						CONFIG_UI_FGC
+#define CONFIG_UI_STYLE_BG_C_1						C(0xFF373a44)
+#define CONFIG_UI_STYLE_FONT_1						UI_TEXT_FONT
+#define CONFIG_UI_STYLE_WINDOW_C_1					C(0xFF040404)
+#define CONFIG_UI_STYLE_TEXT_COLOR_1				C(0xFFFFFFFF)
+#define CONFIG_UI_STYLE_DISPLAY_C_1					C(0xFF151516)
+#define CONFIG_UI_DISABLED_OBJECT_BRIGHTNESS		-60
+#define CONFIG_UI_TOUCHSCREEN						1
+#define CONFIG_UI_WINDOW_SCROLLBAR_WIDTH			6
+#define CONFIG_UI_CLICK_THRESHOLD					5
+#define CONFIG_UI_PROGRESSBAR_WIDTH					3
+#define CONFIG_UI_PROGRESSBAR_SPACE					3
+#define CONFIG_UI_PROGRESSBAR_HEIGHT				10
+#define CONFIG_UI_TREEVIEW_ITEM_HEIGHT				40
+#define CONFIG_UI_TREEVIEW_ARROW_FONT				font16
+#define CONFIG_UI_BUTTON_LONGPRESS_DELAY_MS			2000
+#define CONFIG_UI_LISTBUTTON_BAR_HEIGHT				4
+#define CONFIG_UI_GRAPH_LINE_WIDTH					1
+#define CONFIG_UI_RADIUS							2
+#define CONFIG_UI_DIGITEDIT_INCDEC_BUTTON_WIDTH		40
+#define CONFIG_UI_SLIDER_WIDTH						40
+#define CONFIG_UI_SLIDER_INC_DEC_WIDTH				30
+#define CONFIG_UI_TABWINDOW_HEADER_HEIGHT			40
+#define CONFIG_UIVALVESLIDER_HANDLE_WIDTH			40
+#define CONFIG_UI_TABWINDOW_HEADER_MIN_WIDTH		90
+#define CONFIG_UI_LIST_ENTRY_HEIGHT					50
+#define UI_TEXT_FONT								font16
+#define UI_TITLE_FONT								font25
+#define UI_BIG_FONT									font28
+#define UI_LARGE_FONT								font36
+#define UI_HUGE_FONT								font63
+#define UI_GIGANT_FONT								font83
+#define UI_MAXIMUM_FONT								font108
+// Logical UI canvas size. On the host OpenGL/X11 backend this is the window
+// size; the framework also uses it for visibility/clipping calculations.
+#define CONFIG_FT81X_HSIZE							800
+#define CONFIG_FT81X_VSIZE							480
+
 #define CONFIG_PWM									0
 #define CONFIG_PWM0									0
 #define CONFIG_PWM0_FREQ							200

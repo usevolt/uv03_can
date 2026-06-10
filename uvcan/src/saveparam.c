@@ -23,11 +23,18 @@
 #include "saveparam.h"
 #include "main.h"
 #include "db.h"
+#if CONFIG_TARGET_WIN
+#include "uv_win_compat.h"
+#else
 #include <libgen.h>
+#endif
 
 #define this (&dev.saveparam)
 
 
+// <windows.h> (via the FreeRTOS Win32 port) defines ERROR as 0; undef it so
+// this colored-print macro can be defined without a redefinition warning.
+#undef ERROR
 #define ERROR(str, ...) printf(PRINT_BOLDRED str PRINT_RESET, __VA_ARGS__)
 #define ERRORSTR(str) printf(PRINT_BOLDRED str PRINT_RESET)
 #define WARNING(str, ...) printf(PRINT_BOLDYELLOW str PRINT_RESET, __VA_ARGS__)
@@ -457,6 +464,10 @@ void saveparam_step(void *ptr) {
 		}
 		fwrite(json_buffer, 1, strlen(json_buffer), dest);
 		fclose(dest);
+#if CONFIG_TARGET_LINUX
+		// Pretty-print (refactor) the JSON file with jq. This relies on the
+		// jq/cp/rm shell utilities which are not available on native Windows,
+		// so the step is skipped there (the file is already written above).
 		printf("Refactoring the JSON file\n");
 		fflush(stdout);
 		char cmd[1024];
@@ -476,6 +487,7 @@ void saveparam_step(void *ptr) {
 		}
 		sprintf(cmd, "rm %s", tempname);
 		if (system(cmd));
+#endif
 
 		printf("All parameters stored successfully to '%s'\n", this->file);
 		fflush(stdout);

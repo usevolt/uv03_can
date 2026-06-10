@@ -25,10 +25,17 @@
 #include <uv_json.h>
 #include <ctype.h>
 #include "main.h"
+#if CONFIG_TARGET_WIN
+#include "uv_win_compat.h"
+#else
 #include <libgen.h>
 #include <wordexp.h>
 #include <readline/readline.h>
+#endif
 
+// <windows.h> (via the FreeRTOS Win32 port) defines ERROR as 0; undef it so
+// this colored-print macro can be defined without a redefinition warning.
+#undef ERROR
 #define ERROR(str, ...) printf(PRINT_BOLDRED str PRINT_RESET, __VA_ARGS__)
 #define ERRORSTR(str) printf(PRINT_BOLDRED str PRINT_RESET)
 #define WARNING(str, ...) printf(PRINT_BOLDYELLOW str PRINT_RESET, __VA_ARGS__)
