@@ -64,6 +64,24 @@ bool cmd_loadparam(const char *arg) {
 }
 
 
+/// @brief: Resolve the readable answer-keyed query form: return the child of
+/// *qref* whose key matches the query's chosen answer text, or NULL (with a
+/// warning) if no such key exists.
+///
+/// The returned pointer is a named member, so it is usable with all the generic
+/// uv_jsonreader accessors (get_type/get_int/get_string/find_child) and with
+/// array_get_size/array_at, unlike a bare array element from array_at.
+static char *query_keyed_select(char *qref, query_st *q) {
+	char *answer = q->answers[q->correct_answer];
+	char *sel = uv_jsonreader_find_child(qref, answer);
+	if (sel == NULL) {
+		WARNING("Query '%s': chosen answer \"%s\" is not a key in its value "
+				"object. Skipping this value.\n", q->name, answer);
+	}
+	return sel;
+}
+
+
 /// @brief: Gets and returns the query value. Integer values are returned,
 /// string values are copied to *dest_str*.
 ///
@@ -81,38 +99,49 @@ static int query_get(char *json_obj, char *dest_str, int dest_len, char **array_
 		// name matches with query name, fetch that value
 		for (uint8_t i = 0; i < uv_vector_size(&this->queries); i++) {
 			query_st *q = uv_vector_at(&this->queries, i);
-			char *query_array = uv_jsonreader_find_child(json_obj, q->name);
-			if (query_array != NULL) {
+			char *qref = uv_jsonreader_find_child(json_obj, q->name);
+			if (qref != NULL) {
 				printf("Query %s answered: (%u) %s\n",
 						q->name,
 						q->correct_answer + 1,
 						q->answers[q->correct_answer]);
-				// matching query found, fetch the answer
-				switch(uv_jsonreader_array_get_type(query_array, q->correct_answer)) {
-				case JSON_OBJECT:
-				{
-					char *newquery = uv_jsonreader_array_at(
-							query_array, q->correct_answer);
-					// found new query inside query, parse it recursively
-					ret = query_get(newquery, dest_str, dest_len, array_obj);
-					break;
-				}
-				case JSON_INT:
-					ret = uv_jsonreader_array_get_int(query_array, q->correct_answer);
-					break;
-				case JSON_STRING:
-					if (uv_jsonreader_array_get_size(query_array) > q->correct_answer) {
-						uv_jsonreader_array_get_string(query_array,
-								q->correct_answer,
-								dest_str,
-								dest_len);
+				if (uv_jsonreader_get_type(qref) == JSON_OBJECT) {
+					// readable answer-keyed form: { "<answer>": <value>, ... }.
+					// Resolve the chosen answer's value and parse it recursively;
+					// the generic query_get handles int/string/array/nested query.
+					char *sel = query_keyed_select(qref, q);
+					if (sel != NULL) {
+						ret = query_get(sel, dest_str, dest_len, array_obj);
 					}
-					break;
-				case JSON_ARRAY:
-					*array_obj = uv_jsonreader_array_at(query_array, q->correct_answer);
-					break;
-				default:
-					break;
+				}
+				else {
+					// legacy positional-array form: indexed by the answer number
+					switch(uv_jsonreader_array_get_type(qref, q->correct_answer)) {
+					case JSON_OBJECT:
+					{
+						char *newquery = uv_jsonreader_array_at(
+								qref, q->correct_answer);
+						// found new query inside query, parse it recursively
+						ret = query_get(newquery, dest_str, dest_len, array_obj);
+						break;
+					}
+					case JSON_INT:
+						ret = uv_jsonreader_array_get_int(qref, q->correct_answer);
+						break;
+					case JSON_STRING:
+						if (uv_jsonreader_array_get_size(qref) > q->correct_answer) {
+							uv_jsonreader_array_get_string(qref,
+									q->correct_answer,
+									dest_str,
+									dest_len);
+						}
+						break;
+					case JSON_ARRAY:
+						*array_obj = uv_jsonreader_array_at(qref, q->correct_answer);
+						break;
+					default:
+						break;
+					}
 				}
 				break;
 			}
@@ -184,6 +213,7 @@ static uv_errors_e load_param(char *json_obj,
 
 	char *query_array = NULL;
 	query_st *query = NULL;
+	bool skip = false;
 	if (data == NULL) {
 		// DATA object not found. Check if any queries are defined
 		for (uint16_t i = 0; i < uv_vector_size(&this->queries); i++) {
@@ -204,14 +234,27 @@ static uv_errors_e load_param(char *json_obj,
 		}
 	}
 
+	// If the query value uses the readable answer-keyed object form, resolve the
+	// chosen answer's value into *data* so the regular DATA code paths below
+	// handle it uniformly (the resolved pointer is a named member). A missing
+	// answer key warns and skips writing this parameter.
+	if (query_array != NULL &&
+			uv_jsonreader_get_type(query_array) == JSON_OBJECT) {
+		data = query_keyed_select(query_array, query);
+		query_array = NULL;
+		if (data == NULL) {
+			skip = true;
+		}
+	}
+
 	// at this point either *data* or *query_array* should contain
 	// object to load
 
-	uv_json_types_e type;
+	uv_json_types_e type = JSON_UNSUPPORTED;
 	if (data) {
 		type = uv_jsonreader_get_type(data);
 	}
-	else {
+	else if (!skip) {
 		type = uv_jsonreader_array_get_type(
 				query_array, query->correct_answer);
 		if (type == JSON_OBJECT) {
@@ -223,9 +266,12 @@ static uv_errors_e load_param(char *json_obj,
 
 		}
 	}
+	else {
+		// answer key missing from keyed query value: nothing to load
+	}
 
 
-	if (ret == ERR_NONE) {
+	if (ret == ERR_NONE && !skip) {
 		if (type == JSON_ARRAY) {
 			char *array = NULL;
 			if (data != NULL) {
@@ -327,7 +373,7 @@ static uv_errors_e load_param(char *json_obj,
 			}
 		}
 	}
-	else {
+	else if (ret != ERR_NONE) {
 		LOG_END();
 		ERRORSTR("Parameter in a wrong format\n");
 		if (strlen(info) != 0) {
@@ -337,6 +383,9 @@ static uv_errors_e load_param(char *json_obj,
 			ERRORSTR("'INFO' value not found from the parameter.\n\n");
 		}
 		fflush(stderr);
+	}
+	else {
+		// skipped (e.g. missing answer key); already warned, nothing to do
 	}
 
 
@@ -394,15 +443,26 @@ static uv_errors_e parse_dev(char *json) {
 
 	// parse recursively queried object
 	if (query_array != NULL) {
-		json = uv_jsonreader_array_at(query_array, query->correct_answer);
+		if (uv_jsonreader_get_type(query_array) == JSON_OBJECT) {
+			// readable answer-keyed form: select the device sub-object by the
+			// chosen answer's text (query_keyed_select warns if the key is missing)
+			json = query_keyed_select(query_array, query);
+		}
+		else {
+			// legacy positional-array form
+			json = uv_jsonreader_array_at(query_array, query->correct_answer);
+		}
 		if (json != NULL) {
 			ret = parse_dev(json);
 		}
-		else {
+		else if (uv_jsonreader_get_type(query_array) != JSON_OBJECT) {
 			WARNING("Query '%s' didn't contain selected answer index %i,\n"
 					"Skipping this device.\n",
 					query->name,
 					query->correct_answer);
+		}
+		else {
+			// keyed form already warned via query_keyed_select
 		}
 	}
 	else {
@@ -665,7 +725,16 @@ void loadparam_step(void *ptr) {
 
 				uv_jsonreader_init(json, strlen(json));
 
-				// QUERIES array can hold queries that affect the param values
+				// QUERIES array can hold queries that affect the param values.
+				// A query is referenced inside a value by its NAME. Two forms
+				// are supported for selecting the value by the chosen answer:
+				//   legacy positional array, indexed by the answer number:
+				//       "DATA": { "valve": [2000, 3500] }
+				//   readable answer-keyed object, keyed by the answer text:
+				//       "DATA": { "valve": { "Danfoss": 2000, "Sauer": 3500 } }
+				// The keyed form is self-documenting and order-independent. If
+				// the chosen answer's key is missing, that value is skipped with
+				// a warning.
 				char *obj = uv_jsonreader_find_child(json, "QUERIES");
 				if (obj != NULL &&
 						uv_jsonreader_get_type(obj) == JSON_ARRAY) {

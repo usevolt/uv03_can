@@ -49,6 +49,22 @@ The application uses a global `struct _dev_st dev` instance (defined via `CONFIG
 | sdo | `src/sdo.c` | Direct SDO read/write operations |
 | loadmedia | `src/loadmedia.c` | Media file upload via UV media protocol |
 
+### Parameter file query value formats
+
+`loadparam` files may declare a `QUERIES` array of interactive prompts; the chosen
+answer then selects which value a parameter receives. A query is referenced inside
+a value by its `NAME`, in one of two interchangeable forms (detected by value type):
+
+- **Positional array** (legacy), indexed by the answer number — must stay aligned with `ANSWERS`:
+  `"DATA": { "valve": [2000, 3500] }`
+- **Answer-keyed object** (readable), keyed by the answer text — self-documenting and order-independent:
+  `"DATA": { "valve": { "Danfoss": 2000, "Sauer": 3500 } }`
+
+Prefer the keyed form for new files. If the chosen answer's key is missing from a
+keyed object, that value is skipped with a warning. Both forms work anywhere a
+query is referenced (`DATA`, `MAININDEX`, `TYPE`, `SUBINDEX`, `NODEID`, and
+device-selecting queries).
+
 ### Configuration
 
 `inc/uv_hal_config.h` contains all HAL feature flags and the `PRINT()` macro (stderr output, suppressed with `--silent`). CAN defaults: channel `can0`, baudrate 250000.
