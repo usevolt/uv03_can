@@ -1,3 +1,3 @@
-[submodule "uvcan/hal"]
-	path = uvcan/hal
+[submodule "sw/hal"]
+	path = sw/hal
 	url = https://github.com/usevolt/uv_hal.git

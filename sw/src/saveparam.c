@@ -1,0 +1,664 @@
+/* 
+ * This file is part of the uv_hal distribution (www.usevolt.fi).
+ * Copyright (c) 2017 Usevolt Oy.
+ * 
+ * This program is free software: you can redistribute it and/or modify  
+ * it under the terms of the GNU General Public License as published by  
+ * the Free Software Foundation, version 3.
+ *
+ * This program is distributed in the hope that it will be useful, but 
+ * WITHOUT ANY WARRANTY; without even the implied warranty of 
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU 
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License 
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+*/
+
+
+
+#include <stdio.h>
+#include <string.h>
+#include <uv_json.h>
+#include "saveparam.h"
+#include "main.h"
+#include "db.h"
+#include "system.h"
+#include "uvdev.h"
+#if CONFIG_TARGET_WIN
+#include "uv_win_compat.h"
+#else
+#include <libgen.h>
+#endif
+
+#define this (&dev.saveparam)
+
+
+// <windows.h> (via the FreeRTOS Win32 port) defines ERROR as 0; undef it so
+// this colored-print macro can be defined without a redefinition warning.
+#undef ERROR
+#define ERROR(str, ...) printf(PRINT_BOLDRED str PRINT_RESET, __VA_ARGS__)
+#define ERRORSTR(str) printf(PRINT_BOLDRED str PRINT_RESET)
+#define WARNING(str, ...) printf(PRINT_BOLDYELLOW str PRINT_RESET, __VA_ARGS__)
+#define WARNINGSTR(str) printf(PRINT_BOLDYELLOW str PRINT_RESET)
+
+
+void saveparam_step(void *dev);
+
+
+
+
+bool cmd_saveparamall(const char *arg) {
+	bool ret = cmd_saveparam(arg);
+	this->all = true;
+	return ret;
+}
+
+
+bool cmd_saveparam(const char *arg) {
+	bool ret = true;
+	this->all = false;
+
+	if (!arg) {
+		ERRORSTR("ERROR: Give filepath to the file where the parameters are stored.\n");
+	}
+	else if (!db_is_loaded(&dev.db) && system_get_dev_count(&dev.system) == 0) {
+		ERRORSTR("ERROR: Load a database with --db, or provide one or more device\n"
+				"packages with --dev, in order to use the --saveparam command.\n");
+	}
+	else {
+		printf("Parameter file '%s' selected\n", arg);
+		strcpy(this->file, arg);
+		if (db_is_loaded(&dev.db)) {
+			this->nodeid = db_get_nodeid(&dev.db);
+		}
+		add_task(saveparam_step);
+		uv_can_set_up(false);
+	}
+
+	return ret;
+}
+
+
+/// @brief: fetches the CANopen parameter from the device and writes it into the json
+static uv_errors_e json_add_obj(uv_json_st *dest_json, db_obj_st *obj, char *info_str) {
+	uv_errors_e ret = ERR_NONE;
+	char bfr[20240] = {};
+	uv_json_st json;
+	// we create object on an own json file. Since JSON file itself wraps the data
+	// inside an object, we dont need to create additional object for the data
+	uv_jsonwriter_init(&json, bfr, sizeof(bfr));
+	if (info_str != NULL && strlen(info_str) != 0) {
+		uv_jsonwriter_add_string(&json, "INFO", info_str);
+	}
+	uv_jsonwriter_add_int_hex(&json, "MAININDEX", obj->obj.main_index);
+	if (CANOPEN_IS_INTEGER(obj->obj.type)) {
+		uv_jsonwriter_add_int(&json, "SUBINDEX", obj->obj.sub_index);
+	}
+	char type[64];
+	db_type_to_str(obj->obj.type, type);
+	uv_jsonwriter_add_string(&json, "TYPE", type);
+
+	LOG("Reading %s (0x%x)...",
+			info_str,
+			obj->obj.main_index);
+
+	if (CANOPEN_IS_ARRAY(obj->obj.type)) {
+		uint32_t arr_len = 0;
+		// fetch the array length
+		ret = uv_canopen_sdo_read(db_get_nodeid(&dev.db),
+				obj->obj.main_index, 0, CANOPEN_SIZEOF(obj->obj.type), &arr_len);
+		if (ret == ERR_NONE) {
+			// fetch all the elements
+			uv_jsonwriter_begin_array(&json, "DATA");
+			db_array_child_st *child = obj->child_ptr;
+			for (uint32_t i = 0; i < arr_len; i++) {
+				uint32_t data = 0;
+				ret = uv_canopen_sdo_read(db_get_nodeid(&dev.db),
+						obj->obj.main_index, i + 1, CANOPEN_SIZEOF(obj->obj.type), &data);
+				if (ret != ERR_NONE) {
+					break;
+				}
+				else {
+					LOG("Reading %s (0x%x) [%u/%u]...",
+							info_str, obj->obj.main_index, i + 1, arr_len);
+					uv_errors_e e = uv_jsonwriter_begin_object(&json);
+					e |= uv_jsonwriter_add_string(&json, "INFO",
+											 dbvalue_get_string(&child->name));
+					e |= uv_jsonwriter_add_int(&json, "SUBINDEX", i + 1);
+					if ((child &&
+							child->numsys == DB_OBJ_NUMSYS_HEX) ||
+							(!child &&
+								obj->numsys == DB_OBJ_NUMSYS_HEX)) {
+						e |= uv_jsonwriter_add_int_hex(&json, "DATA", data);
+					}
+					else {
+						e |= uv_jsonwriter_add_int(&json, "DATA", data);
+					}
+					e |= uv_jsonwriter_end_object(&json);
+					child = child->next_sibling;
+					if (!child) {
+						break;
+					}
+					if (e != ERR_NONE) {
+						ERROR("Parameter '%s' too large to fit to buffer",
+							  info_str);
+					}
+				}
+			}
+			uv_jsonwriter_end_array(&json);
+		}
+	}
+	else if (CANOPEN_IS_STRING(obj->obj.type)) {
+		// string type objects are of variable length. Try to read the maximum length,
+		// The INITIATE_DOMAIN_UPLOAD request should scale the read length
+		// to the string size.
+		unsigned int size = 65536;
+		char *str = malloc(size);
+		memset(str, 0, size);
+		ret = uv_canopen_sdo_read(db_get_nodeid(&dev.db), obj->obj.main_index,
+				0, size, str);
+		if (ret == ERR_NONE) {
+			uv_jsonwriter_add_string(&json, "DATA", str);
+		}
+		free(str);
+	}
+	else {
+		// expedited objects
+		int32_t data = 0;
+		ret = uv_canopen_sdo_read(db_get_nodeid(&dev.db), obj->obj.main_index,
+				obj->obj.sub_index, CANOPEN_SIZEOF(obj->obj.type), &data);
+		if (ret == ERR_NONE) {
+			if (obj->numsys == DB_OBJ_NUMSYS_HEX) {
+				uv_jsonwriter_add_int_hex(&json, "DATA", data);
+			}
+			else {
+				// write the received data to the json
+				uv_jsonwriter_add_int(&json, "DATA", data);
+			}
+		}
+	}
+	uv_json_errors_e e = ERR_NONE;
+	uv_jsonwriter_end(&json, &e);
+	ret |= e;
+	// append the temp json file to the dest_json if everything was successful
+	if (ret == ERR_NONE) {
+		if (!uv_jsonwriter_append_json(dest_json, bfr)) {
+			ret |= ERR_ABORTED;
+		}
+	}
+
+	if (ret != ERR_NONE) {
+		LOG_END();
+		ERROR("Error in obj 0x%x\n", obj->obj.main_index);
+		LOG_SDO_ERROR();
+	}
+
+	return ret;
+}
+
+
+
+/// @brief: Reads all parameters of the currently loaded database (dev.db) from
+/// the device on the bus and writes them as a single object into the open DEVS
+/// array of *json*. Returns the accumulated error status.
+static uv_errors_e save_device(uv_json_st *json) {
+	uv_errors_e e = ERR_NONE;
+
+	int16_t can_if = -1;
+	// CAN IF
+	bool if_found = false;
+	db_obj_st *if_obj = NULL;
+	for (uint16_t i = 0; i < db_get_object_count(&dev.db); i++) {
+		if_obj = db_get_obj(&dev.db, i);
+		if (if_obj->obj_type == DB_OBJ_TYPE_IF_VERSION) {
+			if (uv_canopen_sdo_read(db_get_nodeid(&dev.db), if_obj->obj.main_index, if_obj->obj.sub_index,
+					CANOPEN_SIZEOF(if_obj->obj.type), &can_if) == ERR_NONE) {
+				uv_errors_e e = db_check_can_if_version(&dev.db,
+						db_get_revision_number(&dev.db), can_if,
+						"database", "device");
+				if (e == ERR_NONE) {
+					if_found = true;
+				}
+			}
+			else {
+				LOG_SDO_ERROR();
+				PROMPTSTR("ALERT: Could not read CAN interface version\n"
+						"number from device.\n"
+						"Press anything to continue...\n\n");
+				portDISABLE_INTERRUPTS();
+				fgetc(stdin);
+				portENABLE_INTERRUPTS();
+				printf("User acknowledged: CAN IF version read failed\n");
+			}
+			break;
+		}
+	}
+	if (!if_found) {
+		PROMPTSTR("ALERT: CAN interface version number not defined.\n"
+				"The database of device software does not define\n"
+				"CAN interface version number. Parameter saving might result\n"
+				"in undefined behaviour.\n\n"
+				"Press anything to continue...\n\n");
+		portDISABLE_INTERRUPTS();
+		fgetc(stdin);
+		portENABLE_INTERRUPTS();
+		printf("User acknowledged: CAN IF version not defined\n");
+	}
+
+
+	e |= uv_jsonwriter_begin_object(json);
+
+	if (if_found) {
+		e |= uv_jsonwriter_add_int(json, "CAN IF VERSION", can_if);
+		e |= uv_jsonwriter_add_int_hex(json, "CAN IF MINDEX", if_obj->obj.main_index);
+		e |= uv_jsonwriter_add_int(json, "CAN IF SINDEX", if_obj->obj.sub_index);
+		e |= uv_jsonwriter_add_string(json, "CAN IF TYPE", if_obj->type_str);
+	}
+
+	e |= uv_jsonwriter_add_int_hex(json, "NODEID", db_get_nodeid(&dev.db));
+
+	char devname[256] = { };
+	uv_canopen_sdo_read(db_get_nodeid(&dev.db),
+			CONFIG_CANOPEN_DEVNAME_INDEX, 0,
+			sizeof(devname), devname);
+	e |= uv_jsonwriter_add_string(json, "DEVNAME", devname);
+
+	e |= uv_jsonwriter_begin_array(json, "PARAMS");
+
+	db_obj_st obj;
+
+	// CANopen fields that are not found from the database file
+	if (this->all) {
+		// nodeid
+		obj.obj.main_index = CONFIG_CANOPEN_NODEID_INDEX;
+		obj.obj.sub_index = 0;
+		obj.obj.type = CANOPEN_UNSIGNED8;
+		e |= json_add_obj(json, &obj, "nodeid");
+
+		obj.obj.main_index = CONFIG_CANOPEN_BAUDRATE_INDEX;
+		obj.obj.sub_index = 0;
+		obj.obj.type = CANOPEN_UNSIGNED32;
+		e |= json_add_obj(json, &obj, "baudrate");
+
+		// heartbeat producer time ms
+		obj.obj.main_index = CONFIG_CANOPEN_PRODUCER_HEARTBEAT_INDEX;
+		obj.obj.sub_index = 0;
+		obj.obj.type = CANOPEN_UNSIGNED16;
+		e |= json_add_obj(json, &obj, "heartbeat producer");
+
+		// heartbeat consumer
+		obj.obj.main_index = CONFIG_CANOPEN_CONSUMER_HEARTBEAT_INDEX;
+		obj.obj.type = CANOPEN_ARRAY32;
+		// note: error checking disabled for heartbeat consumer since
+		// it is not mandatory field on the device
+		e |= json_add_obj(json, &obj, "heartbeat consumer");
+
+		// rxpdo's
+		for (uint32_t i = 0; i < db_get_rxpdo_count(&dev.db); i++) {
+			obj.obj.main_index = CONFIG_CANOPEN_RXPDO_COM_INDEX + i;
+			obj.obj.type = CANOPEN_ARRAY32;
+			char str[64];
+			sprintf(str, "rxpdo %i com", i);
+			e |= json_add_obj(json, &obj, str);
+
+			obj.obj.main_index = CONFIG_CANOPEN_RXPDO_MAP_INDEX + i;
+			obj.obj.type = CANOPEN_ARRAY32;
+			sprintf(str, "rxpdo %i map", i);
+			e |= json_add_obj(json, &obj, str);
+		}
+
+		// txpdo's
+		for (uint32_t i = 0; i < db_get_txpdo_count(&dev.db); i++) {
+			obj.obj.main_index = CONFIG_CANOPEN_TXPDO_COM_INDEX + i;
+			obj.obj.type = CANOPEN_ARRAY32;
+			char str[64];
+			sprintf(str, "txpdo %i com", i);
+			e |= json_add_obj(json, &obj, str);
+
+			obj.obj.main_index = CONFIG_CANOPEN_TXPDO_MAP_INDEX + i;
+			obj.obj.type = CANOPEN_ARRAY32;
+			sprintf(str, "txpdo %i map", i);
+			e |= json_add_obj(json, &obj, str);
+		}
+	}
+
+	// fetch the active operator and the operator count
+	uint32_t current_op = 0;
+	uint32_t op_count = 0;
+	db_obj_st *opdb_obj = NULL;
+	for (uint32_t i = 0; i < db_get_object_count(&dev.db); i++) {
+		db_obj_st *o = db_get_obj(&dev.db, i);
+		if (o->obj_type == DB_OBJ_TYPE_CURRENT_OP) {
+			e |= uv_canopen_sdo_read(db_get_nodeid(&dev.db), o->obj.main_index,
+					o->obj.sub_index, CANOPEN_SIZEOF(o->obj.type), &current_op);
+		}
+		else if (o->obj_type == DB_OBJ_TYPE_OP_COUNT) {
+			e |= uv_canopen_sdo_read(db_get_nodeid(&dev.db), o->obj.main_index,
+					o->obj.sub_index, CANOPEN_SIZEOF(o->obj.type), &op_count);
+		}
+		else if (o->obj_type == DB_OBJ_TYPE_OPDB) {
+			opdb_obj = o;
+		}
+		else {
+
+		}
+	}
+
+	if (op_count > 0 && opdb_obj != NULL) {
+		// end PARAMS array
+		e |= uv_jsonwriter_end_array(json);
+
+		// multiple operators found on the device. group all the parameters
+		// operator-wise in an array of objects.
+		e |= uv_jsonwriter_begin_array(json, "OPERATORS");
+
+		for (uint32_t i = 0; i < op_count; i++) {
+			// change the operator on the device
+			uint32_t val = i + 1;
+			LOG("Changing active operator to op %u...", val);
+			e |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), opdb_obj->obj.main_index,
+					1, CANOPEN_SIZEOF(opdb_obj->obj.type), &val);
+			// wait for the device to switch the operator before reading params
+			uv_rtos_task_delay(500);
+			LOG("Saving parameters for operator %u", val);
+
+			e |= uv_jsonwriter_begin_array(json, "");
+			for (int32_t i = 0; i < db_get_object_count(&dev.db); i++) {
+				obj = *db_get_obj(&dev.db, i);
+				char *objname = dbvalue_get_string(&obj.name);
+				if (obj.obj_type == DB_OBJ_TYPE_NONVOL_PARAM) {
+					if (dev.argv_count != 0) {
+						// if additional arguments are given, these are parsed as main indexes or names
+						// for the parameters that are saved
+						for (uint16_t i = 0; i < dev.argv_count; i++) {
+							uint16_t mindex = strtol(dev.nonopt_argv[i], NULL, 0);
+							char *name = dev.nonopt_argv[i];
+							if ((strcmp(objname, name) == 0) ||
+									(mindex == obj.obj.main_index)) {
+								e |= json_add_obj(json, &obj, objname);
+								break;
+							}
+						}
+					}
+					else {
+						// no additional arguments given, just save all nonvol parameters
+						e |= json_add_obj(json, &obj, objname);
+					}
+				}
+			}
+			// end PARAMS array on OP
+			e |= uv_jsonwriter_end_array(json);
+		}
+		// end OPERATORS array
+		e |= uv_jsonwriter_end_array(json);
+
+		// add current op field
+		e |= uv_jsonwriter_add_int(json, "CURRENT_OP", current_op);
+
+		// add opdb information
+		e |= uv_jsonwriter_add_int(json, "OPDB_MAININDEX", opdb_obj->obj.main_index);
+		char str[128];
+		db_type_to_str(opdb_obj->obj.type, str);
+		e |= uv_jsonwriter_add_string(json, "OPDB_TYPE", str);
+
+		// lastly set the current operator back to the default one on the device
+		uint32_t val = current_op + 1;
+		e |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), opdb_obj->obj.main_index,
+				1, CANOPEN_SIZEOF(opdb_obj->obj.type), &val);
+	}
+	else {
+		// current_op and op_count parameters could not be found.
+		// Thus just load all the parameters as-is.
+		for (int32_t i = 0; i < db_get_object_count(&dev.db); i++) {
+			obj = *db_get_obj(&dev.db, i);
+
+			if (obj.obj_type == DB_OBJ_TYPE_NONVOL_PARAM) {
+				char *objname = dbvalue_get_string(&obj.name);
+				if (dev.argv_count != 0) {
+					// if additional arguments are given, these are parsed as main indexes or names
+					// for the parameters that are saved
+					for (uint16_t i = 0; i < dev.argv_count; i++) {
+						if ((strcmp(objname, dev.nonopt_argv[i]) == 0) ||
+								(strtol(dev.nonopt_argv[i], NULL, 0) == obj.obj.main_index)) {
+							e |= json_add_obj(json, &obj, objname);
+						}
+					}
+				}
+				else {
+					// no additional arguments given, just save all nonvol parameters
+					e |= json_add_obj(json, &obj, objname);
+				}
+			}
+		}
+		// end PARAMS array
+		e |= uv_jsonwriter_end_array(json);
+	}
+
+	// end DEV object
+	e |= uv_jsonwriter_end_object(json);
+
+	if (opdb_obj == NULL || op_count == 0) {
+		WARNINGSTR("\nWARNING: Operator database parameter or operator count parameter not\n"
+				"found on the device. All parameters were saved in PARAMS array.\n\n");
+		fflush(stdout);
+	}
+
+	return e;
+}
+
+
+/// @brief: Loads the database from the .uvdev package at *uvdev_path* into
+/// dev.db, then saves that device into the open DEVS array of *json*. The
+/// package's database "content" includes are resolved relative to the package
+/// root, so the load is performed with the working directory temporarily
+/// changed into the extracted package, mirroring how the database is loaded
+/// during the firmware build.
+static uv_errors_e save_device_from_uvdev(uv_json_st *json, const char *uvdev_path,
+		uint8_t nodeid) {
+	uv_errors_e ret = ERR_NONE;
+	uvdev_st pkg;
+
+	if (!uvdev_open(&pkg, uvdev_path)) {
+		ret = ERR_ABORTED;
+	}
+	else if (strlen(pkg.database) == 0) {
+		ERROR("Device package '%s' has no DATABASE entry in its uvdev.json "
+				"manifest.\n", uvdev_path);
+		uvdev_close(&pkg);
+		ret = ERR_ABORTED;
+	}
+	else {
+		char cwd[1024] = {};
+		bool loaded = false;
+		if (getcwd(cwd, sizeof(cwd)) != NULL &&
+				chdir(pkg.dir) == 0) {
+			loaded = cmd_db(pkg.database);
+			// override the package's default node id with the device's actual
+			// one (e.g. one given on the command line or discovered on the bus)
+			if (loaded && (nodeid != 0)) {
+				db_set_nodeid_force(&dev.db, nodeid);
+			}
+			// restore the original working directory before writing anything
+			if (chdir(cwd)) {
+				// ignore; cwd should always be restorable
+			}
+		}
+		else {
+			ERROR("Failed to enter the extracted package directory for '%s'.\n",
+					uvdev_path);
+		}
+
+		if (loaded) {
+			printf("Saving parameters for device '%s' (node 0x%x)\n",
+					uvdev_path, db_get_nodeid(&dev.db));
+			ret = save_device(json);
+		}
+		else {
+			ERROR("Failed to load the database '%s' from package '%s'.\n",
+					pkg.database, uvdev_path);
+			ret = ERR_ABORTED;
+		}
+		uvdev_close(&pkg);
+	}
+
+	return ret;
+}
+
+
+/// @brief: Pretty-prints (refactors) the JSON file at *file* in place with jq.
+/// Relies on the jq/cp/rm shell utilities, which are not available on native
+/// Windows, so the step is skipped there.
+static void prettify_json_file(const char *file) {
+#if CONFIG_TARGET_LINUX
+	printf("Refactoring the JSON file\n");
+	fflush(stdout);
+	char cmd[1024];
+	char tempname[270];
+	char fcopy[256];
+	strcpy(fcopy, file);
+	char *base = basename(fcopy);
+	char *dir = dirname(fcopy);
+	sprintf(tempname, "%s/__%s_temp", dir, base);
+	sprintf(cmd, "jq '.' %s > %s", file, tempname);
+	printf("Running the command: %s\n", cmd);
+	fflush(stdout);
+	if (system(cmd) == 0) {
+		// copy the refactored output to the actual file and remove the temp file
+		sprintf(cmd, "cp %s %s", tempname, file);
+		if (system(cmd));
+	}
+	sprintf(cmd, "rm %s", tempname);
+	if (system(cmd));
+#else
+	(void) file;
+#endif
+}
+
+
+bool saveparam_save_device(device_st *device, const char *file) {
+	bool ret = false;
+	if ((device == NULL) || (file == NULL) || (strlen(file) == 0)) {
+		ERRORSTR("ERROR: saveparam_save_device: no device or file given.\n");
+	}
+	else if (strlen(device->filepath) == 0) {
+		ERRORSTR("ERROR: the device has no configuration package, cannot read its\n"
+				"object dictionary to save parameters. Assign a .uvdev file first.\n");
+	}
+	else {
+		uv_can_set_up(false);
+		FILE *dest = fopen(file, "wb");
+		if (dest == NULL) {
+			ERROR("Failed creating the output file '%s'\n", file);
+		}
+		else {
+			static char json_buffer[65536 * 16] = {};
+			uv_json_st json;
+			uv_errors_e e = ERR_NONE;
+			e |= uv_jsonwriter_init(&json, json_buffer, sizeof(json_buffer));
+			e |= uv_jsonwriter_begin_array(&json, "DEVS");
+			e |= save_device_from_uvdev(&json, device->filepath, device->nodeid);
+			e |= uv_jsonwriter_end_array(&json);
+			e |= uv_jsonwriter_end(&json, NULL);
+			LOG_END();
+			fwrite(json_buffer, 1, strlen(json_buffer), dest);
+			fclose(dest);
+			prettify_json_file(file);
+			if (e == ERR_NONE) {
+				printf("All parameters stored successfully to '%s'\n", file);
+				ret = true;
+			}
+			else {
+				ERRORSTR("ERROR: some parameters returned an error; the saved file\n"
+						"might be incomplete.\n");
+			}
+			fflush(stdout);
+		}
+	}
+	return ret;
+}
+
+
+// Arguments for the asynchronous single-device save task.
+static device_st *async_save_device;
+static char async_save_file[1024];
+
+/// @brief: Task body running saveparam_save_device() off the UI thread.
+static void saveparam_device_task(void *ptr) {
+	saveparam_save_device(async_save_device, async_save_file);
+	this->finished = true;
+	uv_rtos_task_delete(NULL);
+}
+
+void saveparam_save_device_async(device_st *device, const char *file) {
+	async_save_device = device;
+	strncpy(async_save_file, (file != NULL) ? file : "",
+			sizeof(async_save_file) - 1);
+	async_save_file[sizeof(async_save_file) - 1] = '\0';
+	// mark in-progress before the task starts so a caller can poll immediately
+	this->finished = false;
+	uv_rtos_task_create(&saveparam_device_task, "saveparam_task",
+			UV_RTOS_MIN_STACK_SIZE * 5, NULL, UV_RTOS_IDLE_PRIORITY + 1, NULL);
+}
+
+
+void saveparam_step(void *ptr) {
+	this->finished = false;
+	this->progress = 0;
+	fflush(stdout);
+
+	FILE *dest = fopen(this->file, "wb");
+	if (dest == NULL) {
+		ERROR("Failed creating the output file '%s'\n", this->file);
+		fflush(stdout);
+	}
+	else {
+		// large enough to hold all devices of a system in one document
+		static char json_buffer[65536 * 16] = {};
+		uv_json_st json;
+		uv_errors_e e = ERR_NONE;
+		e |= uv_jsonwriter_init(&json, json_buffer, sizeof(json_buffer));
+
+		e |= uv_jsonwriter_begin_array(&json, "DEVS");
+
+		if (db_is_loaded(&dev.db)) {
+			// a single database was given with --db: save just that device
+			e |= save_device(&json);
+		}
+		else {
+			// no --db given: save every device package provided with --dev,
+			// each into its own object in the DEVS array
+			for (uint8_t i = 0; i < system_get_dev_count(&dev.system); i++) {
+				device_st *d = system_get_dev(&dev.system, i);
+				e |= save_device_from_uvdev(&json, d->filepath, d->nodeid);
+			}
+		}
+
+		// end DEVS array
+		e |= uv_jsonwriter_end_array(&json);
+
+		// end the whole JSON file
+		e |= uv_jsonwriter_end(&json, NULL);
+
+		LOG_END();
+		if (e != ERR_NONE) {
+			ERRORSTR("ERROR: Some or all of the parameters returned an error. \n"
+					"Some parameters might not be stored correctly.\n\n");
+			fflush(stdout);
+		}
+		fwrite(json_buffer, 1, strlen(json_buffer), dest);
+		fclose(dest);
+		prettify_json_file(this->file);
+
+		printf("All parameters stored successfully to '%s'\n", this->file);
+		fflush(stdout);
+	}
+	this->finished = true;
+}
+
+
+
+
+
+
+

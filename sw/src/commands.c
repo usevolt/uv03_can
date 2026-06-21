@@ -1,0 +1,416 @@
+/* 
+ * This file is part of the uv_hal distribution (www.usevolt.fi).
+ * Copyright (c) 2017 Usevolt Oy.
+ * 
+ * This program is free software: you can redistribute it and/or modify  
+ * it under the terms of the GNU General Public License as published by  
+ * the Free Software Foundation, version 3.
+ *
+ * This program is distributed in the hope that it will be useful, but 
+ * WITHOUT ANY WARRANTY; without even the implied warranty of 
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU 
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License 
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+*/
+
+
+
+#include "export.h"
+#include <uv_can.h>
+#include <string.h>
+#include "commands.h"
+#include "main.h"
+#include "help.h"
+#include "load.h"
+#include "listen.h"
+#include "find.h"
+#include "terminal.h"
+#include "db.h"
+#include "loadmedia.h"
+#include "clearmedia.h"
+#include "sdo.h"
+#include "system.h"
+#include "ui/uvui.h"
+#include <uv_ui.h>
+
+#define this (&dev)
+
+
+bool cmd_can(const char *arg);
+bool cmd_baud(const char *arg);
+bool cmd_node(const char *arg);
+bool cmd_srcdest(const char *arg);
+bool cmd_incdest(const char *arg);
+bool cmd_silent(const char *arg);
+bool cmd_ui(const char *arg);
+
+commands_st commands[] = {
+		{
+				.cmd_long = "help",
+				.cmd_short = 'h',
+				.str = "Displays application info and help.",
+				.args = ARG_NONE,
+				.callback = &cmd_help
+		},
+		{
+				.cmd_long = "ui",
+				.cmd_short = 'u',
+				.str = "Opens the graphical configuration window for selecting the CAN device "
+						"and baudrate, followed by uvcan's main display showing the system "
+						"and its devices. Blocks until the window is closed.",
+				.args = ARG_NONE,
+				.callback = &cmd_ui
+		},
+		{
+				.cmd_long = "sys",
+				.str = "Loads a system configuration (.uvsys) file. The system file bundles the "
+						"devices of the whole system, so once it is given, individual --dev files "
+						"are not allowed.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_system
+		},
+		{
+				.cmd_long = "dev",
+				.str = "Adds a device configuration (.uvdev) file to the system, given as "
+						"'<path>:<nodeid>' (e.g. '/path/to/dev.uvdev:0x10'). The "
+						"':<nodeid>' suffix is optional; when omitted the default node id "
+						"is read from the .uvdev file. Can be given multiple times, up to "
+						"6 devices. Not allowed together with --sys.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_device
+		},
+		{
+				.cmd_long = "can",
+				.cmd_short = 'c',
+				.str = "Selects the CAN-USB hardware for communication. Defaults to can0.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_can
+		},
+		{
+				.cmd_long = "baud",
+				.cmd_short = 'b',
+				.str = "Sets the baudrate for the CAN-bus. Refer to CiA specification for valid values. "
+						"Defaults to 250 kbaud.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_baud
+		},
+		{
+				.cmd_long = "srcdest",
+				.str = "Sets the source destination file path. This is used by various commands which output data.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_srcdest
+		},
+		{
+				.cmd_long = "incdest",
+				.str = "Sets the include destination file path. This is used by various commands which output data.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_incdest
+		},
+		{
+				.cmd_long = "nodeid",
+				.cmd_short = 'n',
+				.str = "Selecs the CANopen Node via Node ID. This should be called prior to commands which "
+						"Operate on CANopen nodes, such as *loadbin*.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_node
+		},
+		{
+				.cmd_long = "loadbin",
+				.cmd_short = 'L',
+				.str = "Loads firmware to UV device with a CANopen 302 compatible bootloader. "
+						"The device node id should be selected with 'node' option prior to this command.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_load
+		},
+		{
+				.cmd_long = "loadbinwfr",
+				.str = "Loads firmware to UV device with a CANopen 302 compatible bootloader"
+						" by waiting for NMT boot up message."
+						"The device node id should be selected with 'node' option prior to this command.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_loadwfr
+		},
+		{
+				.cmd_long = "segloadbin",
+				.str = "Loads firmware to UV device with a CANopen 302 compatible bootloader. "
+						"The device node id should be selected with 'node' option prior to this command. "
+						"Uses the SDO segmented transfer to load the binary. Note that this is more "
+						"unsafe method compared to \"loadbin\".",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_segload
+		},
+		{
+				.cmd_long = "segloadbinwfr",
+				.str = "Loads firmware to UV device with a CANopen 302 compatible bootloader"
+						" by waiting for NMT boot up message."
+						"The device node id should be selected with 'node' option prior to this command. "
+						"Uses the SDO segmented transfer to load the binary. Note that this is more "
+						"unsafe method compared to \"loadbinwfr\".",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_segloadwfr
+		},
+		{
+				.cmd_long = "uvloadbin",
+				.str = "Loads firmware to UV device with an UV compatible bootloader. "
+						"The device node id should be selected with 'node' option prior to this command.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_uvload
+		},
+		{
+				.cmd_long = "uvloadbinwfr",
+				.str = "Loads firmware to UV device with an UV compatible bootloader "
+						"by waiting for NMT boot up message."
+						"The device node id should be selected with 'node' option prior to this command.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_uvloadwfr
+		},
+		{
+				.cmd_long = "listen",
+				.cmd_short = 'l',
+				.str = "Listens the CAN bus for x seconds, listing all messages received.",
+				.args = ARG_NONE,
+				.callback = &cmd_listen
+		},
+		{
+				.cmd_long = "find",
+				.cmd_short = 'f',
+				.str = "Searches the CAN bus for Usevolt devices. Clears any existing "
+						"devices, listens for CANopen heartbeats for 2 seconds and, for "
+						"every OPERATIONAL node whose vendor id is Usevolt's, reads its "
+						"product code and adds it as a new device (with an empty "
+						"configuration-file path).",
+				.args = ARG_NONE,
+				.callback = &cmd_find
+		},
+		{
+				.cmd_long = "terminal",
+				.cmd_short = 't',
+				.str = "Communicates with the device chosen with **nodeid** via Usevolt SDO reply protocol.",
+				.args = ARG_NONE,
+				.callback = &cmd_terminal
+		},
+		{
+				.cmd_long = "uwterminal",
+				.str = "Communicates with the uw device chosen with **nodeid** via deprecated UW terminal protocol.",
+				.args = ARG_NONE,
+				.callback = &cmd_uwterminal
+		},
+		{
+				.cmd_long = "db",
+				.cmd_short = 'd',
+				.str = "Provides uvcan a CANOpen device database file as an argument.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_db
+		},
+		{
+				.cmd_long = "exportc",
+				.str = "Exports database given with --db to UV embedded source file with a given name.\n"
+						"The source file will be rewritten if it exists.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_exportc
+		},
+		{
+				.cmd_long = "exporth",
+				.str = "Exports database given with --db to UV embedded header file with a given name.\n"
+						"The header file will be rewritten if it exists.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_exporth
+		},
+		{
+				.cmd_long = "export",
+				.cmd_short = 'e',
+				.str = "Exports the database loaded with --db into a C .h and .c files. \n"
+						"The export location is defined with --srcdest and --incdest.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_export
+		},
+		{
+				.cmd_long = "loadmedia",
+				.str = "Loads a media file with UV media download protocol. The media file is given as an\n"
+						"argument to this command. If a directory is given, all recognized media files will\n"
+						"be loaded from that directory. Recursive loading from subdirectories is not supported.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_loadmedia
+		},
+		{
+				.cmd_long = "clearmedia",
+				.str = "Clears the all media in the device specified by the Node-ID.",
+				.args = ARG_NONE,
+				.callback = &cmd_clearmedia
+		},
+		{
+				.cmd_long = "mindex",
+				.str = "Sets the CANOpen Main index for SDO data transfer.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_mindex
+		},
+		{
+				.cmd_long = "sindex",
+				.str = "Sets the CANOpen Sub index for SDO data transfer.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_sindex
+		},
+		{
+				.cmd_long = "datalen",
+				.str = "Sets the data length for the CANOpen SDO read/write request.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_datalen
+		},
+		{
+				.cmd_long = "sdoread",
+				.str = "Reads data from a device with CANOpen SDO request",
+				.args = ARG_NONE,
+				.callback = &cmd_sdoread
+		},
+		{
+				.cmd_long = "sdoreadstr",
+				.str = "Reads string from a device with CANOpen SDO request",
+				.args = ARG_NONE,
+				.callback = &cmd_sdoreadstr
+		},
+		{
+				.cmd_long = "sdowrite",
+				.str = "Writes data to a device with CANOpen SDO request",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_sdowrite
+		},
+		{
+				.cmd_long = "sdowritestr",
+				.str = "Writes string to a device with CANOpen SDO request",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_sdowrite
+		},
+		{
+				.cmd_long = "loadparam",
+				.str = "Writes parameters to a UVCan device from the given file.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_loadparam
+		},
+		{
+				.cmd_long = "saveparam",
+				.str = "Reads parameters from a UVCan device and saves them into the given file.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_saveparam
+		},
+		{
+				.cmd_long = "saveparamall",
+				.str = "Reads parameters from a UVCan device and saves them into the given file.\n"
+						"Reads also CANOpen 301 specified params.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_saveparamall
+		},
+		{
+				.cmd_long = "silent",
+				.cmd_short = 's',
+				.str = "Excecutes uvcan silent, without logging process information",
+				.args = ARG_NONE,
+				.callback = &cmd_silent
+		}
+};
+
+unsigned int commands_count(void) {
+	return sizeof(commands) / sizeof(commands[0]);
+}
+
+
+
+// Set once --can / -c is given on the command line, so the UI start-up skips the
+// CAN-device configuration window (the user already chose the device explicitly).
+static bool can_given;
+
+bool cmd_can(const char *arg) {
+	can_given = true;
+	PRINT("selecting '%s' as CAN dev\n", arg);
+	strcpy(this->can_channel, arg);
+
+	PRINT("Setting CAN dev name and baudrate: %u\n", arg, this->baudrate);
+	uv_can_set_baudrate(this->can_channel, this->baudrate);
+
+	return true;
+}
+
+bool cmd_baud(const char *arg) {
+	bool ret = false;
+	if (!arg) {
+		PRINT("Bad baudrate\n");
+	}
+	else {
+		unsigned int baudrate = strtol(arg, NULL, 0);
+		PRINT("Setting CAN baudrate: %u\n", baudrate);
+		this->baudrate = baudrate;
+		uv_can_set_baudrate(this->can_channel, baudrate);
+		// force bus state up
+		uv_can_set_up(true);
+		ret = true;
+	}
+
+	return ret;
+}
+
+bool cmd_node(const char *arg) {
+	bool ret = true;
+	if (!arg) {
+		PRINT("Give Node ID.\n");
+		ret = false;
+	}
+	else {
+		uint8_t nodeid = strtol(arg, NULL, 0);
+		PRINT("Selected Node ID 0x%x\n", nodeid);
+		db_set_nodeid_force(&dev.db, nodeid);
+	}
+
+	return ret;
+}
+
+bool cmd_srcdest(const char *arg) {
+	strcpy(dev.srcdest, arg);
+	PRINT("Source destination file path set to '%s'\n", arg);
+	return true;
+}
+
+bool cmd_incdest(const char *arg) {
+	strcpy(dev.incdest, arg);
+	PRINT("Include destination file path set to '%s'\n", arg);
+	return true;
+}
+
+
+bool silent = true;
+bool cmd_silent(const char *arg) {
+	silent = false;
+
+	return true;
+}
+
+/// @brief: Task body for the --ui command. Runs under the FreeRTOS scheduler so
+/// the HAL task pumps CAN/CANopen while the UI is open; this is what lets the UI
+/// monitor heartbeats and perform SDO reads (e.g. the "Search devices" button).
+static void ui_task(void *ptr) {
+	// Open the HAL graphical configuration window for selecting the CAN device
+	// and baudrate, unless --can / -c was already given on the command line (the
+	// user explicitly chose the device, so there is nothing to ask). This blocks
+	// until the user closes it.
+	if (!can_given) {
+		uv_ui_confwindow_exec(&uv_uistyles[0]);
+	}
+
+	// Then open uvcan's own main display showing the system and its devices.
+	// Blocks until that window is closed.
+	uvui_exec();
+}
+
+bool cmd_ui(const char *arg) {
+	// Enable verbose PRINT output (as if -s/--silent were given) so the UI's log
+	// label shows the extra debug information. `silent` defaults to true, which
+	// suppresses PRINT; clearing it turns that output on.
+	silent = false;
+
+	// Register the UI as a task instead of running it inline: command callbacks
+	// run before the scheduler starts, but the UI needs the scheduler running so
+	// CAN traffic is processed (heartbeat monitor, SDO reads).
+	add_task(&ui_task);
+	return true;
+}
+
