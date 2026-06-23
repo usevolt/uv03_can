@@ -92,6 +92,16 @@ bool load_firmware(const char *path, bool wfr, bool uv, bool block_transfer) {
 }
 
 
+/// @brief: FreeRTOS task entry for the in-software loadbin path. load_step()
+/// runs the whole transfer synchronously and then returns; a FreeRTOS task
+/// function must delete itself instead of returning (the CLI path wraps it in
+/// task_step() which does this), so do it here for the direct-task path.
+static void loadbin_task(void *ptr) {
+	load_step(ptr);
+	uv_rtos_task_delete(NULL);
+}
+
+
 void loadbin(char *filepath, uint8_t nodeid, bool wfr, bool uv, bool block_transfer) {
 	load_configure(filepath, wfr, uv, block_transfer);
 	// the in-software entry targets an explicitly given node instead of the
@@ -101,7 +111,7 @@ void loadbin(char *filepath, uint8_t nodeid, bool wfr, bool uv, bool block_trans
 	// not see a stale "finished" from a previous flash before the task starts
 	this->finished = false;
 
-	uv_rtos_task_create(&load_step, "loadbin_task",
+	uv_rtos_task_create(&loadbin_task, "loadbin_task",
 			UV_RTOS_MIN_STACK_SIZE, NULL, UV_RTOS_IDLE_PRIORITY + 1, NULL);
 }
 

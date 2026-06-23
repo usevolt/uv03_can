@@ -205,12 +205,17 @@ bool find_update_device_states(system_st *sys) {
 		dev_state_e newstate = online ?
 				nmt_to_dev_state(last_nmt_state[device->nodeid]) : DEV_STATE_OFFLINE;
 
+		// read the software version once it is missing and the device is in a state
+		// that serves the object dictionary (OPERATIONAL / PRE-OPERATIONAL). A
+		// BOOT-UP device runs the bootloader and would only stall the SDO read, so
+		// it is skipped here and picked up later once the device reaches OP/PRE-OP.
+		// Done regardless of the state edge (safe here: application thread).
+		if ((device->sw_version == 0) &&
+				((newstate == DEV_STATE_OP) || (newstate == DEV_STATE_PREOP))) {
+			device->sw_version = read_sw_version(device->nodeid);
+		}
+
 		if (newstate != device->state) {
-			// the device just came online (from OFFLINE); read its software version
-			// once so the device tab can show it (safe here: application thread)
-			if ((device->state == DEV_STATE_OFFLINE) && (device->sw_version == 0)) {
-				device->sw_version = read_sw_version(device->nodeid);
-			}
 			device->state = newstate;
 			changed = true;
 		}

@@ -483,9 +483,12 @@ void devicetab_show_device(uv_uitabwindow_st *tabwin, device_st *device) {
 
 		// read the device's own revision over the bus once (blocks briefly); it
 		// was reset to 0 when a file was assigned, so this re-reads after changes.
-		// Skipped while an async operation owns the SDO client (busy), and for
-		// third-party devices (the CAN IF VERSION object is Usevolt-specific).
-		if (device->loaded && !thirdparty && (device->dev_revision == 0) && !busy) {
+		// Skipped while an async operation owns the SDO client (busy), for
+		// third-party devices (the CAN IF VERSION object is Usevolt-specific),
+		// and while the device is in BOOT-UP: a bootloading device does not
+		// serve the normal object dictionary, so the read would only stall.
+		if (device->loaded && !thirdparty && (device->dev_revision == 0) &&
+				!busy && (device->state != DEV_STATE_BOOTUP)) {
 			device->dev_revision = find_read_device_revision(device);
 		}
 		// the configuration file revision and the device revision are compared:
