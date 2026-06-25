@@ -56,7 +56,6 @@
 							</tool>
 							<tool id="cdt.managedbuild.tool.gnu.c.compiler.exe.debug.691397030" name="GCC C Compiler" superClass="cdt.managedbuild.tool.gnu.c.compiler.exe.debug">
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="gnu.c.compiler.option.preprocessor.def.symbols.909855118" name="Defined symbols (-D)" superClass="gnu.c.compiler.option.preprocessor.def.symbols" useByScannerDiscovery="false" valueType="definedSymbols">
-									<listOptionValue builtIn="false" value="CONFIG_TARGET_WIN=1"/>
 									<listOptionValue builtIn="false" value="CORE_WIN=1"/>
 									<listOptionValue builtIn="false" value="_UV_PROJECT_NAME=&quot;uvcan&quot;"/>
 									<listOptionValue builtIn="false" value="CORE_LINUX=1"/>

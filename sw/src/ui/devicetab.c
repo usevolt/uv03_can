@@ -32,6 +32,8 @@
 #include "loadparam.h"
 #include "savesys.h"
 #include "load.h"
+#include "uvui.h"
+#include "simrun.h"
 
 
 // Color for the revision-mismatch warning and the mismatched revision numbers.
@@ -225,6 +227,29 @@ static struct {
 
 	// "Save system configuration" button, shown on the system tab
 	uv_uibutton_st sys_save_btn;
+
+	// "Load system configuration" button, shown on the system tab below the save
+	// button: writes the loaded system's bundled parameters onto every device
+	uv_uibutton_st sys_loadparams_btn;
+
+	// "Run simulator" button, shown on the system tab: launches the Linux
+	// simulator of every configured device. Its label gets a second line when
+	// disabled because devices are online.
+	uv_uibutton_st run_sim_btn;
+	char run_sim_str[96];
+
+	// Running-simulator list on the system tab: its own window holding one row per
+	// running simulator. Each row has a name/PID label, the node id, a "Log"
+	// button (opens a terminal on the simulator's output) and a "Kill" button.
+	// The rows are scaled to fit so every simulator is visible.
+	uv_uiwindow_st sim_window;
+	uv_uiobject_st *sim_window_buf[4 * SYSTEM_DEV_MAX_COUNT];
+	uv_uilabel_st sim_labels[SYSTEM_DEV_MAX_COUNT];
+	char sim_label_strs[SYSTEM_DEV_MAX_COUNT][96];
+	uv_uilabel_st sim_node_labels[SYSTEM_DEV_MAX_COUNT];
+	char sim_node_strs[SYSTEM_DEV_MAX_COUNT][16];
+	uv_uibutton_st sim_log_btns[SYSTEM_DEV_MAX_COUNT];
+	uv_uibutton_st sim_kill_btns[SYSTEM_DEV_MAX_COUNT];
 } content;
 
 
@@ -251,6 +276,7 @@ typedef enum {
 	OP_SEARCH,
 	OP_SAVESYS,
 	OP_SYSPARAM,
+	OP_SYSLOAD,
 } busy_op_e;
 
 // While an operation is in progress the device frames are disabled and the
@@ -291,6 +317,9 @@ static bool busy_finished(void) {
 	case OP_SYSPARAM:
 		ret = loadparam_load_params_is_finished();
 		break;
+	case OP_SYSLOAD:
+		ret = loadparam_load_system_is_finished();
+		break;
 	default:
 		break;
 	}
@@ -307,15 +336,17 @@ static void start_busy(busy_op_e op) {
 	uv_uiwindow_set_enabled(&content.right_frame, false);
 	uv_ui_refresh(&content.left_frame);
 	uv_ui_refresh(&content.right_frame);
-	// a system save is started from the system tab; grey out all of its buttons
-	// for the duration so they read as inactive while the save runs
-	if (op == OP_SAVESYS) {
+	// a system save/load is started from the system tab; grey out all of its
+	// buttons for the duration so they read as inactive while the operation runs
+	if ((op == OP_SAVESYS) || (op == OP_SYSLOAD)) {
 		uv_uiobject_disable(&content.sys_load_btn);
 		uv_uiobject_disable(&content.search_btn);
 		uv_uiobject_disable(&content.sys_save_btn);
+		uv_uiobject_disable(&content.sys_loadparams_btn);
 		uv_ui_refresh(&content.sys_load_btn);
 		uv_ui_refresh(&content.search_btn);
 		uv_ui_refresh(&content.sys_save_btn);
+		uv_ui_refresh(&content.sys_loadparams_btn);
 	}
 }
 
@@ -352,28 +383,6 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 				"System (no configuration loaded)");
 	}
 
-	// build the device list into the info label
-	content.info_str[0] = '\0';
-	if (system_get_dev_count(system) == 0) {
-		snprintf(content.info_str, sizeof(content.info_str),
-				"No devices.\n"
-				"Select a system file above, add a device with the \"Add device\"\n"
-				"tab, or pass files on the command line with --sys / --dev.");
-	}
-	else {
-		strncat(content.info_str, "Devices:\n",
-				sizeof(content.info_str) - strlen(content.info_str) - 1);
-		for (uint8_t i = 0; i < system_get_dev_count(system); i++) {
-			device_st *device = system_get_dev(system, i);
-			char line[256];
-			snprintf(line, sizeof(line), "  %u. %s%s\n",
-					(unsigned int) (i + 1), device->name,
-					device->loaded ? "" : " (empty)");
-			strncat(content.info_str, line,
-					sizeof(content.info_str) - strlen(content.info_str) - 1);
-		}
-	}
-
 	current_device = NULL;
 	showing_system = true;
 
@@ -394,7 +403,7 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	// "Load system configuration from file": opens a .uvsys file chooser when
 	// clicked (handled in devicetab_step).
 	uv_uibutton_init(&content.sys_load_btn,
-			"Load system configuration from file", style);
+			"Open system configuration file", style);
 	uv_uitabwindow_addxy(tabwin, &content.sys_load_btn, x, y, src_btn_w, src_h);
 	x += src_btn_w + MARGIN;
 
@@ -417,36 +426,150 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	uv_uitabwindow_addxy(tabwin, &content.search_btn, x, y, src_btn_w, src_h);
 	y += src_h + MARGIN;
 
-	// "Save system configuration": writes a .uvsys package bundling every device's
-	// .uvdev and the parameters read from each operational device. Opens a save
-	// dialog and runs on its own task (handled in devicetab_step).
-	uv_uibutton_init(&content.sys_save_btn, "Save system configuration", style);
-	uv_uitabwindow_addxy(tabwin, &content.sys_save_btn, MARGIN, y, w, BUTTON_H);
-	// only enabled when at least one device is ONLINE (operational): parameters
-	// can only be read from operational devices, so saving requires one
+	// Survey device states once: whether any device is operational (for save /
+	// load), and whether any device that has a configuration package is live on
+	// the bus (which blocks running the simulators).
 	bool any_online = false;
+	bool any_conf_online = false;
 	for (uint8_t i = 0; i < system_get_dev_count(system); i++) {
-		if (system_get_dev(system, i)->state == DEV_STATE_OP) {
+		device_st *d = system_get_dev(system, i);
+		if (d->state == DEV_STATE_OP) {
 			any_online = true;
-			break;
+		}
+		if ((strlen(d->filepath) != 0) && (d->state != DEV_STATE_OFFLINE)) {
+			any_conf_online = true;
 		}
 	}
+
+	// "Save system configuration" and "Load system configuration" share one row,
+	// each half the width. Save writes a .uvsys package bundling every device's
+	// .uvdev and the parameters read from each operational device; Load writes the
+	// bundled parameters back onto the online devices. Both run on their own task
+	// (handled in devicetab_step). Both need an operational device.
+	int16_t half_w = (w - MARGIN) / 2;
+	uv_uibutton_init(&content.sys_save_btn, "Save system configuration to file",
+			style);
+	uv_uitabwindow_addxy(tabwin, &content.sys_save_btn, MARGIN, y, half_w,
+			BUTTON_H);
 	if (!any_online) {
 		uv_uiobject_disable(&content.sys_save_btn);
 	}
+	uv_uibutton_init(&content.sys_loadparams_btn,
+			"Load system configuration to devices", style);
+	uv_uitabwindow_addxy(tabwin, &content.sys_loadparams_btn,
+			MARGIN + half_w + MARGIN, y, half_w, BUTTON_H);
+	if ((system_get_dev_count(system) == 0) || !any_online) {
+		uv_uiobject_disable(&content.sys_loadparams_btn);
+	}
 	y += BUTTON_H + MARGIN;
 
-	// while a system save is running, keep every system-tab button greyed out
-	if (busy && (busy_op == OP_SAVESYS)) {
+	// The rest of the tab is split into two columns: the "Run simulator" button
+	// on the left (a third of the width) and the running-simulator list on the
+	// right (the remaining two thirds).
+	int16_t area_y = y;
+	int16_t area_h = cbb.h - area_y - MARGIN;
+	int16_t left_w = (w - MARGIN) / 3;
+	int16_t right_x = MARGIN + left_w + MARGIN;
+	int16_t right_w = w - left_w - MARGIN;
+
+	// "Run simulator": launches the Linux simulator of every configured device.
+	// Disabled when no system file is loaded, when any configured device is live
+	// on the bus (a simulator would clash with the real hardware), or while
+	// simulators are already running. When real devices block it, a second line
+	// explains why. Fills the left column.
+	bool sims_running = simrun_any_running();
+	if (any_conf_online && !sims_running) {
+		strcpy(content.run_sim_str,
+				"Run simulator\nDisconnect online devices to enable");
+	}
+	else {
+		strcpy(content.run_sim_str, "Run simulator");
+	}
+	uv_uibutton_init(&content.run_sim_btn, content.run_sim_str, style);
+	uv_uitabwindow_addxy(tabwin, &content.run_sim_btn, MARGIN, area_y, left_w,
+			area_h);
+	if (!system->loaded || any_conf_online || sims_running) {
+		uv_uiobject_disable(&content.run_sim_btn);
+	}
+
+	// while a system save/load is running, keep every system-tab button greyed out
+	if (busy && ((busy_op == OP_SAVESYS) || (busy_op == OP_SYSLOAD))) {
 		uv_uiobject_disable(&content.sys_load_btn);
 		uv_uiobject_disable(&content.search_btn);
 		uv_uiobject_disable(&content.sys_save_btn);
+		uv_uiobject_disable(&content.sys_loadparams_btn);
+		uv_uiobject_disable(&content.run_sim_btn);
 	}
 
-	// device list
-	uv_uilabel_init(&content.info, style->font, ALIGN_TOP_LEFT,
-			style->text_color, content.info_str);
-	uv_uitabwindow_addxy(tabwin, &content.info, MARGIN, y, w, cbb.h - y - MARGIN);
+	// Running-simulator list in the right column: one row per running simulator,
+	// showing its device name and process id with a "Kill" button. Polled in
+	// devicetab_step().
+	uint8_t simcount = simrun_get_count();
+	if (simcount == 0) {
+		snprintf(content.info_str, sizeof(content.info_str),
+				"No simulators running.");
+		uv_uilabel_init(&content.info, style->font, ALIGN_CENTER_LEFT,
+				style->text_color, content.info_str);
+		uv_uitabwindow_addxy(tabwin, &content.info, right_x, area_y, right_w,
+				area_h);
+	}
+	else {
+		// the rows live in their own window so they are not limited by the tab's
+		// object budget. Scale the row height so that every simulator's row (with
+		// its Kill button) fits inside the window's height, capped at the normal
+		// button height when there is room to spare.
+		uv_uiwindow_init(&content.sim_window, content.sim_window_buf, style);
+		uv_uitabwindow_addxy(tabwin, &content.sim_window, right_x, area_y, right_w,
+				area_h);
+
+		int16_t gap = 4;
+		int16_t row_h = (area_h - (simcount - 1) * gap) / simcount;
+		if (row_h > BUTTON_H) {
+			row_h = BUTTON_H;
+		}
+		// columns laid out from the right: Kill, Log, node id, then the name fills
+		// whatever is left
+		int16_t kill_w = 80;
+		int16_t log_w = 80;
+		int16_t node_w = 70;
+		int16_t kill_x = right_w - kill_w;
+		int16_t log_x = kill_x - gap - log_w;
+		int16_t node_x = log_x - gap - node_w;
+		int16_t name_w = node_x - gap;
+		for (uint8_t i = 0; i < simcount; i++) {
+			int16_t row_y = i * (row_h + gap);
+			snprintf(content.sim_label_strs[i], sizeof(content.sim_label_strs[i]),
+					"%s  (pid %d)", simrun_get_name(i), simrun_get_pid(i));
+			uv_uilabel_init(&content.sim_labels[i], style->font,
+					ALIGN_CENTER_LEFT, style->text_color,
+					content.sim_label_strs[i]);
+			uv_uiwindow_addxy(&content.sim_window, &content.sim_labels[i], 0, row_y,
+					name_w, row_h);
+
+			// node id, with the simulator's state ("Running" / "Killed" /
+			// "Stopped") on a second line
+			snprintf(content.sim_node_strs[i], sizeof(content.sim_node_strs[i]),
+					"0x%x\n%s", (unsigned int) simrun_get_nodeid(i),
+					simrun_get_state_str(i));
+			uv_uilabel_init(&content.sim_node_labels[i], style->font,
+					ALIGN_CENTER_LEFT, style->text_color,
+					content.sim_node_strs[i]);
+			uv_uiwindow_addxy(&content.sim_window, &content.sim_node_labels[i],
+					node_x, row_y, node_w, row_h);
+
+			uv_uibutton_init(&content.sim_log_btns[i], "Log", style);
+			uv_uiwindow_addxy(&content.sim_window, &content.sim_log_btns[i],
+					log_x, row_y, log_w, row_h);
+
+			uv_uibutton_init(&content.sim_kill_btns[i], "Kill", style);
+			uv_uiwindow_addxy(&content.sim_window, &content.sim_kill_btns[i],
+					kill_x, row_y, kill_w, row_h);
+			// a simulator that is no longer running cannot be killed again
+			if (simrun_get_state(i) != SIMRUN_RUNNING) {
+				uv_uiobject_disable(&content.sim_kill_btns[i]);
+			}
+		}
+	}
 }
 
 
@@ -783,6 +906,9 @@ static void refresh_search_btn_text(void) {
 
 bool devicetab_step(void) {
 	bool ret = false;
+	// reap any device simulators that have exited, regardless of the current tab,
+	// so their processes are cleaned up and the running list stays accurate
+	bool sims_changed = simrun_step();
 	if (busy) {
 		// while an async operation runs all input is ignored and the frames stay
 		// disabled; rebuild once it finishes
@@ -791,6 +917,12 @@ bool devicetab_step(void) {
 			refresh_search_btn_text();
 		}
 		if (busy_finished()) {
+			// the single-device save/load set the log title themselves; restore it
+			// to the default now they are done (the system save/load reset it from
+			// within their own task)
+			if ((busy_op == OP_SAVE) || (busy_op == OP_LOAD)) {
+				uvui_reset_log_title();
+			}
 			busy = false;
 			busy_op = OP_NONE;
 			// rebuild: show the final device list and reset the search label
@@ -799,6 +931,10 @@ bool devicetab_step(void) {
 		return ret;
 	}
 	if (showing_system) {
+		// a simulator exited on its own: rebuild so its row disappears
+		if (sims_changed) {
+			ret = true;
+		}
 		// "Search devices" clicked: warn if it would discard existing devices,
 		// then scan the CAN bus and replace the device list with what is found
 		if (uv_uibutton_clicked(&content.search_btn)) {
@@ -889,8 +1025,107 @@ bool devicetab_step(void) {
 				start_busy(OP_SAVESYS);
 			}
 		}
+		// "Load system configuration": write the loaded system's bundled
+		// parameters onto every online device. First read the CAN interface
+		// version from each device and compare it against the version stored in
+		// its param file; if any differ, warn (the saved parameters may not load
+		// correctly). Once confirmed, the load runs on its own task with the
+		// EMCY/store/reset sequencing handled by loadparam.
+		else if (uv_uibutton_clicked(&content.sys_loadparams_btn)) {
+			// collect online devices that carry a saved parameter file
+			device_st *targets[SYSTEM_DEV_MAX_COUNT];
+			uint8_t tcount = 0;
+			for (uint8_t i = 0; i < system_get_dev_count(&dev.system); i++) {
+				device_st *d = system_get_dev(&dev.system, i);
+				if ((strlen(d->param_file) != 0) &&
+						(d->state == DEV_STATE_OP) &&
+						(tcount < SYSTEM_DEV_MAX_COUNT)) {
+					targets[tcount] = d;
+					tcount++;
+				}
+			}
+
+			if (tcount == 0) {
+				uv_uiacceptdialog_st dialog = { };
+				uv_uiacceptdialog_exec(&dialog,
+						"None of the online devices have saved parameters in this "
+						"system configuration.", "OK", "OK", &uv_uistyles[0]);
+			}
+			else {
+				// compare each device's CAN interface version against the one
+				// stored in its param file, listing any that differ
+				char msg[1024];
+				int off = snprintf(msg, sizeof(msg),
+						"The CAN interface version of these devices differs from "
+						"the one stored in the system configuration. The saved "
+						"parameters might not load correctly:\n\n");
+				uint8_t mismatches = 0;
+				for (uint8_t i = 0; i < tcount; i++) {
+					device_st *d = targets[i];
+					uint32_t file_if = 0;
+					uint32_t dev_if = 0;
+					if (loadparam_can_if_mismatch(d, &file_if, &dev_if)) {
+						mismatches++;
+						const char *dname = (strlen(d->devname) > 0) ?
+								d->devname : d->name;
+						if (off < (int) sizeof(msg)) {
+							off += snprintf(msg + off, sizeof(msg) - off,
+									"  %s (node 0x%x): file %u, device %u\n",
+									dname, (unsigned int) d->nodeid,
+									(unsigned int) file_if,
+									(unsigned int) dev_if);
+						}
+					}
+				}
+
+				bool proceed = true;
+				if (mismatches > 0) {
+					if (off < (int) sizeof(msg)) {
+						snprintf(msg + off, sizeof(msg) - off,
+								"\nLoad the parameters anyway?");
+					}
+					uv_uiacceptdialog_st dialog = { };
+					proceed = (uv_uiacceptdialog_exec(&dialog, msg, "Yes", "No",
+							&uv_uistyles[0]) == UIACCEPTDIALOG_RET_YES);
+				}
+
+				if (proceed) {
+					loadparam_load_system_async(targets, tcount);
+					start_busy(OP_SYSLOAD);
+				}
+			}
+		}
+		// "Run simulator": launch the Linux simulator of every configured device,
+		// each as its own process connected to uvcan's CAN channel. Rebuild so the
+		// running-simulator list appears.
+		else if (uv_uibutton_clicked(&content.run_sim_btn)) {
+			// use the CAN device actually selected in the HAL (the config window
+			// sets it there, not in dev.can_channel) so the simulators connect to
+			// the same bus uvcan is monitoring
+			uint8_t started = simrun_start_system(&dev.system, uv_can_get_dev());
+			if (started == 0) {
+				uv_uiacceptdialog_st dialog = { };
+				uv_uiacceptdialog_exec(&dialog,
+						"No device simulators could be started. The devices need a "
+						"configuration package (.uvdev) bundling a Linux simulator.",
+						"OK", "OK", &uv_uistyles[0]);
+			}
+			ret = true;
+		}
 		else {
-			// nothing changed this cycle
+			// no system-level button clicked; check the per-simulator "Log" and
+			// "Kill" buttons
+			for (uint8_t i = 0; i < simrun_get_count(); i++) {
+				if (uv_uibutton_clicked(&content.sim_log_btns[i])) {
+					simrun_open_log(i);
+					break;
+				}
+				if (uv_uibutton_clicked(&content.sim_kill_btns[i])) {
+					simrun_kill(i);
+					ret = true;
+					break;
+				}
+			}
 		}
 	}
 	else if (current_device != NULL) {
@@ -979,6 +1214,12 @@ bool devicetab_step(void) {
 			if (uv_uifiledialog_exec("Save parameters as", PARAM_FILE_FILTERS,
 					sizeof(PARAM_FILE_FILTERS) / sizeof(PARAM_FILE_FILTERS[0]),
 					true, path, sizeof(path))) {
+				char title[160];
+				const char *dname = (strlen(current_device->devname) > 0) ?
+						current_device->devname : current_device->name;
+				snprintf(title, sizeof(title), "Saving parameters from %s...",
+						dname);
+				uvui_set_log_title(title);
 				saveparam_save_device_async(current_device, path);
 				start_busy(OP_SAVE);
 			}
@@ -991,6 +1232,12 @@ bool devicetab_step(void) {
 			if (uv_uifiledialog_exec("Load parameters from", PARAM_FILE_FILTERS,
 					sizeof(PARAM_FILE_FILTERS) / sizeof(PARAM_FILE_FILTERS[0]),
 					false, path, sizeof(path))) {
+				char title[160];
+				const char *dname = (strlen(current_device->devname) > 0) ?
+						current_device->devname : current_device->name;
+				snprintf(title, sizeof(title), "Loading parameters to %s...",
+						dname);
+				uvui_set_log_title(title);
 				loadparam_load_device_async(current_device, path);
 				start_busy(OP_LOAD);
 			}

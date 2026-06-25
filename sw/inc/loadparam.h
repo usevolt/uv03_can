@@ -51,6 +51,12 @@ typedef struct {
 	uint8_t modified_dev_nodeids[64];
 	uint8_t dev_count;
 
+	// When true, loadparam_step only writes the parameters to the target device:
+	// it does not suppress/clear EMCY messages, store the parameters or reset the
+	// device. Used by the system load (loadparam_load_system_async), which
+	// sequences those steps across all devices itself.
+	bool sys_load_mode;
+
 	// true if the loading has finished
 	bool finished;
 } loadparam_st;
@@ -101,6 +107,34 @@ void loadparam_load_params_async(device_st **devices, uint8_t count);
 /// running (i.e. the last loadparam_load_params_async() has completed). Returns
 /// true before any such load is started.
 bool loadparam_load_params_is_finished(void);
+
+
+/// @brief: Loads the parameters bundled with a loaded system configuration onto
+/// every given device, on its own task so the UI stays live. Each device's own
+/// param_file is the source; devices with no param_file are skipped.
+///
+/// Unlike loadparam_load_params_async() (which runs the full per-device cycle one
+/// device at a time), the load is sequenced across all devices: EMCY messages are
+/// suppressed on every device first, then each device's parameters are written in
+/// turn, and finally every device is stored and reset simultaneously, so a device
+/// does not emit EMCY warnings while another device is being written. Poll
+/// loadparam_load_system_is_finished().
+void loadparam_load_system_async(device_st **devices, uint8_t count);
+
+
+/// @brief: Returns true when no asynchronous system parameter load is running
+/// (i.e. the last loadparam_load_system_async() has completed). Returns true
+/// before any such load is started.
+bool loadparam_load_system_is_finished(void);
+
+
+/// @brief: Compares the CAN interface version stored in *device*'s param file
+/// against the version read from the device over the bus. Returns true when both
+/// are known and differ (a mismatch worth warning about). *file_if* and *dev_if*,
+/// when not NULL, receive the param-file and device versions (0 when unknown).
+/// Returns false (no mismatch) when either version cannot be determined.
+bool loadparam_can_if_mismatch(device_st *device,
+		uint32_t *file_if, uint32_t *dev_if);
 
 
 

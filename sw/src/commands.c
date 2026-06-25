@@ -32,8 +32,10 @@
 #include "clearmedia.h"
 #include "sdo.h"
 #include "system.h"
+#include "simrun.h"
 #include "ui/uvui.h"
 #include <uv_ui.h>
+#include <uv_rtos.h>
 
 #define this (&dev)
 
@@ -45,6 +47,7 @@ bool cmd_srcdest(const char *arg);
 bool cmd_incdest(const char *arg);
 bool cmd_silent(const char *arg);
 bool cmd_ui(const char *arg);
+bool cmd_sim(const char *arg);
 
 commands_st commands[] = {
 		{
@@ -172,6 +175,17 @@ commands_st commands[] = {
 				.str = "Listens the CAN bus for x seconds, listing all messages received.",
 				.args = ARG_NONE,
 				.callback = &cmd_listen
+		},
+		{
+				.cmd_long = "sim",
+				.str = "Runs the Linux simulator of every device in the loaded system "
+						"as a separate process (give --sys or --dev first), each "
+						"connected to the selected CAN device (--can) with the "
+						"device's node id. uvcan keeps running to monitor the "
+						"simulators and kills them when it exits. Linux only. This is "
+						"the same action as the UI's \"Run simulator\" button.",
+				.args = ARG_NONE,
+				.callback = &cmd_sim
 		},
 		{
 				.cmd_long = "find",
@@ -411,6 +425,45 @@ bool cmd_ui(const char *arg) {
 	// run before the scheduler starts, but the UI needs the scheduler running so
 	// CAN traffic is processed (heartbeat monitor, SDO reads).
 	add_task(&ui_task);
+	return true;
+}
+
+
+/// @brief: Task body for --sim. Launches every device's simulator (the same
+/// simrun_start_system() the UI's "Run simulator" button calls) and then keeps
+/// uvcan alive, reaping the children, until they have all exited. The simulators
+/// are killed when uvcan exits.
+static void sim_task(void *ptr) {
+	// use the CAN device actually active in the HAL (kept in sync by --can and the
+	// config window) rather than dev.can_channel, which the config window does not
+	// update
+	uint8_t started = simrun_start_system(&dev.system, uv_can_get_dev());
+	if (started == 0) {
+		PRINT("No simulators were started. Load a system with --sys (or add "
+				"devices with --dev) first, and make sure each device package "
+				"bundles a Linux simulator.\n");
+	}
+	else {
+		PRINT("Started %u simulator(s) on '%s'. Press Ctrl-C to stop them.\n",
+				(unsigned int) started, dev.can_channel);
+		// keep monitoring until every simulator has stopped (exited or been
+		// killed); reaping updates each one's state as it goes
+		while (simrun_any_running()) {
+			simrun_step();
+			uv_rtos_task_delay(200);
+		}
+		PRINT("All simulators have stopped.\n");
+	}
+}
+
+bool cmd_sim(const char *arg) {
+	(void) arg;
+	// verbose output so the launch / monitor messages are shown
+	silent = false;
+
+	// run under the scheduler (like --ui): the simulators are child processes we
+	// keep monitoring while uvcan stays alive.
+	add_task(&sim_task);
 	return true;
 }
 

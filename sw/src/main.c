@@ -16,6 +16,7 @@
 #include "main.h"
 #include "help.h"
 #include "commands.h"
+#include "simrun.h"
 
 
 struct _dev_st dev;
@@ -115,6 +116,9 @@ int main(int argc, char *argv[]) {
 	// remove our own temp dir on a clean exit, and sweep stale ones left by a
 	// previous run that crashed or was killed
 	system_init_tmp_cleanup();
+
+	// kill any device simulators we launch (and remove their temp dirs) on exit
+	simrun_init();
 
 	struct option opts[50] = {};
 	char optstr[512] = "";

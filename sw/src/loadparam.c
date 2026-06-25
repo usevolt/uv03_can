@@ -18,6 +18,7 @@
 
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <errno.h>
 #include <unistd.h>
 #include <string.h>
@@ -27,6 +28,8 @@
 #include "main.h"
 #include "db.h"
 #include "uvdev.h"
+#include "find.h"
+#include "ui/uvui.h"
 
 #define this (&dev.loadparam)
 
@@ -53,6 +56,7 @@ bool loadparam_load(const char *path) {
 			QUERY_COUNT, sizeof(this->queries_buffer[0]));
 
 	this->dev_count = 0;
+	this->sys_load_mode = false;
 
 	if (!path) {
 		ERRORSTR("Give parameter file as a file path to binary file.\n");
@@ -165,7 +169,11 @@ void loadparam_load_params_async(device_st **devices, uint8_t count) {
 }
 
 
-bool loadparam_load_device(device_st *device, const char *file) {
+// Implementation behind loadparam_load_device(). *sys_mode* selects whether the
+// per-device EMCY suppress / store / reset steps run here (false, the default) or
+// are left to the caller (true, the system load).
+static bool loadparam_load_device_ex(device_st *device, const char *file,
+		bool sys_mode) {
 	bool ret = false;
 	if ((device == NULL) || (file == NULL) || (strlen(file) == 0)) {
 		ERRORSTR("ERROR: loadparam_load_device: no device or file given.\n");
@@ -178,6 +186,7 @@ bool loadparam_load_device(device_st *device, const char *file) {
 		// prepare the loadparam state for a single file
 		this->current_file = 0;
 		this->dev_count = 0;
+		this->sys_load_mode = sys_mode;
 		memset(this->files, 0, sizeof(this->files));
 		uv_vector_init(&this->queries, this->queries_buffer,
 				QUERY_COUNT, sizeof(this->queries_buffer[0]));
@@ -193,8 +202,14 @@ bool loadparam_load_device(device_st *device, const char *file) {
 			db_deinit();
 			ret = this->finished;
 		}
+		this->sys_load_mode = false;
 	}
 	return ret;
+}
+
+
+bool loadparam_load_device(device_st *device, const char *file) {
+	return loadparam_load_device_ex(device, file, false);
 }
 
 
@@ -816,6 +831,12 @@ static uv_errors_e parse_dev(char *json) {
 }
 
 
+// Standard object-dictionary index of the "suppress EMCY messages" object,
+// defined in the shared can_common.json. Writing 1 to it stops the device from
+// emitting EMCY warning messages while its parameters are being changed.
+#define EMCY_SUPPRESS_INDEX		0x2020
+
+
 // Object dictionary location and type of the "suppress emcy messages" object in
 // the loaded database, found by emcy_suppress_find(). When mindex is 0 the
 // database has no such object.
@@ -826,13 +847,22 @@ typedef struct {
 } emcy_suppress_st;
 
 
-// Searches the loaded database (dev.db) for the "suppress emcy messages" object,
-// matched loosely by name (case-insensitive, must mention both "suppress" and
-// "emcy"). Fills *out* and returns true when found.
+// Searches the loaded database (dev.db) for the "suppress emcy messages" object.
+// It is matched first by its standard index (EMCY_SUPPRESS_INDEX, from
+// can_common.json) and, failing that, loosely by name (case-insensitive, must
+// mention both "suppress" and "emcy") so older databases still work. Fills *out*
+// and returns true when found.
 static bool emcy_suppress_find(emcy_suppress_st *out) {
 	bool found = false;
 	for (int32_t i = 0; (i < db_get_object_count(&dev.db)) && !found; i++) {
 		db_obj_st *o = db_get_obj(&dev.db, i);
+		if (o->obj.main_index == EMCY_SUPPRESS_INDEX) {
+			out->mindex = o->obj.main_index;
+			out->sindex = o->obj.sub_index;
+			out->type = o->obj.type;
+			found = true;
+			break;
+		}
 		char *name = dbvalue_get_string(&o->name);
 		if (name != NULL) {
 			char low[128];
@@ -889,8 +919,10 @@ void loadparam_step(void *ptr) {
 	// target device before any parameters are written, so changing parameters
 	// does not make the device emit EMCY warning messages. It is cleared again
 	// once all parameters have been loaded (below).
+	// In system-load mode the caller suppresses (and later clears) EMCY on every
+	// device itself, so skip the per-device suppress here.
 	emcy_suppress_st emcy_suppress = { };
-	bool has_emcy_suppress = emcy_suppress_find(&emcy_suppress);
+	bool has_emcy_suppress = !this->sys_load_mode && emcy_suppress_find(&emcy_suppress);
 	uint8_t emcy_suppress_node = db_get_nodeid(&dev.db);
 	if (has_emcy_suppress && (emcy_suppress_node != 0)) {
 		emcy_suppress_write(&emcy_suppress, emcy_suppress_node, 1);
@@ -1077,29 +1109,254 @@ void loadparam_step(void *ptr) {
 	}
 
 	uv_errors_e ret = ERR_NONE;
-	// save the params to all devices
-	for (uint8_t i = 0; i < this->dev_count; i++) {
-		uint8_t nodeid = this->modified_dev_nodeids[i];
-		printf("Saving the parameters to dev 0x%x...\n", nodeid);
-		fflush(stdout);
-		ret |= uv_canopen_sdo_store_params(nodeid,
-				MEMORY_ALL_PARAMS);
-		uv_rtos_task_delay(300);
-		printf("Resetting the device 0x%x...\n", nodeid);
-		fflush(stdout);
-		if (ret == ERR_NONE) {
-			uv_canopen_nmt_master_send_cmd(nodeid,
-					CANOPEN_NMT_CMD_RESET_NODE);
-		}
-		else {
-			printf(PRINT_YELLOW
-				   "The device 0x%x was not reset due to errors. \n"
-					"Manual reset is necessary.\n\n"
-				   PRINT_RESET,
-					nodeid);
+	// save the params to all devices, then reset them. Skipped in system-load
+	// mode: there the caller stores and resets every device together once all
+	// devices have been written.
+	if (!this->sys_load_mode) {
+		for (uint8_t i = 0; i < this->dev_count; i++) {
+			uint8_t nodeid = this->modified_dev_nodeids[i];
+			printf("Saving the parameters to dev 0x%x...\n", nodeid);
 			fflush(stdout);
+			ret |= uv_canopen_sdo_store_params(nodeid,
+					MEMORY_ALL_PARAMS);
+			uv_rtos_task_delay(300);
+			printf("Resetting the device 0x%x...\n", nodeid);
+			fflush(stdout);
+			if (ret == ERR_NONE) {
+				uv_canopen_nmt_master_send_cmd(nodeid,
+						CANOPEN_NMT_CMD_RESET_NODE);
+			}
+			else {
+				printf(PRINT_YELLOW
+					   "The device 0x%x was not reset due to errors. \n"
+						"Manual reset is necessary.\n\n"
+					   PRINT_RESET,
+						nodeid);
+				fflush(stdout);
+			}
 		}
 	}
 
 	this->finished = true;
+}
+
+
+bool loadparam_can_if_mismatch(device_st *device,
+		uint32_t *file_if, uint32_t *dev_if) {
+	uint32_t fif = 0;
+	uint32_t did = 0;
+	bool file_known = false;
+
+	if ((device != NULL) && (strlen(device->param_file) != 0)) {
+		FILE *fptr = fopen(device->param_file, "rb");
+		if (fptr != NULL) {
+			fseek(fptr, 0, SEEK_END);
+			long size = ftell(fptr);
+			rewind(fptr);
+			// read into a heap buffer (this runs on the UI thread, so avoid a
+			// large variable-length array on the stack)
+			char *json = (size > 0) ? malloc(size + 1) : NULL;
+			if ((json != NULL) && (fread(json, 1, size, fptr) == (size_t) size)) {
+				json[size] = '\0';
+				uv_jsonreader_init(json, strlen(json));
+
+				// the param file stores its CAN IF VERSION inside the DEVS array
+				// (one object per device); fall back to the top level for the
+				// deprecated single-device format
+				char *devobj = NULL;
+				char *devs = uv_jsonreader_find_child(json, "DEVS");
+				if ((devs != NULL) &&
+						(uv_jsonreader_get_type(devs) == JSON_ARRAY)) {
+					int32_t cnt = uv_jsonreader_array_get_size(devs);
+					// prefer the entry matching this device's node id
+					for (int32_t i = 0; (i < cnt) && (devobj == NULL); i++) {
+						char *d = uv_jsonreader_array_at(devs, i);
+						char *nid = uv_jsonreader_find_child(d, "NODEID");
+						if ((nid != NULL) && ((uint8_t) uv_jsonreader_get_int(nid)
+								== device->nodeid)) {
+							devobj = d;
+						}
+					}
+					if ((devobj == NULL) && (cnt > 0)) {
+						devobj = uv_jsonreader_array_at(devs, 0);
+					}
+				}
+				else {
+					devobj = json;
+				}
+
+				if (devobj != NULL) {
+					char *cif = uv_jsonreader_find_child(devobj, "CAN IF VERSION");
+					if ((cif != NULL) &&
+							(uv_jsonreader_get_type(cif) == JSON_INT)) {
+						fif = uv_jsonreader_get_int(cif);
+						file_known = true;
+					}
+				}
+			}
+			if (json != NULL) {
+				free(json);
+			}
+			fclose(fptr);
+		}
+	}
+
+	// read the device's current CAN IF version over the bus
+	did = find_read_device_revision(device);
+
+	if (file_if != NULL) {
+		*file_if = fif;
+	}
+	if (dev_if != NULL) {
+		*dev_if = did;
+	}
+
+	// only a mismatch when both values are known and they differ
+	return file_known && (did != 0) && (fif != did);
+}
+
+
+// Loads *device*'s database, looks up its EMCY-suppress object and writes *value*
+// (1 = suppress, 0 = re-enable) to it on the device. *out*, when not NULL,
+// receives the object's location so the caller can write it again later without
+// reloading the database. Returns true when the device has the object.
+static bool loadparam_emcy_suppress_device(device_st *device, uint32_t value,
+		emcy_suppress_st *out) {
+	bool ret = false;
+	if ((device != NULL) && (strlen(device->filepath) != 0) &&
+			(device->nodeid != 0) && load_device_db(device)) {
+		emcy_suppress_st s = { };
+		if (emcy_suppress_find(&s)) {
+			emcy_suppress_write(&s, device->nodeid, value);
+			if (out != NULL) {
+				*out = s;
+			}
+			ret = true;
+		}
+		db_deinit();
+	}
+	return ret;
+}
+
+
+// Sets the log frame title (no-op when the UI is not compiled in).
+static void loadparam_set_title(const char *title) {
+#if CONFIG_UI
+	uvui_set_log_title(title);
+#else
+	(void) title;
+#endif
+}
+
+static void loadparam_reset_title(void) {
+#if CONFIG_UI
+	uvui_reset_log_title();
+#endif
+}
+
+
+// Target list for the asynchronous system parameter load.
+static device_st *async_sys_devs[SYSTEM_DEV_MAX_COUNT];
+static uint8_t async_sys_count;
+static volatile bool async_sys_finished = true;
+
+
+bool loadparam_load_system_is_finished(void) {
+	return async_sys_finished;
+}
+
+
+/// @brief: Task body loading a whole system's parameters in five phases, so the
+/// global ordering is: suppress EMCY everywhere, write each device, re-enable
+/// EMCY, store, then reset every device together.
+static void loadparam_system_task(void *ptr) {
+	uint8_t n = async_sys_count;
+	emcy_suppress_st emcy[SYSTEM_DEV_MAX_COUNT] = { };
+	bool has_emcy[SYSTEM_DEV_MAX_COUNT] = { };
+	bool written[SYSTEM_DEV_MAX_COUNT] = { };
+
+	uv_can_set_up(false);
+
+	// Phase 1: suppress EMCY messages on every device before any parameter is
+	// written, so no device emits EMCY warnings while another is being changed.
+	loadparam_set_title("Loading system: suppressing EMCY messages...");
+	printf("Suppressing EMCY messages on all devices...\n");
+	fflush(stdout);
+	for (uint8_t i = 0; i < n; i++) {
+		device_st *d = async_sys_devs[i];
+		if ((d != NULL) && (strlen(d->param_file) != 0)) {
+			has_emcy[i] = loadparam_emcy_suppress_device(d, 1, &emcy[i]);
+		}
+	}
+
+	// Phase 2: write each device's parameters in turn (system-load mode skips the
+	// per-device EMCY handling, store and reset done in the phases below).
+	for (uint8_t i = 0; i < n; i++) {
+		device_st *d = async_sys_devs[i];
+		if ((d != NULL) && (strlen(d->param_file) != 0)) {
+			char title[256];
+			const char *dname = (strlen(d->devname) > 0) ? d->devname : d->name;
+			snprintf(title, sizeof(title),
+					"Loading system: parameters to device %u/%u (%s)",
+					(unsigned int) (i + 1), (unsigned int) n, dname);
+			loadparam_set_title(title);
+			printf("Loading parameters to node 0x%x from '%s'\n",
+					(unsigned int) d->nodeid, d->param_file);
+			fflush(stdout);
+			written[i] = loadparam_load_device_ex(d, d->param_file, true);
+		}
+	}
+
+	// Phase 3: re-enable EMCY messages now that all parameters are written, so the
+	// suppressed state is not stored persistently in the next phase.
+	for (uint8_t i = 0; i < n; i++) {
+		device_st *d = async_sys_devs[i];
+		if ((d != NULL) && has_emcy[i]) {
+			emcy_suppress_write(&emcy[i], d->nodeid, 0);
+		}
+	}
+
+	// Phase 4: store the parameters on every written device.
+	loadparam_set_title("Loading system: storing parameters...");
+	for (uint8_t i = 0; i < n; i++) {
+		device_st *d = async_sys_devs[i];
+		if ((d != NULL) && written[i]) {
+			printf("Saving the parameters to dev 0x%x...\n",
+					(unsigned int) d->nodeid);
+			fflush(stdout);
+			uv_canopen_sdo_store_params(d->nodeid, MEMORY_ALL_PARAMS);
+			uv_rtos_task_delay(300);
+		}
+	}
+
+	// Phase 5: reset every written device, as close to simultaneously as the bus
+	// allows, so they all come back up together.
+	loadparam_set_title("Loading system: resetting devices...");
+	printf("Resetting all devices...\n");
+	fflush(stdout);
+	for (uint8_t i = 0; i < n; i++) {
+		device_st *d = async_sys_devs[i];
+		if ((d != NULL) && written[i]) {
+			uv_canopen_nmt_master_send_cmd(d->nodeid, CANOPEN_NMT_CMD_RESET_NODE);
+		}
+	}
+
+	loadparam_reset_title();
+	async_sys_finished = true;
+	uv_rtos_task_delete(NULL);
+}
+
+
+void loadparam_load_system_async(device_st **devices, uint8_t count) {
+	if (count > SYSTEM_DEV_MAX_COUNT) {
+		count = SYSTEM_DEV_MAX_COUNT;
+	}
+	for (uint8_t i = 0; i < count; i++) {
+		async_sys_devs[i] = devices[i];
+	}
+	async_sys_count = count;
+	// mark in-progress before the task starts so a caller can poll immediately
+	async_sys_finished = false;
+	uv_rtos_task_create(&loadparam_system_task, "loadsys_task",
+			UV_RTOS_MIN_STACK_SIZE * 5, NULL, UV_RTOS_IDLE_PRIORITY + 1, NULL);
 }

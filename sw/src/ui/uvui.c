@@ -56,6 +56,9 @@ typedef struct {
 	// (the tab window uses UITABWINDOW_LIST_OF_POINTERS, i.e. a char* array).
 	char tab_name_buffer[UVUI_TAB_MAX][128];
 	char *tab_names[UVUI_TAB_MAX];
+	// per-tab names as actually drawn: the full names, or shortened with a
+	// trailing "..." when the tabs would not all fit (see compute_tab_display())
+	char tab_display_buffer[UVUI_TAB_MAX][128];
 	uint16_t tab_count;
 
 	// index of the "Add device" tab, or -1 when the system is full
@@ -245,10 +248,13 @@ void uvui_exec(void) {
 	this->log_full_str[0] = '\0';
 	uv_uilabel_init(&this->log_full, uv_uistyles[0].font, ALIGN_TOP_LEFT,
 			uv_uistyles[0].text_color, this->log_full_str);
-	// the label fills the frame content; the number of lines placed in its string
-	// is what bounds it (there is no clipping), so it is left at full height
+	// Size the label to the frame's content area (not the whole display): the log
+	// pages its own text, so only the visible lines are ever in the string, and a
+	// label is not clipped to its bounding box. Keeping the height at the frame
+	// size stops the window's content box (and thus a scroll bar) from being grown
+	// to the full display height while the log is collapsed.
 	uv_uiframewindow_addxy(&this->log_frame, &this->log_full,
-			0, 0, lfc.w, disp_h);
+			0, 0, lfc.w, lfc.h);
 
 	// Close button, shown only while expanded
 	uv_uibutton_init(&this->log_close, "Close", &uv_uistyles[0]);
@@ -406,9 +412,32 @@ static void populate_tab_names(void) {
 	i++;
 
 	for (uint8_t d = 0; d < system_get_dev_count(sys); d++) {
-		strncpy(this->tab_name_buffer[i], system_get_dev(sys, d)->name,
-				sizeof(this->tab_name_buffer[i]) - 1);
-		this->tab_name_buffer[i][sizeof(this->tab_name_buffer[i]) - 1] = '\0';
+		device_st *device = system_get_dev(sys, d);
+		char *buf = this->tab_name_buffer[i];
+		size_t bufsz = sizeof(this->tab_name_buffer[i]);
+		if (device->nodeid != 0) {
+			// tab name is "<name>_0x<nodeid>", but the device name may already end
+			// with that suffix (devices loaded from a .uvsys keep the renamed
+			// package name); strip any such trailing suffix so it is not doubled
+			char suffix[16];
+			snprintf(suffix, sizeof(suffix), "_0x%x",
+					(unsigned int) device->nodeid);
+			// base kept short enough that base + suffix always fits *buf*
+			char base[96];
+			strncpy(base, device->name, sizeof(base) - 1);
+			base[sizeof(base) - 1] = '\0';
+			size_t slen = strlen(suffix);
+			size_t blen = strlen(base);
+			while ((blen >= slen) && (strcmp(base + blen - slen, suffix) == 0)) {
+				base[blen - slen] = '\0';
+				blen -= slen;
+			}
+			snprintf(buf, bufsz, "%s%s", base, suffix);
+		}
+		else {
+			strncpy(buf, device->name, bufsz - 1);
+			buf[bufsz - 1] = '\0';
+		}
 		i++;
 	}
 
@@ -574,6 +603,105 @@ static void draw_tab_dot(uint16_t tab_i, int16_t tab_x, int16_t tab_y, color_t b
 }
 
 
+/// @brief: Full drawn width of tab *i* (its name plus padding and status-dot
+/// space), clamped to the minimum header width. Uses *name* for measurement.
+static int16_t tab_width_of(uv_uitabwindow_st *tabwin, int16_t i, const char *name) {
+	int16_t dot_w = tab_dot_space((uint16_t) i);
+	int16_t w = uv_ui_get_string_width((char*) name, tabwin->font) + 10 + dot_w;
+	if (w < CONFIG_UI_TABWINDOW_HEADER_MIN_WIDTH) {
+		w = CONFIG_UI_TABWINDOW_HEADER_MIN_WIDTH;
+	}
+	return w;
+}
+
+
+/// @brief: Copies *name* into *out*, shortened with a trailing "..." so it fits
+/// within *max_w* pixels. An empty/zero budget yields just "...".
+static void shorten_to_width(const char *name, int16_t max_w, uv_font_st *font,
+		char *out, size_t outlen) {
+	if (uv_ui_get_string_width((char*) name, font) <= max_w) {
+		strncpy(out, name, outlen - 1);
+		out[outlen - 1] = '\0';
+		return;
+	}
+	int16_t ell_w = uv_ui_get_string_width("...", font);
+	char tmp[128] = { };
+	size_t fit = 0;
+	for (size_t k = 0; (k < strlen(name)) && (k < sizeof(tmp) - 1); k++) {
+		tmp[k] = name[k];
+		tmp[k + 1] = '\0';
+		if ((uv_ui_get_string_width(tmp, font) + ell_w) > max_w) {
+			break;
+		}
+		fit = k + 1;
+	}
+	if (fit > outlen - 4) {
+		fit = outlen - 4;
+	}
+	memcpy(out, name, fit);
+	out[fit] = '\0';
+	strncat(out, "...", outlen - strlen(out) - 1);
+}
+
+
+/// @brief: Fills tab_display_buffer with the names to draw: the full names when
+/// they all fit, otherwise the full names for the System tab (0), the active tab
+/// and the "Add device" tab, and shortened "start..." names for the rest, so the
+/// whole row fits the window width. Called by both the draw and touch handlers so
+/// their tab geometry stays identical.
+static void compute_tab_display(uv_uitabwindow_st *tabwin, int16_t active) {
+	uint16_t count = uv_uitabwindow_get_tab_count(tabwin);
+	int16_t avail = uv_uibb(tabwin)->width;
+
+	int16_t total = 0;
+	for (int16_t i = 0; i < count; i++) {
+		total += tab_width_of(tabwin, i, this->tab_names[i]);
+	}
+
+	if (total <= avail) {
+		for (int16_t i = 0; i < count; i++) {
+			strncpy(this->tab_display_buffer[i], this->tab_names[i],
+					sizeof(this->tab_display_buffer[i]) - 1);
+			this->tab_display_buffer[i][sizeof(this->tab_display_buffer[i]) - 1] =
+					'\0';
+		}
+		return;
+	}
+
+	// overflow: keep System, the active tab and the add tab full; shrink the rest
+	int16_t fixed = 0;
+	int16_t truncatable = 0;
+	for (int16_t i = 0; i < count; i++) {
+		if ((i == 0) || (i == active) || (i == this->add_tab_index)) {
+			fixed += tab_width_of(tabwin, i, this->tab_names[i]);
+		}
+		else {
+			truncatable++;
+		}
+	}
+	int16_t per = (truncatable > 0) ? ((avail - fixed) / truncatable) : 0;
+	if (per < CONFIG_UI_TABWINDOW_HEADER_MIN_WIDTH) {
+		per = CONFIG_UI_TABWINDOW_HEADER_MIN_WIDTH;
+	}
+
+	for (int16_t i = 0; i < count; i++) {
+		if ((i == 0) || (i == active) || (i == this->add_tab_index)) {
+			strncpy(this->tab_display_buffer[i], this->tab_names[i],
+					sizeof(this->tab_display_buffer[i]) - 1);
+			this->tab_display_buffer[i][sizeof(this->tab_display_buffer[i]) - 1] =
+					'\0';
+		}
+		else {
+			int16_t dot_w = tab_dot_space((uint16_t) i);
+			int16_t text_budget = per - 10 - dot_w;
+			shorten_to_width(this->tab_names[i], text_budget, tabwin->font,
+					this->tab_display_buffer[i],
+					sizeof(this->tab_display_buffer[i]));
+		}
+	}
+}
+
+
 /// @brief: Custom tab-window draw callback. Mirrors the HAL tab window's header
 /// drawing (so the look is unchanged) but reserves room for and draws a status
 /// dot before each device tab name. Uses only public HAL drawing primitives, so
@@ -589,6 +717,9 @@ static void tabwindow_draw(void *me, const uv_bounding_box_st *pbb) {
 	// super draw function: window background
 	uv_uiwindow_draw(me, pbb);
 
+	// compute the (possibly shortened) names that actually fit the header row
+	compute_tab_display(me, active);
+
 	int16_t thisx = uv_ui_get_xglobal(me);
 	int16_t x = thisx;
 	int16_t y = uv_ui_get_yglobal(me);
@@ -596,12 +727,9 @@ static void tabwindow_draw(void *me, const uv_bounding_box_st *pbb) {
 	int16_t active_tab_w = 0;
 
 	for (int16_t i = 0; i < count; i++) {
-		char *name = this->tab_names[i];
+		char *name = this->tab_display_buffer[i];
 		int16_t dot_w = tab_dot_space((uint16_t) i);
-		int16_t tab_w = uv_ui_get_string_width(name, font) + 10 + dot_w;
-		if (tab_w < CONFIG_UI_TABWINDOW_HEADER_MIN_WIDTH) {
-			tab_w = CONFIG_UI_TABWINDOW_HEADER_MIN_WIDTH;
-		}
+		int16_t tab_w = tab_width_of(me, i, name);
 		if (active != i) {
 			uv_ui_draw_shadowrrect(x, y, tab_w, CONFIG_UI_TABWINDOW_HEADER_HEIGHT,
 					CONFIG_UI_RADIUS, bg,
@@ -627,11 +755,14 @@ static void tabwindow_draw(void *me, const uv_bounding_box_st *pbb) {
 			uv_uic_brighten(bg, 20), C(0xFFFFFFFF), C(0xFFFFFFFF));
 	// the active tab background is brightened, so the hollow inner must match it
 	draw_tab_dot(active, active_tab_x, y, uv_uic_brighten(bg, 20));
-	uv_ui_draw_string(this->tab_names[active], font,
+	uv_ui_draw_string(this->tab_display_buffer[active], font,
 			active_tab_x + 5 + tab_dot_space(active),
 			y + CONFIG_UI_TABWINDOW_HEADER_HEIGHT / 2, ALIGN_CENTER_LEFT, text_c);
 
 	_uv_uiwindow_draw_children(me, pbb);
+
+	// scroll bars on top of the children, when the tab content overflows
+	uv_uiwindow_draw_scrollbars(me, pbb);
 }
 
 
@@ -644,14 +775,11 @@ static void tabwindow_touch(void *me, uv_touch_st *touch) {
 	uv_uitabwindow_st *tabwin = me;
 	if ((touch->action == TOUCH_CLICKED) &&
 			(touch->y <= CONFIG_UI_TABWINDOW_HEADER_HEIGHT)) {
+		// match the draw geometry exactly, including any name shortening
+		compute_tab_display(tabwin, uv_uitabwindow_get_tab(tabwin));
 		int16_t total_w = 0;
 		for (int16_t i = 0; i < tabwin->tab_count; i++) {
-			int16_t dot_w = tab_dot_space((uint16_t) i);
-			int16_t tab_w = uv_ui_get_string_width(this->tab_names[i],
-					tabwin->font) + 10 + dot_w;
-			if (tab_w < CONFIG_UI_TABWINDOW_HEADER_MIN_WIDTH) {
-				tab_w = CONFIG_UI_TABWINDOW_HEADER_MIN_WIDTH;
-			}
+			int16_t tab_w = tab_width_of(tabwin, i, this->tab_display_buffer[i]);
 			if (touch->x < total_w + tab_w) {
 				tabwin->active_tab = i;
 				tabwin->tab_changed = true;

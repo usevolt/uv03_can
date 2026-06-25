@@ -175,10 +175,23 @@ bool savesys_save(const char *file) {
 				(unsigned int) d->nodeid);
 		e |= uv_jsonwriter_add_string(&json, "NODEID", nodeid_str);
 
-		// copy the device's .uvdev package, renamed <name>_0x<nodeid>.uvdev
+		// copy the device's .uvdev package, renamed <name>_0x<nodeid>.uvdev.
+		// d->name may already end with the _0x<nodeid> suffix when the system was
+		// loaded from a .uvsys (its packages were renamed this way on a previous
+		// save); strip any such trailing suffix first so it is not doubled.
+		char suffix[16];
+		snprintf(suffix, sizeof(suffix), "_0x%x", (unsigned int) d->nodeid);
+		char base[256];
+		strncpy(base, d->name, sizeof(base) - 1);
+		base[sizeof(base) - 1] = '\0';
+		size_t slen = strlen(suffix);
+		size_t blen = strlen(base);
+		while ((blen >= slen) && (strcmp(base + blen - slen, suffix) == 0)) {
+			base[blen - slen] = '\0';
+			blen -= slen;
+		}
 		char uvdev_name[320];
-		snprintf(uvdev_name, sizeof(uvdev_name), "%s_0x%x.uvdev",
-				d->name, (unsigned int) d->nodeid);
+		snprintf(uvdev_name, sizeof(uvdev_name), "%s%s.uvdev", base, suffix);
 		printf("Adding configuration package '%s'\n", uvdev_name);
 		fflush(stdout);
 		snprintf(cmd, sizeof(cmd), "cp \"%s\" \"%s/%s\"",
