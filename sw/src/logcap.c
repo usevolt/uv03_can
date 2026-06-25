@@ -17,13 +17,32 @@
 
 
 #include "logcap.h"
+#include "uv_hal_config.h"
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+
+// stdout/stderr capture is done with a pipe drained by a dedicated OS thread.
+// The plumbing differs per platform: POSIX pipe()/pthread on Linux, the Win32
+// CRT _pipe()/_beginthreadex() on Windows (the mingw build links no pthreads).
+#if CONFIG_TARGET_WIN
+#include <windows.h>
+#include <process.h>
+#include <io.h>
+#include <fcntl.h>
+static CRITICAL_SECTION mutex;
+static bool mutex_ready;
+#define MUTEX_LOCK()	EnterCriticalSection(&mutex)
+#define MUTEX_UNLOCK()	LeaveCriticalSection(&mutex)
+#else
 #include <unistd.h>
 #include <pthread.h>
 #include <signal.h>
 #include <errno.h>
+static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+#define MUTEX_LOCK()	pthread_mutex_lock(&mutex)
+#define MUTEX_UNLOCK()	pthread_mutex_unlock(&mutex)
+#endif
 
 
 // Number of log lines retained, and the maximum stored length of each.
@@ -40,7 +59,6 @@ static int line_count;
 static char curline[LOGCAP_LINE_LEN];
 static int curlen;
 
-static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 static bool started;
 // The original stdout file descriptor, kept so the captured output is still
 // echoed to the terminal.
@@ -67,9 +85,9 @@ static void push_curline(void) {
 /// @brief: Feeds raw captured bytes into the line assembler. ANSI escape
 /// sequences (the colored PRINT macros) are kept verbatim so the UI labels can
 /// interpret them and render the log in colour, just like the terminal does.
-static void consume(const char *buf, ssize_t n) {
-	pthread_mutex_lock(&mutex);
-	for (ssize_t i = 0; i < n; i++) {
+static void consume(const char *buf, int n) {
+	MUTEX_LOCK();
+	for (int i = 0; i < n; i++) {
 		char c = buf[i];
 		if ((c == '\n') || (c == '\r')) {
 			push_curline();
@@ -83,46 +101,71 @@ static void consume(const char *buf, ssize_t n) {
 			curline[curlen++] = c;
 		}
 	}
-	pthread_mutex_unlock(&mutex);
+	MUTEX_UNLOCK();
 }
 
 
-/// @brief: Reader thread: drains the capture pipe, echoes the bytes to the
-/// original terminal, and feeds them into the line assembler.
-static void *reader_thread(void *arg) {
-	int fd = (int) (intptr_t) arg;
-
-	// This is a plain pthread, not a FreeRTOS task. The FreeRTOS POSIX port drives
-	// scheduling with process signals (SIGALRM tick, SIGUSR1 resume). If one is
-	// delivered to this thread it both interrupts the blocking read() below (EINTR)
-	// and runs the port's handler on a thread it does not manage. Block all signals
-	// here so they are always delivered to the FreeRTOS task threads instead.
-	sigset_t all;
-	sigfillset(&all);
-	pthread_sigmask(SIG_BLOCK, &all, NULL);
-
+/// @brief: Drains the capture pipe, echoes the bytes to the original terminal,
+/// and feeds them into the line assembler. Runs until the pipe is closed.
+static void reader_loop(int fd) {
 	char buf[4096];
 	for (;;) {
+#if CONFIG_TARGET_WIN
+		int n = _read(fd, buf, sizeof(buf));
+#else
 		ssize_t n = read(fd, buf, sizeof(buf));
+#endif
 		if (n > 0) {
 			if (orig_stdout_fd >= 0) {
+#if CONFIG_TARGET_WIN
+				if (_write(orig_stdout_fd, buf, (unsigned int) n)) {
+					// best effort echo to the terminal
+				}
+#else
 				if (write(orig_stdout_fd, buf, n)) {
 					// best effort echo to the terminal
 				}
+#endif
 			}
-			consume(buf, n);
+			consume(buf, (int) n);
 		}
+#if !CONFIG_TARGET_WIN
 		else if ((n < 0) && (errno == EINTR)) {
 			// interrupted by a signal before any data: just retry the read
 			continue;
 		}
+#endif
 		else {
 			// end of file on the pipe, or an unrecoverable error
 			break;
 		}
 	}
+}
+
+
+#if CONFIG_TARGET_WIN
+// Win32 reader thread entry. The native FreeRTOS Win32 port uses no process
+// signals, so (unlike Linux) no signal masking is needed here.
+static unsigned __stdcall reader_thread(void *arg) {
+	reader_loop((int) (intptr_t) arg);
+	return 0;
+}
+#else
+// POSIX reader thread entry.
+static void *reader_thread(void *arg) {
+	// This is a plain pthread, not a FreeRTOS task. The FreeRTOS POSIX port drives
+	// scheduling with process signals (SIGALRM tick, SIGUSR1 resume). If one is
+	// delivered to this thread it both interrupts the blocking read() (EINTR) and
+	// runs the port's handler on a thread it does not manage. Block all signals
+	// here so they are always delivered to the FreeRTOS task threads instead.
+	sigset_t all;
+	sigfillset(&all);
+	pthread_sigmask(SIG_BLOCK, &all, NULL);
+
+	reader_loop((int) (intptr_t) arg);
 	return NULL;
 }
+#endif
 
 
 void logcap_init(void) {
@@ -130,6 +173,39 @@ void logcap_init(void) {
 		return;
 	}
 
+#if CONFIG_TARGET_WIN
+	if (!mutex_ready) {
+		InitializeCriticalSection(&mutex);
+		mutex_ready = true;
+	}
+
+	// _pipe in binary mode; the reader thread drains the read end
+	int pipe_fd[2];
+	if (_pipe(pipe_fd, 65536, _O_BINARY) != 0) {
+		return;
+	}
+
+	// keep a copy of the real stdout so the reader can echo to the terminal
+	orig_stdout_fd = _dup(_fileno(stdout));
+
+	// redirect both stdout and stderr into the pipe's write end
+	fflush(stdout);
+	fflush(stderr);
+	_dup2(pipe_fd[1], _fileno(stdout));
+	_dup2(pipe_fd[1], _fileno(stderr));
+	_close(pipe_fd[1]);
+
+	// stdout would otherwise be fully buffered now that it is a pipe; make it
+	// unbuffered so log lines appear promptly (stderr is unbuffered already)
+	setvbuf(stdout, NULL, _IONBF, 0);
+
+	uintptr_t thread = _beginthreadex(NULL, 0, &reader_thread,
+			(void*) (intptr_t) pipe_fd[0], 0, NULL);
+	if (thread != 0) {
+		CloseHandle((HANDLE) thread);
+		started = true;
+	}
+#else
 	int pipe_fd[2];
 	if (pipe(pipe_fd) != 0) {
 		return;
@@ -155,6 +231,7 @@ void logcap_init(void) {
 		pthread_detach(thread);
 		started = true;
 	}
+#endif
 }
 
 
@@ -162,7 +239,7 @@ void logcap_get_last_line(char *out, size_t out_len) {
 	if ((out == NULL) || (out_len == 0)) {
 		return;
 	}
-	pthread_mutex_lock(&mutex);
+	MUTEX_LOCK();
 	const char *src = "";
 	if (curlen > 0) {
 		// show the line being assembled for liveness (e.g. progress prints)
@@ -177,14 +254,14 @@ void logcap_get_last_line(char *out, size_t out_len) {
 	}
 	strncpy(out, src, out_len - 1);
 	out[out_len - 1] = '\0';
-	pthread_mutex_unlock(&mutex);
+	MUTEX_UNLOCK();
 }
 
 
 int logcap_get_line_count(void) {
-	pthread_mutex_lock(&mutex);
+	MUTEX_LOCK();
 	int ret = line_count;
-	pthread_mutex_unlock(&mutex);
+	MUTEX_UNLOCK();
 	return ret;
 }
 
@@ -193,7 +270,7 @@ void logcap_get_range(char *out, size_t out_len, int skip_newest, int max_lines)
 	if ((out == NULL) || (out_len == 0)) {
 		return;
 	}
-	pthread_mutex_lock(&mutex);
+	MUTEX_LOCK();
 
 	if (skip_newest < 0) {
 		skip_newest = 0;
@@ -230,7 +307,7 @@ void logcap_get_range(char *out, size_t out_len, int skip_newest, int max_lines)
 		out[used++] = '\n';
 		out[used] = '\0';
 	}
-	pthread_mutex_unlock(&mutex);
+	MUTEX_UNLOCK();
 }
 
 

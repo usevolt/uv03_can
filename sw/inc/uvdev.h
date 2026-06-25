@@ -41,6 +41,10 @@ typedef struct {
 	/// @brief: FIRMWARE manifest entry: the firmware binary path, relative to
 	/// the package root. Empty if the manifest has none.
 	char firmware[512];
+	/// @brief: LINUX_BIN manifest entry: the desktop (Linux) simulator
+	/// executable path, relative to the package root. Empty if the manifest has
+	/// none. Used to run the device as a simulator.
+	char linux_bin[512];
 	/// @brief: VERSION manifest entry: the firmware software version string
 	/// (e.g. a git-describe value). Empty if the manifest has none.
 	char version[64];

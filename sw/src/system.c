@@ -20,12 +20,20 @@
 #include "main.h"
 #include "uvdev.h"
 #include "db.h"
+#include "archive.h"
 #include <string.h>
 #include <ctype.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <uv_json.h>
+
+// Platform null device, used to silence a child command's stdout.
+#if CONFIG_TARGET_WIN
+#define NULL_DEVICE		"NUL"
+#else
+#define NULL_DEVICE		"/dev/null"
+#endif
 
 
 /// @brief: Derives a human readable name from a file path by taking the file
@@ -63,17 +71,7 @@ static uint8_t sysfile_tmpdir_count;
 
 // Removes a single extraction directory (best effort).
 static void sysfile_rmdir(const char *dir) {
-#if !CONFIG_TARGET_WIN
-	if ((dir != NULL) && (strlen(dir) != 0)) {
-		char cmd[1100];
-		snprintf(cmd, sizeof(cmd), "rm -rf \"%s\"", dir);
-		if (system(cmd)) {
-			// ignore; /tmp is reaped eventually
-		}
-	}
-#else
-	(void) dir;
-#endif
+	archive_rmtree(dir);
 }
 
 
@@ -97,21 +95,12 @@ static void sysfile_track_tmpdir(const char *dir) {
 
 
 void system_init_tmp_cleanup(void) {
-#if !CONFIG_TARGET_WIN
 	// clean exits (the UI closing, exit(0)) remove the active extraction dirs
 	atexit(&sysfile_remove_all_tmpdirs);
 
-	// A hard crash (SIGSEGV / SIGKILL) and the HAL's SIGINT handler (which uses
-	// _exit()) skip atexit, so an extraction directory can be left behind. Sweep
-	// such leftovers from earlier runs here, at startup. The age guard (older than
-	// a day) keeps this from disturbing the fresh directories of another uvcan
-	// instance that may be running concurrently (CLI alongside an open UI).
-	if (system("find /tmp -maxdepth 1 -type d "
-			"\\( -name 'uvcan_uvsys.*' -o -name 'uvcan_uvdev.*' \\) "
-			"-mmin +1440 -exec rm -rf {} + 2>/dev/null")) {
-		// best effort; nothing to do if the sweep fails
-	}
-#endif
+	// sweep leftover extraction dirs from an earlier run that skipped atexit
+	// (a crash, or the HAL's _exit()-based SIGINT handler)
+	archive_sweep_stale_tmpdirs();
 }
 
 
@@ -198,24 +187,17 @@ bool system_set_file(system_st *this, const char *filepath) {
 	// NOTE: the existing devices are intentionally NOT cleared. The system file's
 	// devices are appended to whatever is already loaded.
 
-#if CONFIG_TARGET_WIN
-	PRINT("Reading .uvsys system packages is not supported on Windows.\n");
-	(void) filepath;
-#else
 	// .uvsys is a plain zip archive; extract it into a fresh temporary directory
-	char tmpdir[] = "/tmp/uvcan_uvsys.XXXXXX";
+	char tmpdir[1024];
 	bool extracted = false;
-	if (mkdtemp(tmpdir) == NULL) {
+	if (!archive_mktempdir("uvcan_uvsys", tmpdir, sizeof(tmpdir))) {
 		PRINT("Failed to create a temporary directory for '%s'.\n", filepath);
 	}
 	else {
 		extracted = true;
-		char cmd[2304];
-		snprintf(cmd, sizeof(cmd), "unzip -q -o \"%s\" -d \"%s\"",
-				filepath, tmpdir);
-		if (system(cmd) != 0) {
+		if (!archive_extract(filepath, tmpdir)) {
 			PRINT("Failed to extract '%s'. Is it a valid .uvsys package and is "
-					"'unzip' installed?\n", filepath);
+					"the extraction tool (unzip / tar) available?\n", filepath);
 		}
 		else {
 			// read the uvsys.json manifest
@@ -266,7 +248,9 @@ bool system_set_file(system_st *this, const char *filepath) {
 		// nothing usable was loaded: drop the just-created extraction
 		sysfile_rmdir(tmpdir);
 	}
-#endif
+	else {
+		// extraction directory was never created; nothing to clean up
+	}
 
 	return ret;
 }
@@ -336,7 +320,7 @@ static bool load_uvdev_database(const char *filepath, char *version_out,
 			// silence cmd_db's progress prints, irrelevant here
 			fflush(stdout);
 			int saved = dup(STDOUT_FILENO);
-			int devnull = open("/dev/null", O_WRONLY);
+			int devnull = open(NULL_DEVICE, O_WRONLY);
 			if (devnull >= 0) {
 				dup2(devnull, STDOUT_FILENO);
 			}

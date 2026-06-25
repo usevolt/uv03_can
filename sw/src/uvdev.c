@@ -18,6 +18,7 @@
 
 #include "uvdev.h"
 #include "main.h"
+#include "archive.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,24 +41,15 @@ bool uvdev_open(uvdev_st *this, const char *uvdev_path) {
 	bool ret = false;
 	memset(this, 0, sizeof(*this));
 
-#if CONFIG_TARGET_WIN
-	PRINT("Reading .uvdev packages is not supported on Windows.\n");
-#else
 	// create a fresh temporary directory to extract into
-	char tmpl[] = "/tmp/uvcan_uvdev.XXXXXX";
-	if (mkdtemp(tmpl) == NULL) {
+	if (!archive_mktempdir("uvcan_uvdev", this->dir, sizeof(this->dir))) {
 		PRINT("Failed to create a temporary directory for '%s'.\n", uvdev_path);
 	}
 	else {
-		strncpy(this->dir, tmpl, sizeof(this->dir) - 1);
-
 		// .uvdev is a plain zip archive; extract it quietly, overwriting
-		char cmd[2304];
-		snprintf(cmd, sizeof(cmd), "unzip -q -o \"%s\" -d \"%s\"",
-				uvdev_path, this->dir);
-		if (system(cmd) != 0) {
+		if (!archive_extract(uvdev_path, this->dir)) {
 			PRINT("Failed to extract '%s'. Is it a valid .uvdev package and is "
-					"'unzip' installed?\n", uvdev_path);
+					"the extraction tool (unzip / tar) available?\n", uvdev_path);
 			uvdev_close(this);
 		}
 		else {
@@ -83,6 +75,8 @@ bool uvdev_open(uvdev_st *this, const char *uvdev_path) {
 								this->database, sizeof(this->database));
 						manifest_get_str(data, "FIRMWARE",
 								this->firmware, sizeof(this->firmware));
+						manifest_get_str(data, "LINUX_BIN",
+								this->linux_bin, sizeof(this->linux_bin));
 						manifest_get_str(data, "VERSION",
 								this->version, sizeof(this->version));
 						ret = true;
@@ -103,21 +97,12 @@ bool uvdev_open(uvdev_st *this, const char *uvdev_path) {
 			}
 		}
 	}
-#endif
 
 	return ret;
 }
 
 
 void uvdev_close(uvdev_st *this) {
-#if !CONFIG_TARGET_WIN
-	if (strlen(this->dir) != 0) {
-		char cmd[1100];
-		snprintf(cmd, sizeof(cmd), "rm -rf \"%s\"", this->dir);
-		if (system(cmd)) {
-			// ignore failure; the OS will reap /tmp eventually
-		}
-	}
-#endif
+	archive_rmtree(this->dir);
 	this->dir[0] = '\0';
 }
