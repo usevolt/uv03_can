@@ -152,11 +152,20 @@ DEPS := $(OBJECTS:.o=.d)
 PKGNAME := $(FULL_NAME)-win
 PKGDIR  := $(BUILDDIR)/$(PKGNAME)
 
-.PHONY: linux win windows win-package win-package-stage image post-build clean
+.PHONY: linux win windows win-package win-package-stage image post-build clean install uninstall
 
 # Bare 'make' builds the Linux target.
 linux:
 	@$(MAKE) --no-print-directory OS=linux image
+
+# Per-user desktop install: builds (if needed) and registers the binary, the
+# .uvsys file association, icon and launcher. Use 'sudo make install ARGS=--system'
+# for a machine-wide install. See install.sh --help for all options.
+install: $(BINARY)
+	@./install.sh $(ARGS)
+
+uninstall:
+	@./install.sh --uninstall $(ARGS)
 
 win windows:
 	@$(MAKE) --no-print-directory OS=win image
@@ -176,6 +185,10 @@ win-package-stage:
 	cp "$(PLATFORM_SRCDIR)/PCANBasic.dll" "$(PKGDIR)/"
 	cp fonts/LiberationSans-Regular.ttf "$(PKGDIR)/fonts/"
 	cp packaging/uvcan-ui.bat "$(PKGDIR)/"
+	cp packaging/uvcan-open.bat "$(PKGDIR)/"
+	cp packaging/uvsys.ico "$(PKGDIR)/"
+	cp packaging/install-association.bat "$(PKGDIR)/"
+	cp packaging/uninstall-association.bat "$(PKGDIR)/"
 	cp packaging/README.txt "$(PKGDIR)/"
 	cd "$(BUILDDIR)" && zip -r -q "$(PKGNAME).zip" "$(PKGNAME)"
 	@echo "Created $(PKGDIR).zip"

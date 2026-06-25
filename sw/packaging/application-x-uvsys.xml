@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- MIME type for Usevolt CANopen system packages (.uvsys).
+     A .uvsys file is a zip archive bundling a uvsys.json manifest plus the
+     per-device .uvdev configuration files of a whole system. -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-uvsys">
+    <comment>Usevolt CANopen system package</comment>
+    <glob pattern="*.uvsys"/>
+    <icon name="application-x-uvsys"/>
+    <!-- .uvsys is a zip archive; match the PK header so content sniffing agrees -->
+    <sub-class-of type="application/zip"/>
+  </mime-type>
+</mime-info>

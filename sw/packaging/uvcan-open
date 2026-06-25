@@ -1,0 +1,25 @@
+#!/bin/sh
+# Launcher wrapper for the uvcan .desktop entry / .uvsys file association.
+#
+# Double-clicking a .uvsys file invokes this with the file as $1, which becomes
+#     uvcan --sys <file> --ui
+# Launching the entry with no file (e.g. from the application menu) instead opens
+# the device/baudrate chooser and main display with no system preloaded:
+#     uvcan --ui
+#
+# uvcan is resolved next to this wrapper first (install.sh installs both into the
+# same bindir), then from PATH as a fallback.
+set -eu
+
+dir=$(dirname "$(readlink -f "$0")")
+if [ -x "$dir/uvcan" ]; then
+	UVCAN="$dir/uvcan"
+else
+	UVCAN=uvcan
+fi
+
+if [ "$#" -ge 1 ] && [ -n "$1" ]; then
+	exec "$UVCAN" --sys "$1" --ui
+else
+	exec "$UVCAN" --ui
+fi

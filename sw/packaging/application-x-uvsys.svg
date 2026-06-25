@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Icon for .uvsys (Usevolt CANopen system package) files.
+     A document sheet carrying the Usevolt wordmark. The wordmark paths are
+     copied verbatim from ~/uv/media/usevolt.svg (purple #4b2376). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="fold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#d9d0e8"/>
+      <stop offset="1" stop-color="#efeaf6"/>
+    </linearGradient>
+  </defs>
+
+  <!-- soft drop shadow -->
+  <path d="M116,60 L332,60 L404,132 L404,460 L116,460 Z"
+        fill="#000000" opacity="0.10" transform="translate(0,8)"/>
+
+  <!-- page body with folded top-right corner -->
+  <path d="M112,56 L328,56 L400,128 L400,456 L112,456 Z"
+        fill="#ffffff" stroke="#cdc4da" stroke-width="4" stroke-linejoin="round"/>
+  <!-- folded corner flap -->
+  <path d="M328,56 L328,128 L400,128 Z"
+        fill="url(#fold)" stroke="#cdc4da" stroke-width="4" stroke-linejoin="round"/>
+
+  <!-- Usevolt wordmark, scaled to ~232px wide and centred in the upper page.
+       scale = 232 / 854.88117 = 0.27138 -->
+  <g transform="translate(140,178) scale(0.27138)">
+    <g transform="translate(-207.83332,-342.2672)">
+      <path style="fill:#000000"
+            d="m 294.07284,342.2672 h 88 l -65.29932,138.93437 h 65.90177 L 447.97461,342.2672 h 67.38255 L 429.11764,525.75506 H 207.83332 Z"/>
+      <path style="fill:#4b2376;fill-rule:evenodd"
+            d="m 958.30009,393.6122 -16.19826,34.46429 h 51.2424 l -45.90904,97.67857 h 39.17196 l 45.90905,-97.67857 h 14 l 16.1983,-34.46429 z m -47.5,0 -62.10731,132.14286 h 90.74241 l 15.77861,-33.57143 h -51.24241 l 46.3287,-98.57143 z M 796.56174,490.39792 825.6011,428.6122 h 22.25 l -29.03936,61.78572 z m 7.51937,-96.84947 -62.13727,132.20661 h 98.74894 L 902.80009,393.6122 Z m -98.10318,0.0637 -62.10731,132.14286 h 44.41429 l 69.54165,-50.81417 38.16007,-81.32869 H 759.525 l -35.22431,75.00078 -31.00047,23.93711 46.63485,-98.93789 z M 541.11764,525.75506 604.3607,393.6122 h 93.43654 l -14.68363,31.25 h -60.5762 l -9.06431,19.28572 h 60.5762 l -14.10004,30 h -60.5762 l -9.40003,20 h 60.5762 l -14.85539,31.60714 z m -104,0 15.27504,-32.5 59.21446,-0.17857 9.64286,-19.10714 -59.70908,-0.17857 37.68403,-80.17858 95.91606,0.17858 -14.6036,31.07142 h -60 l -8.98039,19.10715 60.08393,-0.17857 -38.52331,81.96428 z"/>
+    </g>
+  </g>
+
+  <!-- purple footer band carrying the extension -->
+  <path d="M112,400 L400,400 L400,456 L112,456 Z" fill="#4b2376"/>
+  <text x="256" y="439" text-anchor="middle"
+        font-family="DejaVu Sans, Verdana, sans-serif" font-weight="bold"
+        font-size="40" letter-spacing="1" fill="#ffffff">.uvsys</text>
+</svg>

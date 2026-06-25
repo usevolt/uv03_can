@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=uvcan
+GenericName=CANopen device manager
+Comment=Open a Usevolt CANopen system package
+# @BIN@ is replaced by install.sh with the installed uvcan-open wrapper path.
+# The wrapper runs `uvcan --sys <file> --ui` when given a file, or `uvcan --ui`
+# when launched with none, so the entry is safe to start from the menu too.
+Exec=@BIN@ %f
+Terminal=false
+Icon=application-x-uvsys
+MimeType=application/x-uvsys;
+Categories=Development;Electronics;
+Keywords=uvcan;CANopen;Usevolt;uvsys;
