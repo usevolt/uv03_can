@@ -24,6 +24,7 @@
 #include <uv_rtos.h>
 #include <unistd.h>
 #include <string.h>
+#include <limits.h>
 #include "main.h"
 #include "system.h"
 #include "find.h"
@@ -283,8 +284,10 @@ void uvui_exec(void) {
 	uint8_t prev_dev_count = system_get_dev_count(&dev.system);
 
 	// log-text refresh tracking: only re-fetch/redraw the log when something that
-	// affects it changed (new lines captured, scrolled, or the frame resized)
-	int prev_line_count = -1;
+	// affects it changed (new lines captured, scrolled, or the frame resized).
+	// New lines are detected via the monotonic capture sequence rather than the
+	// stored line count, which saturates once the ring buffer fills.
+	unsigned long prev_seq = ULONG_MAX;
 	int prev_scroll = -1;
 	int prev_visible_lines = -1;
 
@@ -383,13 +386,14 @@ void uvui_exec(void) {
 		// re-fetch and redraw the log text only when it could have changed: new
 		// lines arrived, the scroll position moved, or the frame resized (which
 		// changes how many lines fit, e.g. while animating or at its final size)
-		if ((line_count != prev_line_count) ||
+		unsigned long seq = logcap_get_seq();
+		if ((seq != prev_seq) ||
 				(this->log_scroll_lines != prev_scroll) ||
 				(visible_lines != prev_visible_lines)) {
 			logcap_get_range(this->log_full_str, sizeof(this->log_full_str),
 					this->log_scroll_lines, visible_lines);
 			uv_ui_refresh(&this->log_full);
-			prev_line_count = line_count;
+			prev_seq = seq;
 			prev_scroll = this->log_scroll_lines;
 			prev_visible_lines = visible_lines;
 		}

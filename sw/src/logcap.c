@@ -55,6 +55,10 @@ static char lines[LOGCAP_MAX_LINES][LOGCAP_LINE_LEN];
 // Index of the next slot to write, and how many lines are currently stored.
 static int line_head;
 static int line_count;
+// Monotonic count of lines ever pushed. Unlike line_count (which saturates at
+// LOGCAP_MAX_LINES once the ring is full) this keeps incrementing, so the UI can
+// still detect that new lines arrived after the buffer fills.
+static unsigned long line_seq;
 // The line currently being assembled (no terminator seen yet).
 static char curline[LOGCAP_LINE_LEN];
 static int curlen;
@@ -76,6 +80,7 @@ static void push_curline(void) {
 		if (line_count < LOGCAP_MAX_LINES) {
 			line_count++;
 		}
+		line_seq++;
 		curlen = 0;
 		curline[0] = '\0';
 	}
@@ -261,6 +266,14 @@ void logcap_get_last_line(char *out, size_t out_len) {
 int logcap_get_line_count(void) {
 	MUTEX_LOCK();
 	int ret = line_count;
+	MUTEX_UNLOCK();
+	return ret;
+}
+
+
+unsigned long logcap_get_seq(void) {
+	MUTEX_LOCK();
+	unsigned long ret = line_seq;
 	MUTEX_UNLOCK();
 	return ret;
 }

@@ -55,4 +55,10 @@ void logcap_get_range(char *out, size_t out_len, int skip_newest, int max_lines)
 int logcap_get_line_count(void);
 
 
+/// @brief: Returns a monotonically increasing count of every line ever captured.
+/// Unlike logcap_get_line_count() this does not saturate when the ring buffer
+/// fills, so the UI can use it to detect new lines and keep following the tail.
+unsigned long logcap_get_seq(void);
+
+
 #endif /* LOGCAP_H_ */
