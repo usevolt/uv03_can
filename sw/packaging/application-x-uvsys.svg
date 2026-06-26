@@ -1,8 +1,13 @@
-<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<!-- Icon for .uvsys (Usevolt CANopen system package) files.
-     A document sheet carrying the Usevolt wordmark. The wordmark paths are
-     copied verbatim from ~/uv/media/usevolt.svg (purple #4b2376). -->
+<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- Icon for .uvsys (Usevolt CANopen system package) files.
+       A document sheet carrying the Usevolt wordmark. The wordmark paths are
+       copied verbatim from ~/uv/media/usevolt.svg (purple #4b2376).
+       NOTE: keep <svg> as the first element after the XML declaration — a long
+       leading comment pushes the "<svg" token past gdk-pixbuf's SVG magic-sniff
+       window, which makes GTK's scalable-icon loader reject the file (the file
+       manager then shows a broken-image placeholder). librsvg parses it either
+       way, but GTK4 loads themed scalable icons through the gdk-pixbuf loader. -->
   <defs>
     <linearGradient id="fold" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#d9d0e8"/>

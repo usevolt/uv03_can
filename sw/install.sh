@@ -58,7 +58,8 @@ else
 	SUDO=""
 fi
 
-ICON_BASE="$DATA_DIR/icons/hicolor"
+ICONS_ROOT="$DATA_DIR/icons"
+ICON_BASE="$ICONS_ROOT/hicolor"
 MIME_DIR="$DATA_DIR/mime"
 APPS_DIR="$DATA_DIR/applications"
 DESKTOP_NAME="uvcan-uvsys.desktop"
@@ -69,15 +70,65 @@ priv() { $SUDO "$@"; }
 say()  { printf '\033[1;35m==>\033[0m %s\n' "$*"; }   # purple arrow
 warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$*" >&2; }
 
+# Themes that must also carry the .uvsys mimetype icon.
+#
+# GTK4 (Nautilus on modern GNOME/Ubuntu) resolves a file's icon from a fallback
+# *chain* — [application-x-uvsys, application-x-generic, ...] — and searches it
+# THEME-MAJOR: it walks the active theme's inheritance chain (e.g. Yaru ->
+# Humanity -> Adwaita -> hicolor) and at each theme tries every name in the
+# chain. Because the generic "application-x-generic" exists in Adwaita, which is
+# searched before "hicolor", a uvsys icon installed ONLY in hicolor never wins —
+# Nautilus shows the plain document icon. To beat the generic we install the
+# specific icon into themes searched before hicolor: the user's current icon
+# theme (always searched first) and Adwaita (the universal default fallback).
+EXTRA_ICON_THEMES=(Adwaita)
+if command -v gsettings >/dev/null 2>&1; then
+	cur_theme="$(gsettings get org.gnome.desktop.interface icon-theme 2>/dev/null | tr -d "'\"")"
+	case "$cur_theme" in
+		""|hicolor|Adwaita) ;;                  # already covered / not a real theme
+		*) EXTRA_ICON_THEMES+=("$cur_theme") ;;
+	esac
+fi
+
+# install_mime_icon <theme-root>  — drop the scalable SVG + PNG sizes into a
+# theme's mimetypes context. Theme dir definitions come from the theme's own
+# index.theme (merged across base dirs by name), so no index.theme is needed here.
+install_mime_icon() {
+	local root="$1"
+	priv install -d "$root/scalable/mimetypes"
+	priv install -m 0644 "$PKG_DIR/application-x-uvsys.svg" \
+		"$root/scalable/mimetypes/application-x-uvsys.svg"
+	for s in "${ICON_SIZES[@]}"; do
+		local src="$PKG_DIR/icons/$s/application-x-uvsys.png"
+		[ -f "$src" ] || continue
+		priv install -d "$root/${s}x${s}/mimetypes"
+		priv install -m 0644 "$src" "$root/${s}x${s}/mimetypes/application-x-uvsys.png"
+	done
+}
+
+# remove_mime_icon <theme-root>  — undo install_mime_icon
+remove_mime_icon() {
+	local root="$1"
+	priv rm -f "$root/scalable/mimetypes/application-x-uvsys.svg"
+	for s in "${ICON_SIZES[@]}"; do
+		priv rm -f "$root/${s}x${s}/mimetypes/application-x-uvsys.png"
+	done
+}
+
 # ---- uninstall --------------------------------------------------------------
 if [ "$ACTION" = "uninstall" ]; then
 	say "Uninstalling uvcan desktop integration ($MODE)"
 	priv rm -f "$BIN_DIR/uvcan" "$BIN_DIR/uvcan-open"
 	priv rm -f "$APPS_DIR/$DESKTOP_NAME"
 	priv rm -f "$MIME_DIR/packages/application-x-uvsys.xml"
-	priv rm -f "$ICON_BASE/scalable/apps/application-x-uvsys.svg"
-	for s in "${ICON_SIZES[@]}"; do
-		priv rm -f "$ICON_BASE/${s}x${s}/apps/application-x-uvsys.png"
+	for ctx in mimetypes apps; do
+		priv rm -f "$ICON_BASE/scalable/$ctx/application-x-uvsys.svg"
+		for s in "${ICON_SIZES[@]}"; do
+			priv rm -f "$ICON_BASE/${s}x${s}/$ctx/application-x-uvsys.png"
+		done
+	done
+	for theme in "${EXTRA_ICON_THEMES[@]}"; do
+		remove_mime_icon "$ICONS_ROOT/$theme"
 	done
 	command -v update-mime-database    >/dev/null && priv update-mime-database "$MIME_DIR" || true
 	command -v update-desktop-database >/dev/null && priv update-desktop-database "$APPS_DIR" || true
@@ -127,14 +178,29 @@ priv install -d "$BIN_DIR" "$APPS_DIR" "$MIME_DIR/packages" "$ICON_BASE/scalable
 priv install -m 0755 "$BIN_SRC"               "$BIN_DIR/uvcan"
 priv install -m 0755 "$PKG_DIR/uvcan-open"    "$BIN_DIR/uvcan-open"
 
-# icon: scalable SVG + pre-rendered PNG sizes
-priv install -m 0644 "$PKG_DIR/application-x-uvsys.svg" \
-	"$ICON_BASE/scalable/apps/application-x-uvsys.svg"
-for s in "${ICON_SIZES[@]}"; do
-	src="$PKG_DIR/icons/$s/application-x-uvsys.png"
-	[ -f "$src" ] || continue
-	priv install -d "$ICON_BASE/${s}x${s}/apps"
-	priv install -m 0644 "$src" "$ICON_BASE/${s}x${s}/apps/application-x-uvsys.png"
+# icon: scalable SVG + pre-rendered PNG sizes. Installed into the "mimetypes"
+# context (where file managers look up a file's icon by its MIME-type name) and
+# also "apps" (used by the .desktop entry's Icon=). Without the mimetypes copy a
+# .uvsys file falls back to the generic document icon.
+for ctx in mimetypes apps; do
+	priv install -d "$ICON_BASE/scalable/$ctx"
+	priv install -m 0644 "$PKG_DIR/application-x-uvsys.svg" \
+		"$ICON_BASE/scalable/$ctx/application-x-uvsys.svg"
+	for s in "${ICON_SIZES[@]}"; do
+		src="$PKG_DIR/icons/$s/application-x-uvsys.png"
+		[ -f "$src" ] || continue
+		priv install -d "$ICON_BASE/${s}x${s}/$ctx"
+		priv install -m 0644 "$src" \
+			"$ICON_BASE/${s}x${s}/$ctx/application-x-uvsys.png"
+	done
+done
+
+# Also place the mimetype icon into the current theme + Adwaita so GTK4's
+# theme-major fallback finds our specific icon before the generic one (see the
+# EXTRA_ICON_THEMES comment above). hicolor alone is not enough on GTK4.
+for theme in "${EXTRA_ICON_THEMES[@]}"; do
+	echo "    icon    -> $ICONS_ROOT/$theme/.../mimetypes/application-x-uvsys.*"
+	install_mime_icon "$ICONS_ROOT/$theme"
 done
 
 # MIME type
@@ -152,6 +218,17 @@ say "Refreshing desktop databases"
 command -v update-mime-database    >/dev/null && priv update-mime-database "$MIME_DIR" || warn "update-mime-database missing"
 command -v update-desktop-database >/dev/null && priv update-desktop-database "$APPS_DIR" || warn "update-desktop-database missing"
 command -v gtk-update-icon-cache   >/dev/null && priv gtk-update-icon-cache -f -t "$ICON_BASE" >/dev/null 2>&1 || true
+# Refresh the extra theme dirs too. They have no index.theme of their own (the
+# definitions are merged from the system theme), so use --ignore-theme-index.
+for theme in "${EXTRA_ICON_THEMES[@]}"; do
+	command -v gtk-update-icon-cache >/dev/null && \
+		priv gtk-update-icon-cache -f -t --ignore-theme-index "$ICONS_ROOT/$theme" >/dev/null 2>&1 || true
+done
+
+# Nautilus caches icons in-process; nudge it to re-read so the new icon shows
+# without a re-login. Harmless if it is not running (it relaunches on demand).
+[ "$MODE" = "user" ] && command -v nautilus >/dev/null && pgrep -x nautilus >/dev/null 2>&1 && \
+	(nautilus -q >/dev/null 2>&1 || true)
 
 # associate .uvsys with our entry (per-user setting; honoured in both modes)
 if command -v xdg-mime >/dev/null; then
