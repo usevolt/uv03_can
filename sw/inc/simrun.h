@@ -42,11 +42,17 @@
 #define SIMRUN_MAX			SYSTEM_DEV_MAX_COUNT
 
 
-/// @brief: State of a tracked simulator. Stopped simulators are kept in the list
-/// (so their final state and log stay visible) until the next simrun_start_system().
+/// @brief: State of a tracked simulator. The states up to (and including)
+/// SIMRUN_RUNNING are "alive" (the process is running); KILLED and STOPPED are
+/// terminal. Stopped/killed simulators are kept in the list (so their final state
+/// and log stay visible) until the next simrun_start_system().
 typedef enum {
-	/// @brief: the process is running
-	SIMRUN_RUNNING = 0,
+	/// @brief: just launched, not yet confirmed running / before parameters
+	SIMRUN_STARTED = 0,
+	/// @brief: parameters are being loaded onto the device
+	SIMRUN_PARAM,
+	/// @brief: running normally
+	SIMRUN_RUNNING,
 	/// @brief: stopped by the user (Kill button, or Ctrl-C in its log terminal)
 	SIMRUN_KILLED,
 	/// @brief: exited on its own (crash, or normal exit for any other reason)
@@ -65,6 +71,14 @@ void simrun_init(void);
 /// -n arguments). Any already-running simulators are killed first. Returns the
 /// number of simulators started.
 uint8_t simrun_start_system(system_st *sys, const char *can_channel);
+
+
+/// @brief: True when *can_channel* names a virtual SocketCAN interface
+/// (vcan / vxcan). On a virtual bus the simulators can exchange frames freely;
+/// on a real CAN device every frame must be acknowledged by another node, so at
+/// least one real device must be present on the bus for the simulators to
+/// communicate (and for their parameters to load).
+bool simrun_can_is_virtual(const char *can_channel);
 
 
 /// @brief: Reaps simulator processes that have exited and frees their slots and
@@ -93,13 +107,35 @@ uint8_t simrun_get_nodeid(uint8_t index);
 simrun_state_e simrun_get_state(uint8_t index);
 
 
-/// @brief: Human-readable state of simulator *index*: "Running", "Killed" or
-/// "Stopped".
+/// @brief: Human-readable state of simulator *index*: "Started", "Loading
+/// params", "Running", "Killed" or "Stopped".
 const char *simrun_get_state_str(uint8_t index);
 
 
-/// @brief: True when at least one simulator is currently running.
+/// @brief: Returns (and clears) whether any simulator's state changed since the
+/// last call. Lets the UI rebuild the simulator list only when it actually
+/// changed (a sim started, loaded params, became running, was killed or exited).
+bool simrun_poll_changed(void);
+
+
+/// @brief: True when at least one simulator is alive (started, loading params or
+/// running).
 bool simrun_any_running(void);
+
+
+/// @brief: Starts the post-launch parameter load on its own task: waits until the
+/// simulated devices are operational on the bus, then loads each device's bundled
+/// parameters (the EMCY-suppress / write / store / reset sequence), moving each
+/// simulator through PARAM and finally to RUNNING. Devices without a param file
+/// just transition from STARTED to RUNNING once online. Call after
+/// simrun_start_system(). Poll simrun_load_params_is_finished().
+void simrun_load_params_async(system_st *sys);
+
+
+/// @brief: Returns true when no post-launch parameter load is running (i.e. the
+/// last simrun_load_params_async() has completed). Returns true before any such
+/// load is started.
+bool simrun_load_params_is_finished(void);
 
 
 /// @brief: Opens a terminal window showing simulator *index*'s live output (its

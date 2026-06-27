@@ -437,7 +437,19 @@ static void sim_task(void *ptr) {
 	// use the CAN device actually active in the HAL (kept in sync by --can and the
 	// config window) rather than dev.can_channel, which the config window does not
 	// update
-	uint8_t started = simrun_start_system(&dev.system, uv_can_get_dev());
+	const char *chn = uv_can_get_dev();
+	// On a real CAN device the simulators' frames need another node to acknowledge
+	// them; with no real device on the bus they never reach uvcan, the devices
+	// never come online and no parameters load. Warn before running on a non-virtual
+	// device (non-interactive, so this is a heads-up, not a prompt).
+	if (!simrun_can_is_virtual(chn)) {
+		PRINT("WARNING: running simulators on the real CAN device '%s'. At least "
+				"one real device must be present on the CAN network to acknowledge "
+				"the bus messages, otherwise the simulators cannot communicate and "
+				"their parameters will not load. Use a virtual device (e.g. vcan0) "
+				"to simulate a standalone system.\n", chn);
+	}
+	uint8_t started = simrun_start_system(&dev.system, chn);
 	if (started == 0) {
 		PRINT("No simulators were started. Load a system with --sys (or add "
 				"devices with --dev) first, and make sure each device package "
@@ -446,6 +458,10 @@ static void sim_task(void *ptr) {
 	else {
 		PRINT("Started %u simulator(s) on '%s'. Press Ctrl-C to stop them.\n",
 				(unsigned int) started, dev.can_channel);
+		// once started, load the system's bundled parameters onto the simulators
+		// (waits for them to come online, then suppresses EMCY / writes / stores /
+		// resets); the simulators move Started -> Loading params -> Running
+		simrun_load_params_async(&dev.system);
 		// keep monitoring until every simulator has stopped (exited or been
 		// killed); reaping updates each one's state as it goes
 		while (simrun_any_running()) {

@@ -35,6 +35,9 @@
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <sys/prctl.h>
+#include <uv_rtos.h>
+#include "find.h"
+#include "loadparam.h"
 
 
 // A single running simulator child process.
@@ -58,11 +61,37 @@ static simproc_st procs[SIMRUN_MAX];
 static uint8_t proc_count;
 static bool atexit_registered;
 
+// set whenever any simulator's state changes, so the UI can refresh only when
+// needed; read and cleared by simrun_poll_changed()
+static volatile bool state_changed;
+
+
+// True while the simulator is alive (running, just started, or loading params).
+static bool state_is_alive(simrun_state_e s) {
+	return s <= SIMRUN_RUNNING;
+}
+
+
+// Sets *p* to *st* and flags a state change for the UI.
+static void set_state(simproc_st *p, simrun_state_e st) {
+	if (p->state != st) {
+		p->state = st;
+		state_changed = true;
+	}
+}
+
+
+bool simrun_poll_changed(void) {
+	bool ret = state_changed;
+	state_changed = false;
+	return ret;
+}
+
 
 // Stops *p*'s process if it is running: SIGTERM, then SIGKILL if it does not
 // exit, and reaps it. Does not change *p*'s state or remove its temp dir.
 static void terminate_proc(simproc_st *p) {
-	if ((p->state == SIMRUN_RUNNING) && (p->pid > 0)) {
+	if (state_is_alive(p->state) && (p->pid > 0)) {
 		kill(p->pid, SIGTERM);
 		// wait up to ~500 ms for a graceful exit
 		bool reaped = false;
@@ -95,6 +124,7 @@ static void clear_all(void) {
 	}
 	proc_count = 0;
 	memset(procs, 0, sizeof(procs));
+	state_changed = true;
 }
 
 
@@ -176,7 +206,8 @@ static bool spawn_proc(simproc_st *p, const char *can_channel) {
 	}
 	else if (pid > 0) {
 		p->pid = pid;
-		p->state = SIMRUN_RUNNING;
+		p->state = SIMRUN_STARTED;
+		state_changed = true;
 		ret = true;
 	}
 	else {
@@ -191,6 +222,16 @@ void simrun_init(void) {
 		atexit(&simrun_kill_all);
 		atexit_registered = true;
 	}
+}
+
+
+bool simrun_can_is_virtual(const char *can_channel) {
+	// SocketCAN virtual interfaces are conventionally named vcanN / vxcanN. They
+	// loop every frame back to all local sockets regardless of bus acknowledgement,
+	// so the simulators can talk to each other and to uvcan with no real hardware.
+	return (can_channel != NULL) &&
+			((strncmp(can_channel, "vcan", 4) == 0) ||
+			 (strncmp(can_channel, "vxcan", 5) == 0));
 }
 
 
@@ -252,7 +293,7 @@ bool simrun_step(void) {
 	// sends SIGTERM); anything else is treated as a crash / other stop.
 	for (uint8_t i = 0; i < proc_count; i++) {
 		simproc_st *p = &procs[i];
-		if (p->state != SIMRUN_RUNNING) {
+		if (!state_is_alive(p->state)) {
 			continue;
 		}
 		int status;
@@ -276,7 +317,7 @@ bool simrun_step(void) {
 			// still running
 		}
 		if (exited) {
-			p->state = by_term ? SIMRUN_KILLED : SIMRUN_STOPPED;
+			set_state(p, by_term ? SIMRUN_KILLED : SIMRUN_STOPPED);
 			PRINT("Simulator '%s' (pid %d) %s.\n", p->name, p->pid,
 					by_term ? "was stopped" : "stopped");
 			changed = true;
@@ -315,6 +356,12 @@ const char *simrun_get_state_str(uint8_t index) {
 	const char *ret = "Stopped";
 	if (index < proc_count) {
 		switch (procs[index].state) {
+		case SIMRUN_STARTED:
+			ret = "Started";
+			break;
+		case SIMRUN_PARAM:
+			ret = "Loading params";
+			break;
 		case SIMRUN_RUNNING:
 			ret = "Running";
 			break;
@@ -334,7 +381,7 @@ const char *simrun_get_state_str(uint8_t index) {
 bool simrun_any_running(void) {
 	bool ret = false;
 	for (uint8_t i = 0; i < proc_count; i++) {
-		if (procs[i].state == SIMRUN_RUNNING) {
+		if (state_is_alive(procs[i].state)) {
 			ret = true;
 			break;
 		}
@@ -407,15 +454,124 @@ void simrun_open_log(uint8_t index) {
 void simrun_kill(uint8_t index) {
 	// stop the process but keep its entry (marked Killed) and its temp dir, so it
 	// stays in the list with its log available until the next run
-	if ((index < proc_count) && (procs[index].state == SIMRUN_RUNNING)) {
+	if ((index < proc_count) && state_is_alive(procs[index].state)) {
 		terminate_proc(&procs[index]);
-		procs[index].state = SIMRUN_KILLED;
+		set_state(&procs[index], SIMRUN_KILLED);
 	}
 }
 
 
 void simrun_kill_all(void) {
 	clear_all();
+}
+
+
+// ---- post-launch parameter load ------------------------------------------
+
+// How long to wait for the simulated devices to come operational before loading.
+#define SIMRUN_OP_WAIT_MS		15000
+
+static system_st *pp_sys;
+static volatile bool pp_finished = true;
+
+
+bool simrun_load_params_is_finished(void) {
+	return pp_finished;
+}
+
+
+// True when some alive simulator carries device *nodeid*.
+static bool has_alive_sim(uint8_t nodeid) {
+	bool ret = false;
+	for (uint8_t i = 0; i < proc_count; i++) {
+		if ((procs[i].nodeid == nodeid) && state_is_alive(procs[i].state)) {
+			ret = true;
+			break;
+		}
+	}
+	return ret;
+}
+
+
+// Moves the alive simulator of device *nodeid* to *st*.
+static void set_sim_state_by_nodeid(uint8_t nodeid, simrun_state_e st) {
+	for (uint8_t i = 0; i < proc_count; i++) {
+		if ((procs[i].nodeid == nodeid) && state_is_alive(procs[i].state)) {
+			set_state(&procs[i], st);
+		}
+	}
+}
+
+
+/// @brief: Task body for simrun_load_params_async(). Waits for the simulated
+/// devices to come operational, loads each device's bundled parameters and moves
+/// the simulators STARTED -> PARAM -> RUNNING.
+static void postparam_task(void *ptr) {
+	system_st *sys = pp_sys;
+
+	// make sure heartbeats are tracked so the operational state can be detected
+	find_start_monitor();
+
+	// 1. wait until every simulated device reports OPERATIONAL (or time out)
+	uint32_t waited = 0;
+	bool all_op = false;
+	while (!all_op && (waited < SIMRUN_OP_WAIT_MS)) {
+		find_update_device_states(sys);
+		all_op = true;
+		for (uint8_t i = 0; i < system_get_dev_count(sys); i++) {
+			device_st *d = system_get_dev(sys, i);
+			if (has_alive_sim(d->nodeid) && (d->state != DEV_STATE_OP)) {
+				all_op = false;
+				break;
+			}
+		}
+		if (!all_op) {
+			uv_rtos_task_delay(500);
+			waited += 500;
+		}
+	}
+
+	// 2. collect operational devices that have a saved parameter file and an alive
+	// simulator, marking each simulator as loading parameters
+	device_st *targets[SIMRUN_MAX];
+	uint8_t n = 0;
+	for (uint8_t i = 0; i < system_get_dev_count(sys); i++) {
+		device_st *d = system_get_dev(sys, i);
+		if ((strlen(d->param_file) != 0) && (d->state == DEV_STATE_OP) &&
+				has_alive_sim(d->nodeid) && (n < SIMRUN_MAX)) {
+			set_sim_state_by_nodeid(d->nodeid, SIMRUN_PARAM);
+			targets[n] = d;
+			n++;
+		}
+	}
+
+	// 3. load the parameters: suppress EMCY on all, write each device, re-enable
+	// EMCY, store and reset all (handled by loadparam_load_system_async)
+	if (n > 0) {
+		loadparam_load_system_async(targets, n);
+		while (!loadparam_load_system_is_finished()) {
+			uv_rtos_task_delay(200);
+		}
+	}
+
+	// 4. every simulator that is still alive is now running
+	for (uint8_t i = 0; i < proc_count; i++) {
+		if ((procs[i].state == SIMRUN_STARTED) ||
+				(procs[i].state == SIMRUN_PARAM)) {
+			set_state(&procs[i], SIMRUN_RUNNING);
+		}
+	}
+
+	pp_finished = true;
+	uv_rtos_task_delete(NULL);
+}
+
+
+void simrun_load_params_async(system_st *sys) {
+	pp_sys = sys;
+	pp_finished = false;
+	uv_rtos_task_create(&postparam_task, "simparam",
+			UV_RTOS_MIN_STACK_SIZE * 5, NULL, UV_RTOS_IDLE_PRIORITY + 1, NULL);
 }
 
 
@@ -429,6 +585,11 @@ uint8_t simrun_start_system(system_st *sys, const char *can_channel) {
 	(void) sys;
 	(void) can_channel;
 	return 0;
+}
+
+bool simrun_can_is_virtual(const char *can_channel) {
+	(void) can_channel;
+	return false;
 }
 
 bool simrun_step(void) {
@@ -464,8 +625,20 @@ const char *simrun_get_state_str(uint8_t index) {
 	return "Stopped";
 }
 
+bool simrun_poll_changed(void) {
+	return false;
+}
+
 bool simrun_any_running(void) {
 	return false;
+}
+
+void simrun_load_params_async(system_st *sys) {
+	(void) sys;
+}
+
+bool simrun_load_params_is_finished(void) {
+	return true;
 }
 
 void simrun_open_log(uint8_t index) {
