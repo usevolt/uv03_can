@@ -12,6 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <getopt.h>
+#include <signal.h>
+#include <unistd.h>
 #include <uv_rtos.h>
 #include "main.h"
 #include "help.h"
@@ -109,6 +111,27 @@ void step(void *me) {
 
 
 
+#if !CONFIG_TARGET_WIN
+/// @brief: SIGINT/SIGTERM handler that removes the temporary directories we
+/// extracted (.uvsys / .uvdev packages, and the running simulators' dirs) before
+/// the process dies. The HAL installs its own SIGINT handler in uv_init() that
+/// _exit()s — bypassing the atexit cleanup — so without this, every Ctrl-C leaks
+/// the extraction dirs under /tmp. We override the HAL handler after uv_init(),
+/// do the cleanup, then perform the same deadlock-safe teardown (uv_deinit() +
+/// _exit(), not exit(), to avoid the stdio-lock deadlock the HAL guards against).
+static void cleanup_signal_callb(int signum) {
+	const char msg[] = "Caught signal, cleaning up and terminating\n";
+	if (write(STDERR_FILENO, msg, sizeof(msg) - 1)) {
+		// best effort; nothing to do if the message cannot be written
+	}
+	simrun_kill_all();
+	system_remove_tmpdirs();
+	uv_deinit();
+	_exit(signum);
+}
+#endif
+
+
 int main(int argc, char *argv[]) {
 
 	init(this);
@@ -183,6 +206,14 @@ int main(int argc, char *argv[]) {
 				UV_RTOS_IDLE_PRIORITY + 1, NULL);
 
 		uv_init(&dev);
+
+#if !CONFIG_TARGET_WIN
+		// uv_init() installed the HAL's SIGINT handler, which _exit()s and so
+		// skips the atexit temp-dir cleanup. Override it (and also catch SIGTERM)
+		// so an interrupted/terminated run removes its extraction dirs first.
+		signal(SIGINT, cleanup_signal_callb);
+		signal(SIGTERM, cleanup_signal_callb);
+#endif
 
 		uv_rtos_start_scheduler();
 	}

@@ -135,6 +135,12 @@ void system_reset(system_st *this);
 /// runs that crashed or were killed (which bypass the atexit handler).
 void system_init_tmp_cleanup(void);
 
+/// @brief: Removes every .uvsys extraction directory created during this run.
+/// Same work as the registered atexit handler, but callable directly from a
+/// signal handler (the HAL's SIGINT handler _exit()s and so skips atexit).
+/// Idempotent: a second call has nothing left to remove.
+void system_remove_tmpdirs(void);
+
 /// @brief: Assigns a system configuration file.
 ///
 /// STUB: currently only stores the path and derives the system name from the

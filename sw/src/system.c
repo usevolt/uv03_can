@@ -104,6 +104,11 @@ void system_init_tmp_cleanup(void) {
 }
 
 
+void system_remove_tmpdirs(void) {
+	sysfile_remove_all_tmpdirs();
+}
+
+
 // Parses the DEVS array of an already-loaded uvsys.json (*json* is the manifest
 // root) and appends one device per entry, each from its UVDEV package (extracted
 // under *tmpdir*) and initialized with the entry's NODEID. The entry's PARAM file
