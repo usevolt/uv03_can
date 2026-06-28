@@ -59,6 +59,10 @@ typedef struct {
 
 	// true if the loading has finished
 	bool finished;
+
+	// true if the last finished load completed without a CANopen transfer error.
+	// Set by loadparam_step() and returned by loadparam_load_device().
+	bool success;
 } loadparam_st;
 
 

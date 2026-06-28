@@ -146,7 +146,13 @@ static void loadparam_params_task(void *ptr) {
 			printf("Loading parameters to node 0x%x from '%s'\n",
 					(unsigned int) d->nodeid, d->param_file);
 			fflush(stdout);
-			loadparam_load_device(d, d->param_file);
+			if (!loadparam_load_device(d, d->param_file)) {
+				// a CANopen transfer to this device failed: stop the whole load
+				ERROR("Parameter loading stopped: writing to node 0x%x failed.\n",
+						(unsigned int) d->nodeid);
+				fflush(stdout);
+				break;
+			}
 		}
 	}
 	async_params_finished = true;
@@ -200,7 +206,7 @@ static bool loadparam_load_device_ex(device_st *device, const char *file,
 			uv_can_set_up(false);
 			loadparam_step(NULL);
 			db_deinit();
-			ret = this->finished;
+			ret = this->success;
 		}
 		this->sys_load_mode = false;
 	}
@@ -467,6 +473,8 @@ static uv_errors_e load_param(char *json_obj,
 					ERROR("Array loading failed for subindex %u\n",
 						  i + 1 + sindex_offset);
 					LOG_SDO_ERROR();
+					// stop the whole array on the first failed transfer
+					break;
 				}
 			}
 		}
@@ -722,6 +730,11 @@ static uv_errors_e parse_dev(char *json) {
 							ret |= ERR_ABORTED;
 						}
 
+						if (ret != ERR_NONE) {
+							// a transfer failed: stop downloading further params
+							break;
+						}
+
 						uv_jsonreader_get_next_sibling(obj, &obj);
 					}
 					LOG_END();
@@ -750,14 +763,17 @@ static uv_errors_e parse_dev(char *json) {
 				uint32_t opdb_mindex = uv_jsonreader_get_int(opdb_mindex_json);
 				canopen_object_type_e opdb_type = db_jsonval_to_type(opdb_type_json);
 
-				// check how many ops dev has
+				// check how many ops dev has. Skipped (leaving ret set) when the
+				// PARAMS above already failed, so no further bus traffic is sent.
 				uint16_t devopcount = 1;
-				ret |= uv_canopen_sdo_read(db_get_nodeid(&dev.db),
-						opdb_mindex + 1, 0, sizeof(devopcount), &devopcount);
+				if (ret == ERR_NONE) {
+					ret |= uv_canopen_sdo_read(db_get_nodeid(&dev.db),
+							opdb_mindex + 1, 0, sizeof(devopcount), &devopcount);
+				}
 
 				// copy as many times as necessary to have all the operators
 				uint8_t op_count = uv_jsonreader_array_get_size(operators);
-				for (uint32_t i = devopcount; i < op_count; i++) {
+				for (uint32_t i = devopcount; (i < op_count) && (ret == ERR_NONE); i++) {
 					printf("Creating new operator by copying operator %u\n", 1);
 					fflush(stdout);
 					uint32_t data = 1;
@@ -768,10 +784,10 @@ static uv_errors_e parse_dev(char *json) {
 				}
 
 				// cycle through all the operators
-				for (uint32_t i = 0; i < op_count; i++) {
+				for (uint32_t i = 0; (i < op_count) && (ret == ERR_NONE); i++) {
 					uint32_t data = i + 1;
 					LOG("Changing active operator to op %u...", data);
-					uv_canopen_sdo_write(db_get_nodeid(&dev.db), opdb_mindex,
+					ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), opdb_mindex,
 							1, CANOPEN_SIZEOF(opdb_type), &data);
 					// wait for the device to switch operator before loading params
 					uv_rtos_task_delay(500);
@@ -780,7 +796,8 @@ static uv_errors_e parse_dev(char *json) {
 					char *op = uv_jsonreader_array_at(operators, i);
 					obj = uv_jsonreader_array_at(op, 0);
 					// cycle through all this operators parameters
-					for (uint32_t j = 0; j < uv_jsonreader_array_get_size(op); j++) {
+					for (uint32_t j = 0; (j < uv_jsonreader_array_get_size(op)) &&
+							(ret == ERR_NONE); j++) {
 						if (uv_jsonreader_get_type(obj) == JSON_OBJECT) {
 							ret |= load_param(obj, 0, CANOPEN_UNDEFINED, NULL);
 						}
@@ -794,25 +811,31 @@ static uv_errors_e parse_dev(char *json) {
 						uv_jsonreader_get_next_sibling(obj, &obj);
 					}
 					LOG_END();
-					printf("Saving the parameters for op %u...\n", i + 1);
-					fflush(stdout);
-					ret |= uv_canopen_sdo_store_params(db_get_nodeid(&dev.db),
-							MEMORY_ALL_PARAMS);
-					if (ret != ERR_NONE) {
-						ERROR("Error encountered when storing the parameters for op %u\n", i + 1);
-						LOG_SDO_ERROR();
+					// only store if every parameter of this operator was written
+					if (ret == ERR_NONE) {
+						printf("Saving the parameters for op %u...\n", i + 1);
+						fflush(stdout);
+						ret |= uv_canopen_sdo_store_params(db_get_nodeid(&dev.db),
+								MEMORY_ALL_PARAMS);
+						if (ret != ERR_NONE) {
+							ERROR("Error encountered when storing the parameters for op %u\n", i + 1);
+							LOG_SDO_ERROR();
+						}
+						// wait for the parameters to be saved
+						uv_rtos_task_delay(100);
 					}
-					// wait for the parameters to be saved
-					uv_rtos_task_delay(100);
 				}
 
-				// todo: load the current op
-				uint32_t data = uv_jsonreader_get_int(current_op_json) + 1;
-				printf("Setting the current operator to op %i\n", data);
-				fflush(stdout);
-				ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), opdb_mindex, 1,
-						 CANOPEN_SIZEOF(opdb_type), &data);
-				uv_rtos_task_delay(300);
+				// restore the current operator only if all operators loaded ok
+				if (ret == ERR_NONE) {
+					// todo: load the current op
+					uint32_t data = uv_jsonreader_get_int(current_op_json) + 1;
+					printf("Setting the current operator to op %i\n", data);
+					fflush(stdout);
+					ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), opdb_mindex, 1,
+							 CANOPEN_SIZEOF(opdb_type), &data);
+					uv_rtos_task_delay(300);
+				}
 			}
 			else {
 				if (opdb_mindex_json == NULL) {
@@ -904,6 +927,7 @@ static void emcy_suppress_write(const emcy_suppress_st *s, uint8_t node,
 
 void loadparam_step(void *ptr) {
 	this->finished = false;
+	this->success = false;
 
 	// scan for additional files given in the parameters
 	unsigned int arg_count = 0;
@@ -1072,6 +1096,10 @@ void loadparam_step(void *ptr) {
 						else {
 							ERROR("Parsing DEVS array with index %i resulted in NULL pointer\n", i);
 						}
+						if (e != ERR_NONE) {
+							// a transfer to this device failed: stop the load
+							break;
+						}
 					}
 				}
 				else {
@@ -1088,6 +1116,10 @@ void loadparam_step(void *ptr) {
 			}
 		}
 		this->current_file++;
+		if (e != ERR_NONE) {
+			// a CANopen transfer failed: stop processing further files
+			break;
+		}
 	}
 
 	// all parameters have been written: clear the "suppress emcy messages" flag
@@ -1109,10 +1141,21 @@ void loadparam_step(void *ptr) {
 	}
 
 	uv_errors_e ret = ERR_NONE;
+	if (e != ERR_NONE) {
+		// A CANopen read/write failed (after the SDO client's retries). Stop the
+		// whole load: the target device(s) are only partially programmed, so do
+		// not store the parameters or reset them.
+		LOG_END();
+		ERRORSTR("\nERROR: Parameter loading stopped due to a CANopen "
+				"communication error.\n"
+				"The target device(s) may be left partially programmed and were\n"
+				"NOT stored or reset.\n\n");
+		fflush(stdout);
+	}
 	// save the params to all devices, then reset them. Skipped in system-load
 	// mode: there the caller stores and resets every device together once all
 	// devices have been written.
-	if (!this->sys_load_mode) {
+	else if (!this->sys_load_mode) {
 		for (uint8_t i = 0; i < this->dev_count; i++) {
 			uint8_t nodeid = this->modified_dev_nodeids[i];
 			printf("Saving the parameters to dev 0x%x...\n", nodeid);
@@ -1137,6 +1180,8 @@ void loadparam_step(void *ptr) {
 		}
 	}
 
+	// the load succeeded only if no parameter transfer and no store/reset failed
+	this->success = (e == ERR_NONE) && (ret == ERR_NONE);
 	this->finished = true;
 }
 
@@ -1290,7 +1335,9 @@ static void loadparam_system_task(void *ptr) {
 	}
 
 	// Phase 2: write each device's parameters in turn (system-load mode skips the
-	// per-device EMCY handling, store and reset done in the phases below).
+	// per-device EMCY handling, store and reset done in the phases below). A failed
+	// device aborts the whole system load: the remaining devices are left untouched
+	// and only the devices written so far are stored/reset below.
 	for (uint8_t i = 0; i < n; i++) {
 		device_st *d = async_sys_devs[i];
 		if ((d != NULL) && (strlen(d->param_file) != 0)) {
@@ -1304,6 +1351,12 @@ static void loadparam_system_task(void *ptr) {
 					(unsigned int) d->nodeid, d->param_file);
 			fflush(stdout);
 			written[i] = loadparam_load_device_ex(d, d->param_file, true);
+			if (!written[i]) {
+				ERROR("System load stopped: writing parameters to node 0x%x "
+						"failed.\n", (unsigned int) d->nodeid);
+				fflush(stdout);
+				break;
+			}
 		}
 	}
 

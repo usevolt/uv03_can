@@ -268,58 +268,74 @@ static uv_errors_e save_device(uv_json_st *json) {
 
 	db_obj_st obj;
 
-	// CANopen fields that are not found from the database file
+	// CANopen fields that are not found from the database file. Each read stops
+	// the chain on the first failure (e != ERR_NONE) so a CANopen error aborts the
+	// save instead of producing a half-read file.
 	if (this->all) {
 		// nodeid
-		obj.obj.main_index = CONFIG_CANOPEN_NODEID_INDEX;
-		obj.obj.sub_index = 0;
-		obj.obj.type = CANOPEN_UNSIGNED8;
-		e |= json_add_obj(json, &obj, "nodeid");
+		if (e == ERR_NONE) {
+			obj.obj.main_index = CONFIG_CANOPEN_NODEID_INDEX;
+			obj.obj.sub_index = 0;
+			obj.obj.type = CANOPEN_UNSIGNED8;
+			e |= json_add_obj(json, &obj, "nodeid");
+		}
 
-		obj.obj.main_index = CONFIG_CANOPEN_BAUDRATE_INDEX;
-		obj.obj.sub_index = 0;
-		obj.obj.type = CANOPEN_UNSIGNED32;
-		e |= json_add_obj(json, &obj, "baudrate");
+		if (e == ERR_NONE) {
+			obj.obj.main_index = CONFIG_CANOPEN_BAUDRATE_INDEX;
+			obj.obj.sub_index = 0;
+			obj.obj.type = CANOPEN_UNSIGNED32;
+			e |= json_add_obj(json, &obj, "baudrate");
+		}
 
 		// heartbeat producer time ms
-		obj.obj.main_index = CONFIG_CANOPEN_PRODUCER_HEARTBEAT_INDEX;
-		obj.obj.sub_index = 0;
-		obj.obj.type = CANOPEN_UNSIGNED16;
-		e |= json_add_obj(json, &obj, "heartbeat producer");
+		if (e == ERR_NONE) {
+			obj.obj.main_index = CONFIG_CANOPEN_PRODUCER_HEARTBEAT_INDEX;
+			obj.obj.sub_index = 0;
+			obj.obj.type = CANOPEN_UNSIGNED16;
+			e |= json_add_obj(json, &obj, "heartbeat producer");
+		}
 
-		// heartbeat consumer
-		obj.obj.main_index = CONFIG_CANOPEN_CONSUMER_HEARTBEAT_INDEX;
-		obj.obj.type = CANOPEN_ARRAY32;
-		// note: error checking disabled for heartbeat consumer since
-		// it is not mandatory field on the device
-		e |= json_add_obj(json, &obj, "heartbeat consumer");
+		// heartbeat consumer is not a mandatory field on the device, so a read
+		// failure here must not abort the save: its result is intentionally
+		// ignored rather than accumulated into *e*.
+		if (e == ERR_NONE) {
+			obj.obj.main_index = CONFIG_CANOPEN_CONSUMER_HEARTBEAT_INDEX;
+			obj.obj.type = CANOPEN_ARRAY32;
+			(void) json_add_obj(json, &obj, "heartbeat consumer");
+		}
 
 		// rxpdo's
-		for (uint32_t i = 0; i < db_get_rxpdo_count(&dev.db); i++) {
+		for (uint32_t i = 0; (i < db_get_rxpdo_count(&dev.db)) &&
+				(e == ERR_NONE); i++) {
 			obj.obj.main_index = CONFIG_CANOPEN_RXPDO_COM_INDEX + i;
 			obj.obj.type = CANOPEN_ARRAY32;
 			char str[64];
 			sprintf(str, "rxpdo %i com", i);
 			e |= json_add_obj(json, &obj, str);
 
-			obj.obj.main_index = CONFIG_CANOPEN_RXPDO_MAP_INDEX + i;
-			obj.obj.type = CANOPEN_ARRAY32;
-			sprintf(str, "rxpdo %i map", i);
-			e |= json_add_obj(json, &obj, str);
+			if (e == ERR_NONE) {
+				obj.obj.main_index = CONFIG_CANOPEN_RXPDO_MAP_INDEX + i;
+				obj.obj.type = CANOPEN_ARRAY32;
+				sprintf(str, "rxpdo %i map", i);
+				e |= json_add_obj(json, &obj, str);
+			}
 		}
 
 		// txpdo's
-		for (uint32_t i = 0; i < db_get_txpdo_count(&dev.db); i++) {
+		for (uint32_t i = 0; (i < db_get_txpdo_count(&dev.db)) &&
+				(e == ERR_NONE); i++) {
 			obj.obj.main_index = CONFIG_CANOPEN_TXPDO_COM_INDEX + i;
 			obj.obj.type = CANOPEN_ARRAY32;
 			char str[64];
 			sprintf(str, "txpdo %i com", i);
 			e |= json_add_obj(json, &obj, str);
 
-			obj.obj.main_index = CONFIG_CANOPEN_TXPDO_MAP_INDEX + i;
-			obj.obj.type = CANOPEN_ARRAY32;
-			sprintf(str, "txpdo %i map", i);
-			e |= json_add_obj(json, &obj, str);
+			if (e == ERR_NONE) {
+				obj.obj.main_index = CONFIG_CANOPEN_TXPDO_MAP_INDEX + i;
+				obj.obj.type = CANOPEN_ARRAY32;
+				sprintf(str, "txpdo %i map", i);
+				e |= json_add_obj(json, &obj, str);
+			}
 		}
 	}
 
@@ -327,7 +343,8 @@ static uv_errors_e save_device(uv_json_st *json) {
 	uint32_t current_op = 0;
 	uint32_t op_count = 0;
 	db_obj_st *opdb_obj = NULL;
-	for (uint32_t i = 0; i < db_get_object_count(&dev.db); i++) {
+	for (uint32_t i = 0; (i < db_get_object_count(&dev.db)) &&
+			(e == ERR_NONE); i++) {
 		db_obj_st *o = db_get_obj(&dev.db, i);
 		if (o->obj_type == DB_OBJ_TYPE_CURRENT_OP) {
 			e |= uv_canopen_sdo_read(db_get_nodeid(&dev.db), o->obj.main_index,
@@ -353,7 +370,7 @@ static uv_errors_e save_device(uv_json_st *json) {
 		// operator-wise in an array of objects.
 		e |= uv_jsonwriter_begin_array(json, "OPERATORS");
 
-		for (uint32_t i = 0; i < op_count; i++) {
+		for (uint32_t i = 0; (i < op_count) && (e == ERR_NONE); i++) {
 			// change the operator on the device
 			uint32_t val = i + 1;
 			LOG("Changing active operator to op %u...", val);
@@ -364,7 +381,8 @@ static uv_errors_e save_device(uv_json_st *json) {
 			LOG("Saving parameters for operator %u", val);
 
 			e |= uv_jsonwriter_begin_array(json, "");
-			for (int32_t i = 0; i < db_get_object_count(&dev.db); i++) {
+			for (int32_t i = 0; (i < db_get_object_count(&dev.db)) &&
+					(e == ERR_NONE); i++) {
 				obj = *db_get_obj(&dev.db, i);
 				char *objname = dbvalue_get_string(&obj.name);
 				if (obj.obj_type == DB_OBJ_TYPE_NONVOL_PARAM) {
@@ -402,15 +420,19 @@ static uv_errors_e save_device(uv_json_st *json) {
 		db_type_to_str(opdb_obj->obj.type, str);
 		e |= uv_jsonwriter_add_string(json, "OPDB_TYPE", str);
 
-		// lastly set the current operator back to the default one on the device
-		uint32_t val = current_op + 1;
-		e |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), opdb_obj->obj.main_index,
-				1, CANOPEN_SIZEOF(opdb_obj->obj.type), &val);
+		// lastly set the current operator back to the default one on the device.
+		// Skipped on error: a failed bus would not accept it anyway.
+		if (e == ERR_NONE) {
+			uint32_t val = current_op + 1;
+			e |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), opdb_obj->obj.main_index,
+					1, CANOPEN_SIZEOF(opdb_obj->obj.type), &val);
+		}
 	}
 	else {
 		// current_op and op_count parameters could not be found.
 		// Thus just load all the parameters as-is.
-		for (int32_t i = 0; i < db_get_object_count(&dev.db); i++) {
+		for (int32_t i = 0; (i < db_get_object_count(&dev.db)) &&
+				(e == ERR_NONE); i++) {
 			obj = *db_get_obj(&dev.db, i);
 
 			if (obj.obj_type == DB_OBJ_TYPE_NONVOL_PARAM) {
@@ -547,30 +569,36 @@ bool saveparam_save_device(device_st *device, const char *file) {
 	}
 	else {
 		uv_can_set_up(false);
-		FILE *dest = fopen(file, "wb");
-		if (dest == NULL) {
-			ERROR("Failed creating the output file '%s'\n", file);
+		// build the whole document in memory first; only write the output file
+		// once every parameter was read without a CANopen error.
+		static char json_buffer[65536 * 16] = {};
+		uv_json_st json;
+		uv_errors_e e = ERR_NONE;
+		e |= uv_jsonwriter_init(&json, json_buffer, sizeof(json_buffer));
+		e |= uv_jsonwriter_begin_array(&json, "DEVS");
+		e |= save_device_from_uvdev(&json, device->filepath, device->nodeid);
+		e |= uv_jsonwriter_end_array(&json);
+		e |= uv_jsonwriter_end(&json, NULL);
+		LOG_END();
+
+		if (e != ERR_NONE) {
+			// a CANopen read failed (after retries). Stop without writing a
+			// partial parameter file.
+			ERRORSTR("ERROR: Parameter saving stopped: a CANopen read failed.\n"
+					"No output file was written.\n");
+			fflush(stdout);
 		}
 		else {
-			static char json_buffer[65536 * 16] = {};
-			uv_json_st json;
-			uv_errors_e e = ERR_NONE;
-			e |= uv_jsonwriter_init(&json, json_buffer, sizeof(json_buffer));
-			e |= uv_jsonwriter_begin_array(&json, "DEVS");
-			e |= save_device_from_uvdev(&json, device->filepath, device->nodeid);
-			e |= uv_jsonwriter_end_array(&json);
-			e |= uv_jsonwriter_end(&json, NULL);
-			LOG_END();
-			fwrite(json_buffer, 1, strlen(json_buffer), dest);
-			fclose(dest);
-			prettify_json_file(file);
-			if (e == ERR_NONE) {
-				printf("All parameters stored successfully to '%s'\n", file);
-				ret = true;
+			FILE *dest = fopen(file, "wb");
+			if (dest == NULL) {
+				ERROR("Failed creating the output file '%s'\n", file);
 			}
 			else {
-				ERRORSTR("ERROR: some parameters returned an error; the saved file\n"
-						"might be incomplete.\n");
+				fwrite(json_buffer, 1, strlen(json_buffer), dest);
+				fclose(dest);
+				prettify_json_file(file);
+				printf("All parameters stored successfully to '%s'\n", file);
+				ret = true;
 			}
 			fflush(stdout);
 		}
@@ -607,51 +635,61 @@ void saveparam_step(void *ptr) {
 	this->progress = 0;
 	fflush(stdout);
 
-	FILE *dest = fopen(this->file, "wb");
-	if (dest == NULL) {
-		ERROR("Failed creating the output file '%s'\n", this->file);
+	// build the whole document in memory first; only write the output file once
+	// every parameter was read without a CANopen error.
+	// large enough to hold all devices of a system in one document
+	static char json_buffer[65536 * 16] = {};
+	uv_json_st json;
+	uv_errors_e e = ERR_NONE;
+	e |= uv_jsonwriter_init(&json, json_buffer, sizeof(json_buffer));
+
+	e |= uv_jsonwriter_begin_array(&json, "DEVS");
+
+	if (db_is_loaded(&dev.db)) {
+		// a single database was given with --db: save just that device
+		e |= save_device(&json);
+	}
+	else {
+		// no --db given: save every device package provided with --dev,
+		// each into its own object in the DEVS array. A read failure on one
+		// device stops the whole save.
+		for (uint8_t i = 0; i < system_get_dev_count(&dev.system); i++) {
+			device_st *d = system_get_dev(&dev.system, i);
+			e |= save_device_from_uvdev(&json, d->filepath, d->nodeid);
+			if (e != ERR_NONE) {
+				break;
+			}
+		}
+	}
+
+	// end DEVS array
+	e |= uv_jsonwriter_end_array(&json);
+
+	// end the whole JSON file
+	e |= uv_jsonwriter_end(&json, NULL);
+
+	LOG_END();
+
+	if (e != ERR_NONE) {
+		// a CANopen read failed (after retries). Stop without writing a partial
+		// parameter file so the user does not mistake it for a complete backup.
+		ERRORSTR("ERROR: Parameter saving stopped: a CANopen read failed.\n"
+				"No output file was written.\n\n");
 		fflush(stdout);
 	}
 	else {
-		// large enough to hold all devices of a system in one document
-		static char json_buffer[65536 * 16] = {};
-		uv_json_st json;
-		uv_errors_e e = ERR_NONE;
-		e |= uv_jsonwriter_init(&json, json_buffer, sizeof(json_buffer));
-
-		e |= uv_jsonwriter_begin_array(&json, "DEVS");
-
-		if (db_is_loaded(&dev.db)) {
-			// a single database was given with --db: save just that device
-			e |= save_device(&json);
-		}
-		else {
-			// no --db given: save every device package provided with --dev,
-			// each into its own object in the DEVS array
-			for (uint8_t i = 0; i < system_get_dev_count(&dev.system); i++) {
-				device_st *d = system_get_dev(&dev.system, i);
-				e |= save_device_from_uvdev(&json, d->filepath, d->nodeid);
-			}
-		}
-
-		// end DEVS array
-		e |= uv_jsonwriter_end_array(&json);
-
-		// end the whole JSON file
-		e |= uv_jsonwriter_end(&json, NULL);
-
-		LOG_END();
-		if (e != ERR_NONE) {
-			ERRORSTR("ERROR: Some or all of the parameters returned an error. \n"
-					"Some parameters might not be stored correctly.\n\n");
+		FILE *dest = fopen(this->file, "wb");
+		if (dest == NULL) {
+			ERROR("Failed creating the output file '%s'\n", this->file);
 			fflush(stdout);
 		}
-		fwrite(json_buffer, 1, strlen(json_buffer), dest);
-		fclose(dest);
-		prettify_json_file(this->file);
-
-		printf("All parameters stored successfully to '%s'\n", this->file);
-		fflush(stdout);
+		else {
+			fwrite(json_buffer, 1, strlen(json_buffer), dest);
+			fclose(dest);
+			prettify_json_file(this->file);
+			printf("All parameters stored successfully to '%s'\n", this->file);
+			fflush(stdout);
+		}
 	}
 	this->finished = true;
 }
