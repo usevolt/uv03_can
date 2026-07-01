@@ -309,14 +309,21 @@ static void read_devname(char *dest, size_t len) {
 /// directory temporarily changed into the extracted package (mirroring the
 /// firmware build). cmd_db's progress output is suppressed. Returns true on
 /// success; the caller must db_deinit() once the fields have been read.
+/// *version_out* receives the package version and *has_media_out* whether it
+/// bundles a media directory; both may be NULL.
 static bool load_uvdev_database(const char *filepath, char *version_out,
-		size_t version_len) {
+		size_t version_len, bool *has_media_out) {
 	bool ret = false;
 	uvdev_st pkg;
 	if (uvdev_open(&pkg, filepath)) {
 		if ((version_out != NULL) && (version_len != 0)) {
 			strncpy(version_out, pkg.version, version_len - 1);
 			version_out[version_len - 1] = '\0';
+		}
+		// whether the package bundles a media directory (read from the manifest,
+		// independent of whether the database below loads)
+		if (has_media_out != NULL) {
+			*has_media_out = (strlen(pkg.media) != 0);
 		}
 		char cwd[1024] = {};
 		if ((strlen(pkg.database) != 0) &&
@@ -363,6 +370,8 @@ static void device_assign_file(device_st *device, const char *filepath,
 	device->vendor_id = 0;
 	device->product_code = 0;
 	device->nodeid = nodeid;
+	device->default_nodeid = 0;
+	device->has_media = false;
 	device->conf_version[0] = '\0';
 	device->if_version_mindex = 0;
 	device->if_version_sindex = 0;
@@ -371,10 +380,14 @@ static void device_assign_file(device_st *device, const char *filepath,
 	device->dev_revision = 0;
 
 	if (load_uvdev_database(filepath, device->conf_version,
-			sizeof(device->conf_version))) {
+			sizeof(device->conf_version), &device->has_media)) {
 		device->revision = db_get_revision_number(&dev.db);
 		device->vendor_id = db_get_vendor_id(&dev.db);
 		device->product_code = db_get_product_code(&dev.db);
+		// always record the file's default node id (for the "Default Node-ID"
+		// display); only adopt it as the device's actual node id when the caller
+		// did not pass an explicit one to keep
+		device->default_nodeid = db_get_nodeid(&dev.db);
 		if (nodeid == 0) {
 			device->nodeid = db_get_nodeid(&dev.db);
 		}
@@ -486,14 +499,14 @@ bool system_remove_device(system_st *this, device_st *device) {
 
 
 void system_set_device_file(device_st *device, const char *filepath) {
-	// A device discovered on the CAN bus (--find / "Search devices") already
-	// knows its real node id but has no configuration file yet. When such a
-	// device is given a file, keep its actual node id instead of overwriting it
-	// with the file's default. Devices that have no node id yet (e.g. ones added
-	// empty), and devices that already have a file (a file replacement), read the
-	// node id from the configuration file's DATABASE as before.
-	uint8_t nodeid = ((strlen(device->filepath) == 0) && (device->nodeid != 0)) ?
-			device->nodeid : 0;
+	// A device that is live on the CAN bus (discovered by --find / "Search
+	// devices", or otherwise seen) already knows its real node id. Assigning a
+	// configuration file to it must NOT change that node id, even when the file's
+	// DATABASE defines a default one — the file's default is only shown as the
+	// "Default Node-ID" label. The node id is taken from the file only when the
+	// device is offline (this also covers freshly created devices, which start
+	// offline): those are devices we are configuring before they exist on the bus.
+	uint8_t nodeid = (device->state != DEV_STATE_OFFLINE) ? device->nodeid : 0;
 	device_assign_file(device, filepath, nodeid);
 }
 

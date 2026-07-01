@@ -56,14 +56,20 @@ uint32_t find_read_device_revision(device_st *device);
 bool find_update_device_states(system_st *sys);
 
 
-/// @brief: Searches the CAN bus for Usevolt devices and replaces the system's
-/// device list with the ones found.
+/// @brief: Searches the CAN bus for devices and adds any newly found ones to the
+/// system, keeping the devices already present.
 ///
-/// Brings the CAN bus up (no-op if already up), clears the current device list,
-/// then listens for CANopen heartbeats for a fixed window. For every node seen
-/// in the OPERATIONAL state it reads the Identity object (0x1018): when the
-/// vendor id matches Usevolt's, the product code is read too and the node is
-/// added as a new device with an empty configuration-file path.
+/// Brings the CAN bus up (no-op if already up), then listens for CANopen
+/// heartbeats for a fixed window. For every node seen in a readable state
+/// (OPERATIONAL / PRE-OPERATIONAL) it reads the Identity object (0x1018) and adds
+/// the node as a new device with an empty configuration-file path. Nodes seen
+/// only in BOOT-UP (e.g. a device running the bootloader, typically node 0x7f)
+/// are also added, but WITHOUT reading their Identity object or any other data —
+/// a bootloading device does not answer application SDO reads. Such a device
+/// shows up with its node id and a BOOT-UP state until it becomes readable (then
+/// a later scan reads its identity). Node ids already present in the system are
+/// skipped (no duplicate device is added); their live state is kept up to date by
+/// the UI monitor.
 ///
 /// Blocks for the duration of the listen window plus the SDO identity reads, so
 /// it must be called from a task/UI context where blocking is acceptable. Safe

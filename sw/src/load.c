@@ -116,7 +116,7 @@ void loadbin(char *filepath, uint8_t nodeid, bool wfr, bool uv, bool block_trans
 }
 
 
-bool load_flash_device(device_st *device) {
+bool load_flash_device_to_node(device_st *device, uint8_t nodeid) {
 	bool ret = false;
 	if ((device == NULL) || (strlen(device->filepath) == 0)) {
 		printf(PRINT_BOLDRED
@@ -144,8 +144,8 @@ bool load_flash_device(device_st *device) {
 				snprintf(cmd, sizeof(cmd), "cp '%s' '%s'", src, dst);
 				if (system(cmd) == 0) {
 					printf("Flashing firmware '%s' to node 0x%x\n",
-							pkg.firmware, device->nodeid);
-					loadbin(dst, device->nodeid, false, false, true);
+							pkg.firmware, nodeid);
+					loadbin(dst, nodeid, false, false, true);
 					ret = true;
 				}
 				else {
@@ -157,6 +157,13 @@ bool load_flash_device(device_st *device) {
 		}
 	}
 	return ret;
+}
+
+
+bool load_flash_device(device_st *device) {
+	// flash the device's own package to its own node id
+	return load_flash_device_to_node(device,
+			(device != NULL) ? device->nodeid : 0);
 }
 
 

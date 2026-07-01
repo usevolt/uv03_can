@@ -32,6 +32,7 @@
 #include "loadparam.h"
 #include "savesys.h"
 #include "load.h"
+#include "loadmedia.h"
 #include "uvui.h"
 #include "simrun.h"
 
@@ -81,6 +82,45 @@ static color_t dot_color_for_state(dev_state_e state) {
 	default:
 		ret = DOT_COLOR_OFFLINE;
 		break;
+	}
+	return ret;
+}
+
+
+/// @brief: Maps a device's CAN-bus state onto the label shown for it.
+static const char *state_name_str(dev_state_e state) {
+	const char *ret;
+	switch (state) {
+	case DEV_STATE_OP:
+		ret = "OPERATIONAL";
+		break;
+	case DEV_STATE_PREOP:
+		ret = "PRE-OPERATIONAL";
+		break;
+	case DEV_STATE_BOOTUP:
+		ret = "BOOT-UP";
+		break;
+	case DEV_STATE_OFFLINE:
+	default:
+		ret = "OFFLINE";
+		break;
+	}
+	return ret;
+}
+
+
+/// @brief: Returns the friendly name of a device: its DEV_NAME if known, else the
+/// file-based name, else an empty string.
+static const char *device_display_name(device_st *device) {
+	const char *ret;
+	if (strlen(device->devname) > 0) {
+		ret = device->devname;
+	}
+	else if (strlen(device->name) > 0) {
+		ret = device->name;
+	}
+	else {
+		ret = "";
 	}
 	return ret;
 }
@@ -194,6 +234,11 @@ static struct {
 	uv_uilabel_st conf_rev;
 	char conf_rev_str[64];
 
+	// right-panel "Default Node-ID" read from the configuration file (the node id
+	// the file defines, shown even when the live device keeps its own)
+	uv_uilabel_st conf_nodeid;
+	char conf_nodeid_str[48];
+
 	// red warning shown when the configuration file revision and the device
 	// revision do not match
 	uv_uilabel_st warning;
@@ -201,6 +246,10 @@ static struct {
 
 	// "Flash firmware" button (above the parameter buttons)
 	uv_uibutton_st flash_btn;
+
+	// "Load media files" button, shown under "Flash firmware" only when the
+	// device's .uvdev package bundles a media directory
+	uv_uibutton_st media_btn;
 
 	// "Save parameters" / "Load parameters" buttons
 	uv_uibutton_st save_btn;
@@ -279,6 +328,7 @@ static bool showing_system;
 typedef enum {
 	OP_NONE = 0,
 	OP_FLASH,
+	OP_MEDIA,
 	OP_SAVE,
 	OP_LOAD,
 	OP_SEARCH,
@@ -310,6 +360,9 @@ static bool busy_finished(void) {
 	switch (busy_op) {
 	case OP_FLASH:
 		ret = loadbin_is_finished(&dev.load);
+		break;
+	case OP_MEDIA:
+		ret = loadmedia_load_device_is_finished();
 		break;
 	case OP_SAVE:
 		ret = saveparam_is_finished(&dev.saveparam);
@@ -432,8 +485,8 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	uv_uiframewindow_addxy(&content.sys_frame, &content.or_label, x, y, or_w, src_h);
 	x += or_w + MARGIN;
 
-	// "Search CAN-bus for devices": scans the bus and replaces the device list
-	// with the Usevolt devices found, on its own task (handled in
+	// "Search CAN-bus for devices": scans the bus and adds any newly found
+	// devices alongside the existing ones, on its own task (handled in
 	// devicetab_step()). While a scan runs, devicetab_step() rewrites the label
 	// to a live "Searching Xs..." countdown; reset it to the default here when
 	// no scan is in progress.
@@ -674,22 +727,7 @@ void devicetab_show_device(uv_uitabwindow_st *tabwin, device_st *device) {
 				style->display_c, hollow);
 		uv_uiframewindow_addxy(&content.left_frame, &content.statedot,
 				0, 0, dot_w, state_h);
-		const char *state_name;
-		switch (device->state) {
-		case DEV_STATE_OP:
-			state_name = "OPERATIONAL";
-			break;
-		case DEV_STATE_PREOP:
-			state_name = "PRE-OPERATIONAL";
-			break;
-		case DEV_STATE_BOOTUP:
-			state_name = "BOOT-UP";
-			break;
-		case DEV_STATE_OFFLINE:
-		default:
-			state_name = "OFFLINE";
-			break;
-		}
+		const char *state_name = state_name_str(device->state);
 		if (hollow) {
 			// no .uvdev configuration file assigned to this device yet
 			snprintf(content.state_str, sizeof(content.state_str),
@@ -846,6 +884,21 @@ void devicetab_show_device(uv_uitabwindow_st *tabwin, device_st *device) {
 					0, ry, rc.w, 26);
 			ry += 26;
 
+			// the node id the configuration file defines. Shown for reference; the
+			// device's actual node id (which may differ for a device that was
+			// already live on the bus when the file was assigned) is the editable
+			// "Node ID" in the left panel.
+			if (device->default_nodeid != 0) {
+				snprintf(content.conf_nodeid_str, sizeof(content.conf_nodeid_str),
+						"Default Node-ID: 0x%x",
+						(unsigned int) device->default_nodeid);
+				uv_uilabel_init(&content.conf_nodeid, style->font, ALIGN_TOP_LEFT,
+						style->text_color, content.conf_nodeid_str);
+				uv_uiframewindow_addxy(&content.right_frame, &content.conf_nodeid,
+						0, ry, rc.w, 26);
+				ry += 26;
+			}
+
 			char confrevbuf[32];
 			if (device->revision != 0) {
 				snprintf(confrevbuf, sizeof(confrevbuf), "%u",
@@ -874,25 +927,36 @@ void devicetab_show_device(uv_uitabwindow_st *tabwin, device_st *device) {
 			}
 		}
 
-		// "Flash firmware" button, and below it the "Save parameters" /
-		// "Load parameters" buttons (side by side) at the bottom of the panel.
+		// Button stack at the bottom of the panel, from the bottom up: the
+		// "Save parameters" / "Load parameters" row, then "Flash firmware", and
+		// (only when the package bundles media) "Load media files" between them.
 		// Polled in devicetab_step().
+		bool has_media = device->has_media;
 		int16_t btn_w = (rc.w - MARGIN) / 2;
 		int16_t btn_y = rc.h - BUTTON_H;
-		int16_t flash_y = btn_y - BUTTON_H - MARGIN;
+		int16_t media_y = btn_y - BUTTON_H - MARGIN;
+		int16_t flash_y = has_media ? (media_y - BUTTON_H - MARGIN) : media_y;
 		uv_uibutton_init(&content.flash_btn, "Flash firmware", style);
 		uv_uiframewindow_addxy(&content.right_frame, &content.flash_btn,
 				0, flash_y, rc.w, BUTTON_H);
+		if (has_media) {
+			uv_uibutton_init(&content.media_btn, "Load media files", style);
+			uv_uiframewindow_addxy(&content.right_frame, &content.media_btn,
+					0, media_y, rc.w, BUTTON_H);
+		}
 		uv_uibutton_init(&content.save_btn, "Save parameters", style);
 		uv_uiframewindow_addxy(&content.right_frame, &content.save_btn,
 				0, btn_y, btn_w, BUTTON_H);
 		uv_uibutton_init(&content.load_btn, "Load parameters", style);
 		uv_uiframewindow_addxy(&content.right_frame, &content.load_btn,
 				btn_w + MARGIN, btn_y, btn_w, BUTTON_H);
-		// flashing and saving/loading need the device's object dictionary /
-		// firmware; disable when there is no configuration package attached
+		// flashing, media loading and saving/loading need the device's object
+		// dictionary / firmware; disable when there is no configuration package
 		if (strlen(device->filepath) == 0) {
 			uv_uiobject_disable(&content.flash_btn);
+			if (has_media) {
+				uv_uiobject_disable(&content.media_btn);
+			}
 			uv_uiobject_disable(&content.save_btn);
 			uv_uiobject_disable(&content.load_btn);
 		}
@@ -922,6 +986,143 @@ void devicetab_show_device(uv_uitabwindow_st *tabwin, device_st *device) {
 				cbb.w / 4, frame_y + frame_h + MARGIN,
 				cbb.w / 2, BUTTON_H);
 	}
+}
+
+
+// Modal "pick an online device to flash instead" dialog. Shown when the user
+// clicks "Flash firmware" on an offline device: it lists every online device with
+// its node id, state and name, and a "Select" button on each row. Its own event
+// loop (uv_uidialog_exec) blocks until a device is selected or the dialog is
+// cancelled; the objects live here so they outlive that loop.
+static struct {
+	uv_uidialog_st dialog;
+	// top-level objects: the title label, the device-row window and the cancel
+	// button
+	uv_uiobject_st *buf[4];
+	uv_uilabel_st title;
+	char title_str[192];
+	// the rows live in their own window so they are not limited by the dialog's
+	// object budget
+	uv_uiwindow_st list_window;
+	uv_uiobject_st *list_buf[2 * SYSTEM_DEV_MAX_COUNT];
+	uv_uilabel_st row_labels[SYSTEM_DEV_MAX_COUNT];
+	char row_strs[SYSTEM_DEV_MAX_COUNT][96];
+	uv_uibutton_st select_btns[SYSTEM_DEV_MAX_COUNT];
+	uv_uibutton_st cancel_btn;
+	// the online devices listed, in row order
+	device_st *targets[SYSTEM_DEV_MAX_COUNT];
+	uint8_t count;
+	// the device whose "Select" was pressed, or NULL if cancelled
+	device_st *chosen;
+} flashpick;
+
+
+/// @brief: Step callback for the flash-target picker dialog: closes it when a row's
+/// "Select" (recording the chosen device) or the "Cancel" button is pressed.
+static uv_uiobject_ret_e flashpick_step(void *user_ptr, uint16_t step_ms) {
+	uv_uiobject_ret_e ret = UIOBJECT_RETURN_ALIVE;
+	if (uv_uibutton_clicked(&flashpick.cancel_btn)) {
+		flashpick.chosen = NULL;
+		ret = UIOBJECT_RETURN_KILLED;
+	}
+	else {
+		for (uint8_t i = 0; i < flashpick.count; i++) {
+			if (uv_uibutton_clicked(&flashpick.select_btns[i])) {
+				flashpick.chosen = flashpick.targets[i];
+				ret = UIOBJECT_RETURN_KILLED;
+				break;
+			}
+		}
+	}
+	return ret;
+}
+
+
+/// @brief: Shows the modal flash-target picker: a dialog listing every online
+/// device with a "Select" button, used to redirect a flash when the selected
+/// device is offline. Returns the device the user picked, or NULL if there are no
+/// online devices (an information dialog is shown then) or the user cancelled.
+static device_st *pick_online_flash_target(void) {
+	const uv_uistyle_st *style = &uv_uistyles[0];
+
+	// collect the online devices (any non-OFFLINE state answers the bootloader)
+	flashpick.count = 0;
+	flashpick.chosen = NULL;
+	for (uint8_t i = 0; i < system_get_dev_count(&dev.system); i++) {
+		device_st *d = system_get_dev(&dev.system, i);
+		if ((d->state != DEV_STATE_OFFLINE) && (d->nodeid != 0) &&
+				(flashpick.count < SYSTEM_DEV_MAX_COUNT)) {
+			flashpick.targets[flashpick.count] = d;
+			flashpick.count++;
+		}
+	}
+
+	if (flashpick.count == 0) {
+		uv_uiacceptdialog_st dialog = { };
+		uv_uiacceptdialog_exec(&dialog,
+				"The selected device is offline and cannot be flashed.\n"
+				"There are no other online devices to flash instead.",
+				"OK", "OK", style);
+	}
+	else {
+		uv_uidialog_init(&flashpick.dialog, flashpick.buf, style);
+		uv_uidialog_set_stepcallback(&flashpick.dialog, &flashpick_step, NULL);
+		uv_bounding_box_st *dbb = uv_uibb(&flashpick.dialog);
+		int16_t w = dbb->w;
+		int16_t h = dbb->h;
+
+		// title / prompt spanning the top
+		int16_t title_h = 70;
+		strcpy(flashpick.title_str,
+				"The selected device is offline and cannot be flashed.\n"
+				"Flash its firmware to another online device instead?");
+		uv_uilabel_init(&flashpick.title, style->font, ALIGN_CENTER,
+				style->text_color, flashpick.title_str);
+		uv_uidialog_addxy(&flashpick.dialog, &flashpick.title,
+				MARGIN, MARGIN, w - 2 * MARGIN, title_h);
+
+		// device-row window filling the space between the title and the cancel row
+		int16_t list_y = MARGIN + title_h + MARGIN;
+		int16_t list_h = h - list_y - BUTTON_H - 2 * MARGIN;
+		int16_t list_w = w - 2 * MARGIN;
+		uv_uiwindow_init(&flashpick.list_window, flashpick.list_buf, style);
+		uv_uidialog_addxy(&flashpick.dialog, &flashpick.list_window,
+				MARGIN, list_y, list_w, list_h);
+
+		// one row per online device: an identity label and a "Select" button. Rows
+		// are scaled to fit so every device is visible, capped at the button height.
+		int16_t gap = 4;
+		int16_t row_h = (list_h - (flashpick.count - 1) * gap) / flashpick.count;
+		if (row_h > BUTTON_H) {
+			row_h = BUTTON_H;
+		}
+		int16_t sel_w = 140;
+		int16_t sel_x = list_w - sel_w;
+		int16_t label_w = sel_x - gap;
+		for (uint8_t i = 0; i < flashpick.count; i++) {
+			device_st *d = flashpick.targets[i];
+			int16_t row_y = i * (row_h + gap);
+			snprintf(flashpick.row_strs[i], sizeof(flashpick.row_strs[i]),
+					"0x%x   %s   %s", (unsigned int) d->nodeid,
+					state_name_str(d->state), device_display_name(d));
+			uv_uilabel_init(&flashpick.row_labels[i], style->font,
+					ALIGN_CENTER_LEFT, style->text_color, flashpick.row_strs[i]);
+			uv_uiwindow_addxy(&flashpick.list_window, &flashpick.row_labels[i],
+					0, row_y, label_w, row_h);
+			uv_uibutton_init(&flashpick.select_btns[i], "Select", style);
+			uv_uiwindow_addxy(&flashpick.list_window, &flashpick.select_btns[i],
+					sel_x, row_y, sel_w, row_h);
+		}
+
+		// cancel button spanning the bottom
+		uv_uibutton_init(&flashpick.cancel_btn, "Cancel", style);
+		uv_uidialog_addxy(&flashpick.dialog, &flashpick.cancel_btn,
+				MARGIN, h - BUTTON_H - MARGIN, w - 2 * MARGIN, BUTTON_H);
+
+		uv_uidialog_exec(&flashpick.dialog);
+	}
+
+	return flashpick.chosen;
 }
 
 
@@ -973,24 +1174,14 @@ bool devicetab_step(void) {
 		if (sims_changed) {
 			ret = true;
 		}
-		// "Search devices" clicked: warn if it would discard existing devices,
-		// then scan the CAN bus and replace the device list with what is found
+		// "Search devices" clicked: scan the CAN bus and add any newly found
+		// devices alongside the existing ones (the existing devices are kept).
 		if (uv_uibutton_clicked(&content.search_btn)) {
-			bool proceed = true;
-			if (system_get_dev_count(&dev.system) > 0) {
-				uv_uiacceptdialog_st dialog = { };
-				proceed = (uv_uiacceptdialog_exec(&dialog,
-						"The existing devices will be removed and replaced by the "
-						"devices found on the CAN bus. Continue?",
-						"Yes", "No", &uv_uistyles[0]) == UIACCEPTDIALOG_RET_YES);
-			}
-			if (proceed) {
-				// run the scan on its own task so the UI stays live and new device
-				// tabs appear as soon as each device is found (the uvui loop
-				// rebuilds the tabs as the device count grows)
-				find_search_async();
-				start_busy(OP_SEARCH);
-			}
+			// run the scan on its own task so the UI stays live and new device
+			// tabs appear as soon as each device is found (the uvui loop
+			// rebuilds the tabs as the device count grows)
+			find_search_async();
+			start_busy(OP_SEARCH);
 		}
 		// "Load system configuration from file": pick a .uvsys file and load it.
 		// system_set_file() appends a device per its uvsys.json DEVS entry (see
@@ -1203,18 +1394,55 @@ bool devicetab_step(void) {
 		// device. The flash runs asynchronously; the frames are disabled until it
 		// finishes (handled above and in devicetab_show_device).
 		if (uv_uibutton_clicked(&content.flash_btn)) {
+			if (current_device->state != DEV_STATE_OFFLINE) {
+				// the device is on the bus: confirm and flash it directly
+				uv_uiacceptdialog_st dialog = { };
+				if (uv_uiacceptdialog_exec(&dialog,
+						"Flash the firmware to this device? The device will be "
+						"reset and must not be powered off during flashing.",
+						"Yes", "No", &uv_uistyles[0]) ==
+								UIACCEPTDIALOG_RET_YES) {
+					if (load_flash_device(current_device)) {
+						// the firmware changes, so re-read the device's revision
+						// and software version once it is back online after the
+						// flash
+						current_device->dev_revision = 0;
+						current_device->sw_version = 0;
+						start_busy(OP_FLASH);
+					}
+				}
+			}
+			else {
+				// the device is offline and cannot be flashed. Offer to flash its
+				// firmware to another online device instead; the picker lists the
+				// online devices and flashes the one whose "Select" is pressed.
+				device_st *target = pick_online_flash_target();
+				if (target != NULL) {
+					if (load_flash_device_to_node(current_device,
+							target->nodeid)) {
+						// the flashed device's firmware changed: re-read its
+						// revision and software version once it is back online
+						target->dev_revision = 0;
+						target->sw_version = 0;
+						start_busy(OP_FLASH);
+					}
+				}
+			}
+		}
+		// "Load media files": confirm, then load the media bundled in the device's
+		// .uvdev package onto the device (same transfer as --loadmedia). Runs
+		// asynchronously; the frames stay disabled until it finishes. The button is
+		// only laid out when the package bundles media, so guard on has_media too.
+		else if (current_device->has_media &&
+				uv_uibutton_clicked(&content.media_btn)) {
 			uv_uiacceptdialog_st dialog = { };
 			if (uv_uiacceptdialog_exec(&dialog,
-					"Flash the firmware to this device? The device will be reset "
-					"and must not be powered off during flashing.",
+					"Load the media files bundled in the configuration package "
+					"onto this device?",
 					"Yes", "No", &uv_uistyles[0]) == UIACCEPTDIALOG_RET_YES) {
-				if (load_flash_device(current_device)) {
-					// the firmware changes, so re-read the device's revision and
-					// software version once it is back online after the flash
-					current_device->dev_revision = 0;
-					current_device->sw_version = 0;
-					start_busy(OP_FLASH);
-				}
+				loadmedia_load_device_async(current_device->filepath,
+						current_device->nodeid);
+				start_busy(OP_MEDIA);
 			}
 		}
 		// the user clicked "Remove": drop this device from the system and ask the

@@ -48,6 +48,10 @@ typedef struct {
 	/// @brief: VERSION manifest entry: the firmware software version string
 	/// (e.g. a git-describe value). Empty if the manifest has none.
 	char version[64];
+	/// @brief: MEDIA manifest entry: the directory of display media assets,
+	/// relative to the package root (*dir*). Empty if the package bundles no
+	/// media. Used to load the media onto the device with the UV media protocol.
+	char media[512];
 } uvdev_st;
 
 

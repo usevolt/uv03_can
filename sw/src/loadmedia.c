@@ -25,6 +25,7 @@
 #include <dirent.h>
 #include "loadmedia.h"
 #include "main.h"
+#include "uvdev.h"
 
 #define this (&dev.loadmedia)
 
@@ -32,6 +33,7 @@
 static void loadmedia_step(void *dev);
 static void load(char *filename, uint32_t count, uint32_t index);
 static bool is_known_mediafile(char *filename);
+static void run_media_path(const char *path);
 
 
 
@@ -66,7 +68,11 @@ static bool is_known_mediafile(char *filename) {
 			strstr(filename, ".jpeg") ||
 			strstr(filename, ".JPEG") ||
 			strstr(filename, ".png") ||
-			strstr(filename, ".PNG")) {
+			strstr(filename, ".PNG") ||
+			// raw binary blobs (e.g. custom font files) are stored verbatim and
+			// read back by the device with the exmem file API
+			strstr(filename, ".bin") ||
+			strstr(filename, ".BIN")) {
 		ret = true;
 	}
 	return ret;
@@ -184,7 +190,14 @@ static void load(char *filename, uint32_t count, uint32_t index) {
 
 
 static void loadmedia_step(void *ptr) {
-	char *str = this->file;
+	run_media_path(this->file);
+}
+
+
+// Loads every recognized media file under *path* (a single file or a directory
+// of files) onto the device at the node id currently set in dev.db.
+static void run_media_path(const char *path) {
+	const char *str = path;
 	struct stat path_stat;
 	stat(str, &path_stat);
 	if (S_ISDIR(path_stat.st_mode)) {
@@ -228,9 +241,64 @@ static void loadmedia_step(void *ptr) {
 		}
 	}
 	else if (S_ISREG(path_stat.st_mode)) {
-		load(str, 1, 0);
+		char s[1024];
+		strncpy(s, str, sizeof(s) - 1);
+		s[sizeof(s) - 1] = '\0';
+		load(s, 1, 0);
 	}
 	else {
 		printf("Unknown file '%s' given to *loadmedia*\n", str);
 	}
+}
+
+
+// Arguments for the asynchronous single-device media load task.
+static char async_media_filepath[1024];
+static uint8_t async_media_nodeid;
+static volatile bool async_media_finished = true;
+
+
+bool loadmedia_load_device_is_finished(void) {
+	return async_media_finished;
+}
+
+
+// Task body: opens the device's .uvdev package, points the media protocol at the
+// target node, loads every media file from the package's MEDIA directory, then
+// releases the package. Runs off the UI thread.
+static void loadmedia_device_task(void *ptr) {
+	uvdev_st pkg;
+	if (!uvdev_open(&pkg, async_media_filepath)) {
+		printf("Failed to open the device package '%s' for media loading.\n",
+				async_media_filepath);
+	}
+	else {
+		if (strlen(pkg.media) == 0) {
+			printf("Device package '%s' bundles no media to load.\n",
+					async_media_filepath);
+		}
+		else {
+			// loadmedia's transfer targets db_get_nodeid(&dev.db); force it to the
+			// device's node id so the media goes to the right device
+			db_set_nodeid_force(&dev.db, async_media_nodeid);
+			char mediadir[2048];
+			snprintf(mediadir, sizeof(mediadir), "%s/%s", pkg.dir, pkg.media);
+			run_media_path(mediadir);
+		}
+		uvdev_close(&pkg);
+	}
+	async_media_finished = true;
+	uv_rtos_task_delete(NULL);
+}
+
+
+void loadmedia_load_device_async(const char *uvdev_path, uint8_t nodeid) {
+	strncpy(async_media_filepath, (uvdev_path != NULL) ? uvdev_path : "",
+			sizeof(async_media_filepath) - 1);
+	async_media_filepath[sizeof(async_media_filepath) - 1] = '\0';
+	async_media_nodeid = nodeid;
+	// mark in-progress before the task starts so a caller can poll immediately
+	async_media_finished = false;
+	uv_rtos_task_create(&loadmedia_device_task, "loadmedia_task",
+			UV_RTOS_MIN_STACK_SIZE * 5, NULL, UV_RTOS_IDLE_PRIORITY + 1, NULL);
 }

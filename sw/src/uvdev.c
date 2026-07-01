@@ -79,6 +79,8 @@ bool uvdev_open(uvdev_st *this, const char *uvdev_path) {
 								this->linux_bin, sizeof(this->linux_bin));
 						manifest_get_str(data, "VERSION",
 								this->version, sizeof(this->version));
+						manifest_get_str(data, "MEDIA",
+								this->media, sizeof(this->media));
 						ret = true;
 					}
 					else {

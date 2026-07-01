@@ -67,6 +67,12 @@ void loadbin(char *filepath, uint8_t nodeid, bool wfr, bool uv, bool block_trans
 bool load_flash_device(device_st *device);
 
 
+/// @brief: Same as load_flash_device(), but flashes *device*'s firmware to the
+/// explicit *nodeid* instead of the device's own node id. Used to redirect a
+/// flash to another (online) device when the selected device is offline.
+bool load_flash_device_to_node(device_st *device, uint8_t nodeid);
+
+
 /// @brief: Single entry point for flashing firmware from a file path. The load
 /// command variants are thin wrappers around this, and it is intended for reuse
 /// from within uvcan (e.g. the UI). The target node is taken from the loaded

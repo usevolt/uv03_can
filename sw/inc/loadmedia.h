@@ -43,4 +43,17 @@ bool loadmedia_load(const char *path);
 bool cmd_loadmedia(const char *arg);
 
 
+/// @brief: Asynchronously loads the media bundled in the .uvdev package at
+/// *uvdev_path* onto the device at *nodeid*. Extracts the package, loads every
+/// media file from its MEDIA directory with the UV media protocol, then releases
+/// the package. Runs on its own task; poll loadmedia_load_device_is_finished().
+/// Intended for the UI (the device tab's "Load media files" button).
+void loadmedia_load_device_async(const char *uvdev_path, uint8_t nodeid);
+
+
+/// @brief: Returns true when no asynchronous device media load is running (i.e.
+/// the last loadmedia_load_device_async() has completed). True before any start.
+bool loadmedia_load_device_is_finished(void);
+
+
 #endif /* LOADMEDIA_H_ */

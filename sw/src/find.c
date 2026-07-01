@@ -209,10 +209,19 @@ bool find_update_device_states(system_st *sys) {
 		// that serves the object dictionary (OPERATIONAL / PRE-OPERATIONAL). A
 		// BOOT-UP device runs the bootloader and would only stall the SDO read, so
 		// it is skipped here and picked up later once the device reaches OP/PRE-OP.
-		// Done regardless of the state edge (safe here: application thread).
-		if ((device->sw_version == 0) &&
-				((newstate == DEV_STATE_OP) || (newstate == DEV_STATE_PREOP))) {
-			device->sw_version = read_sw_version(device->nodeid);
+		// The attempt is latched: if the read returns nothing (e.g. a device whose
+		// Identity object does not answer with a plain 4-byte value), it is NOT
+		// retried every cycle — that would spam the bus with the same failing SDO
+		// transfer forever. The latch is cleared below when the device is not in a
+		// readable state, so a fresh read is taken after a reboot/reconnect.
+		if ((newstate == DEV_STATE_OP) || (newstate == DEV_STATE_PREOP)) {
+			if ((device->sw_version == 0) && !device->sw_version_tried) {
+				device->sw_version = read_sw_version(device->nodeid);
+				device->sw_version_tried = true;
+			}
+		}
+		else {
+			device->sw_version_tried = false;
 		}
 
 		if (newstate != device->state) {
@@ -268,40 +277,116 @@ static bool find_try_add_node(uint8_t nodeid) {
 }
 
 
+/// @brief: Adds a node that is only sending BOOT-UP heartbeats (e.g. a device
+/// running the bootloader, typically at node 0x7f) to the system, WITHOUT reading
+/// its Identity object or any other data: a bootloading device does not answer
+/// application SDO reads, so a read would only stall. The device shows up with its
+/// node id and a BOOT-UP state so the user can see it (and e.g. flash it); the
+/// vendor id / product code / software version stay unknown until it reaches a
+/// readable state and a later scan reads them. Returns true if a device was added.
+static bool find_add_bootup_node(uint8_t nodeid) {
+	bool added = false;
+	device_st *device = system_add_found_device(&dev.system, nodeid, 0, 0);
+	if (device != NULL) {
+		device->state = DEV_STATE_BOOTUP;
+		printf("Found device at node 0x%x in BOOT-UP state (bootloader); "
+				"its identity is not read while it is booting.\n",
+				(unsigned int) nodeid);
+		added = true;
+	}
+	else {
+		printf("Found a booting device at node 0x%x but the system is "
+				"full; ignoring it.\n", (unsigned int) nodeid);
+	}
+	return added;
+}
+
+
+/// @brief: Removes the first device in the system matching *nodeid*. Used to drop
+/// a BOOT-UP placeholder once the same node has become readable and been re-added
+/// with its full identity: the placeholder was added earlier, so it is the first
+/// (lower-indexed) of the two matching entries and the one removed here.
+static void find_drop_device(uint8_t nodeid) {
+	for (uint8_t i = 0; i < system_get_dev_count(&dev.system); i++) {
+		device_st *d = system_get_dev(&dev.system, i);
+		if (d->nodeid == nodeid) {
+			system_remove_device(&dev.system, d);
+			break;
+		}
+	}
+}
+
+
 uint8_t find_devices(void) {
 	uint8_t found = 0;
 
 	// install the heartbeat monitor (also brings the CAN bus up)
 	find_start_monitor();
 
-	// start from a clean device list and a clean listen window
-	system_clear_devices(&dev.system);
+	// keep the existing devices: any node found is added alongside them. Start the
+	// listen window from a clean heartbeat bitmap so the scan re-detects the nodes
+	// that are live right now.
 	memset(operational_nodes, 0, sizeof(operational_nodes));
+
+	// remember how many devices are already present so the summary counts only the
+	// newly found ones (the existing devices are kept, see below)
+	uint8_t initial_count = system_get_dev_count(&dev.system);
 
 	// use printf (not PRINT) so the search information is shown regardless of the
 	// --silent (-s) flag
 	printf("Searching for devices on the CAN bus for %u ms...\n",
 			(unsigned int) FIND_LISTEN_MS);
 
-	// listen for the whole window, but query and add each node the moment it is
-	// first seen in a state that can answer SDO. This way new device tabs appear
-	// live during the scan instead of all at once when the window ends.
-	bool queried[NODEID_MAX + 1] = { };
+	// listen for the whole window, adding each node the moment it is first seen.
+	// This way new device tabs appear live during the scan instead of all at once
+	// when the window ends. Per-node add status this scan:
+	//   0 = not added, 1 = added as a BOOT-UP placeholder (identity unread),
+	//   2 = added (or attempted) with a full Identity read.
+	uint8_t node_added[NODEID_MAX + 1] = { };
+	// pre-mark the node ids of the already-present devices as "done" so the scan
+	// neither re-reads nor duplicates them; their live state is kept up to date by
+	// the UI monitor (find_update_device_states()).
+	for (uint8_t i = 0; i < initial_count; i++) {
+		device_st *d = system_get_dev(&dev.system, i);
+		if ((d->nodeid >= 1) && (d->nodeid <= NODEID_MAX)) {
+			node_added[d->nodeid] = 2;
+		}
+	}
 	for (uint32_t t = 0; t < FIND_LISTEN_MS; t += FIND_STEP_MS) {
 		// expose the remaining listen time so the UI can show a live countdown
 		search_remaining_ms = (uint16_t) (FIND_LISTEN_MS - t);
 		uv_rtos_task_delay(FIND_STEP_MS);
 		for (uint8_t nodeid = 1; nodeid <= NODEID_MAX; nodeid++) {
-			if (!queried[nodeid] && node_is_set(nodeid)) {
-				// only PRE-OPERATIONAL / OPERATIONAL nodes answer SDO reads
-				uint8_t nmt = last_nmt_state[nodeid];
-				if ((nmt == CANOPEN_OPERATIONAL) ||
-						(nmt == CANOPEN_PREOPERATIONAL)) {
-					queried[nodeid] = true;
-					if (find_try_add_node(nodeid)) {
-						found++;
+			if (!node_is_set(nodeid) || (node_added[nodeid] == 2)) {
+				continue;
+			}
+			uint8_t nmt = last_nmt_state[nodeid];
+			if ((nmt == CANOPEN_OPERATIONAL) ||
+					(nmt == CANOPEN_PREOPERATIONAL)) {
+				// only PRE-OPERATIONAL / OPERATIONAL nodes answer SDO reads: read
+				// the Identity object and add the node as a full device. If it was
+				// first seen booting up, drop that placeholder now that the real
+				// identity is available. Mark it done either way so a device whose
+				// Identity object does not answer is not re-read every cycle.
+				bool was_placeholder = (node_added[nodeid] == 1);
+				node_added[nodeid] = 2;
+				if (find_try_add_node(nodeid)) {
+					if (was_placeholder) {
+						find_drop_device(nodeid);
 					}
 				}
+			}
+			else if (node_added[nodeid] == 0) {
+				// BOOT-UP (or any other non-readable NMT state): show the device so
+				// the user can see it (and e.g. flash it), but do NOT read anything
+				// from it — a bootloading device does not answer application SDOs.
+				if (find_add_bootup_node(nodeid)) {
+					node_added[nodeid] = 1;
+				}
+			}
+			else {
+				// already added as a BOOT-UP placeholder and still not readable:
+				// leave it, it is picked up above once it reaches OP/PRE-OP
 			}
 		}
 	}
@@ -309,7 +394,11 @@ uint8_t find_devices(void) {
 	// the listen window has elapsed
 	search_remaining_ms = 0;
 
-	printf("Device search finished: %u device(s) found.\n",
+	// report only the net number of newly added devices (the list grew from
+	// initial_count), including BOOT-UP placeholders; the pre-existing devices are
+	// left in place
+	found = system_get_dev_count(&dev.system) - initial_count;
+	printf("Device search finished: %u new device(s) found.\n",
 			(unsigned int) found);
 
 	return found;

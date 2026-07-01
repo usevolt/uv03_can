@@ -65,6 +65,11 @@ typedef struct {
 	/// @brief: The device's CANopen node id. Either given explicitly when the
 	/// device was added, or read from the configuration file's DATABASE.
 	uint8_t nodeid;
+	/// @brief: The default node id defined in the configuration file's DATABASE.
+	/// Shown as "Default Node-ID" in the device tab. Unlike *nodeid* this is never
+	/// overwritten by the device's live node id, so it always reflects the file.
+	/// 0 when unknown (no file, or the database defines none).
+	uint8_t default_nodeid;
 	/// @brief: The CAN object dictionary revision number (CAN IF VERSION), read
 	/// from the configuration file's DATABASE. 0 when unknown.
 	uint32_t revision;
@@ -88,15 +93,24 @@ typedef struct {
 	/// @brief: CANopen product code, read from the DATABASE. 0 when unknown.
 	uint32_t product_code;
 	/// @brief: Device software version, read from the device's Identity object
-	/// (0x1018 sub 4, "Revision number") over the CAN bus while it is online.
+	/// (0x1018 sub 3, "Revision number") over the CAN bus while it is online.
 	/// 0 when unknown (e.g. the device has never been seen on the bus).
 	uint32_t sw_version;
+	/// @brief: Latches that a software-version read has been attempted while the
+	/// device is online, so a read that returns nothing (e.g. a device whose
+	/// Identity object does not answer with a plain 4-byte value) is not retried
+	/// every cycle. Cleared when the device leaves OP/PRE-OP so a fresh read is
+	/// taken after a reboot/reconnect.
+	bool sw_version_tried;
 	/// @brief: Whether (and how) the device is currently seen on the CAN bus.
 	/// Devices added from a file start OFFLINE; --find and the --ui monitor set it
 	/// to the device's live NMT state (BOOTUP / PREOP / OP).
 	dev_state_e state;
 	/// @brief: True once a configuration file has been parsed into this device.
 	bool loaded;
+	/// @brief: True when the device's .uvdev package bundles a media directory
+	/// (the MEDIA manifest entry). Lets the device tab offer "Load media files".
+	bool has_media;
 	/// @brief: True when the device was discovered on the bus but is not a Usevolt
 	/// device (its Identity vendor id differs from Usevolt's). Such devices have no
 	/// configuration package: the UI shows only their CAN-bus identity.
@@ -169,8 +183,7 @@ device_st *system_add_found_device(system_st *this, uint8_t nodeid,
 		uint32_t vendor_id, uint32_t product_code);
 
 /// @brief: Removes all devices from the system, leaving any loaded system-file
-/// information intact. Used before re-populating the device list from a fresh
-/// CAN bus scan.
+/// information intact.
 void system_clear_devices(system_st *this);
 
 /// @brief: Removes *device* from the system, shifting the remaining devices
