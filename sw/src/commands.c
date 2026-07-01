@@ -421,6 +421,11 @@ bool cmd_ui(const char *arg) {
 	// suppresses PRINT; clearing it turns that output on.
 	silent = false;
 
+	// The UI has no controlling terminal to type the root password into, so ask
+	// for it with a native graphical dialog (pkexec) when the CAN netdev needs
+	// the privileged "ip link" bring-up commands.
+	uv_can_use_gui_password(true);
+
 	// Register the UI as a task instead of running it inline: command callbacks
 	// run before the scheduler starts, but the UI needs the scheduler running so
 	// CAN traffic is processed (heartbeat monitor, SDO reads).
