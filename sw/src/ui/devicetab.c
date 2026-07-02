@@ -35,6 +35,7 @@
 #include "loadmedia.h"
 #include "uvui.h"
 #include "simrun.h"
+#include "terminaltab.h"
 
 
 // Color for the revision-mismatch warning and the mismatched revision numbers.
@@ -109,22 +110,6 @@ static const char *state_name_str(dev_state_e state) {
 }
 
 
-/// @brief: Returns the friendly name of a device: its DEV_NAME if known, else the
-/// file-based name, else an empty string.
-static const char *device_display_name(device_st *device) {
-	const char *ret;
-	if (strlen(device->devname) > 0) {
-		ret = device->devname;
-	}
-	else if (strlen(device->name) > 0) {
-		ret = device->name;
-	}
-	else {
-		ret = "";
-	}
-	return ret;
-}
-
 
 // A tiny custom widget that draws a status dot centered in its bounding box. Used
 // on a device tab to indicate the device's CAN-bus state. When *hollow* is set
@@ -185,6 +170,12 @@ static const uv_uifileedit_filter_st SYSTEM_FILE_FILTERS[] = {
 // tab window keeps pointers to these objects (and to the label strings), so
 // they must outlive each show call.
 static struct {
+	// Nested tab window shown on a device tab, splitting it into a "Device" view
+	// (the panels below) and a "Terminal" view (terminaltab). Fills the device
+	// tab's content area.
+	uv_uitabwindow_st subtabs;
+	uv_uiobject_st *subtabs_buf[8];
+
 	// On a device tab this is the big "Device configuration" header (right
 	// column); on the system tab it is the system title.
 	uv_uilabel_st title;
@@ -324,6 +315,29 @@ static device_st *current_device;
 // devicetab_step() to poll the right file picker.
 static bool showing_system;
 
+// The two sub-tabs of a device tab.
+typedef enum {
+	SUBTAB_DEVICE = 0,
+	SUBTAB_TERMINAL,
+	SUBTAB_COUNT,
+} subtab_e;
+
+// Names of the device sub-tabs (handed to the nested tab window as a pointer
+// array).
+static char *subtab_names[SUBTAB_COUNT] = { "Device", "Terminal" };
+
+// Which sub-tab is selected. Kept across the frequent device-tab rebuilds so
+// switching to the terminal is not undone by an unrelated state refresh. Reset to
+// SUBTAB_DEVICE when a different device's tab is opened.
+static subtab_e selected_subtab;
+
+// Builds the "Device" view (the panels) into *tabwin*, which is either the outer
+// tab window (empty-device placeholder) or the nested sub-tab window.
+static void build_device_view(uv_uitabwindow_st *tabwin, device_st *device);
+// Fills the nested sub-tab window with the currently selected sub-tab's content.
+static void show_active_subtab(void);
+static uv_uiobject_ret_e subtab_step(void *me, const uint16_t step_ms);
+
 // A long-running, asynchronous device operation started from the device tab.
 typedef enum {
 	OP_NONE = 0,
@@ -392,6 +406,25 @@ static bool busy_finished(void) {
 }
 
 
+// Tracks the last-shown flash phase so the cancel button label is only redrawn
+// when it changes (idle -> "waiting for device" -> downloading).
+static bool flash_btn_waiting;
+
+
+/// @brief: While a flash runs, the whole device panel is disabled except the flash
+/// button, which becomes a cancel button. This keeps that button (and its frame,
+/// so touches reach it) enabled and labels it for the current flash phase.
+static void flash_btn_set_cancel_mode(void) {
+	char *txt = loadbin_is_waiting(&dev.load) ?
+			"Cancel (waiting for device)" : "Cancel flashing";
+	uv_uibutton_set_text(&content.flash_btn, txt);
+	uv_ui_set_enabled(&content.right_frame, true);
+	uv_ui_set_enabled(&content.flash_btn, true);
+	uv_ui_refresh(&content.right_frame);
+	uv_ui_refresh(&content.flash_btn);
+}
+
+
 /// @brief: Marks an asynchronous operation as started and disables both device
 /// frames (and all their content) so nothing is touched while it runs.
 static void start_busy(busy_op_e op) {
@@ -401,6 +434,11 @@ static void start_busy(busy_op_e op) {
 	uv_uiwindow_set_enabled(&content.right_frame, false);
 	uv_ui_refresh(&content.left_frame);
 	uv_ui_refresh(&content.right_frame);
+	// a firmware flash keeps its button live as a cancel button
+	if (op == OP_FLASH) {
+		flash_btn_waiting = loadbin_is_waiting(&dev.load);
+		flash_btn_set_cancel_mode();
+	}
 	// a system save/load or simulator parameter load is started from the system
 	// tab; grey out all of its buttons for the duration so they read as inactive
 	if ((op == OP_SAVESYS) || (op == OP_SYSLOAD) || (op == OP_SIMPARAM)) {
@@ -660,10 +698,8 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 }
 
 
-void devicetab_show_device(uv_uitabwindow_st *tabwin, device_st *device) {
+static void build_device_view(uv_uitabwindow_st *tabwin, device_st *device) {
 	const uv_uistyle_st *style = &uv_uistyles[0];
-	current_device = device;
-	showing_system = false;
 
 	if (device == NULL) {
 		// defensive: a device tab with no backing device
@@ -950,10 +986,11 @@ void devicetab_show_device(uv_uitabwindow_st *tabwin, device_st *device) {
 		uv_uibutton_init(&content.load_btn, "Load parameters", style);
 		uv_uiframewindow_addxy(&content.right_frame, &content.load_btn,
 				btn_w + MARGIN, btn_y, btn_w, BUTTON_H);
-		// flashing, media loading and saving/loading need the device's object
-		// dictionary / firmware; disable when there is no configuration package
+		// media loading and saving/loading need the device's object dictionary /
+		// bundled files; disable when there is no configuration package. Flashing is
+		// left enabled even without a package: the user can pick a .uvdev to flash
+		// (see the flash handler in devicetab_step).
 		if (strlen(device->filepath) == 0) {
-			uv_uiobject_disable(&content.flash_btn);
 			if (has_media) {
 				uv_uiobject_disable(&content.media_btn);
 			}
@@ -969,6 +1006,11 @@ void devicetab_show_device(uv_uitabwindow_st *tabwin, device_st *device) {
 			uv_uiwindow_set_enabled(&content.left_frame, false);
 			if (!thirdparty) {
 				uv_uiwindow_set_enabled(&content.right_frame, false);
+			}
+			// a flash keeps its button live (as a cancel button) so it survives a
+			// rebuild that happens mid-flash (e.g. switching sub-tabs)
+			if (!thirdparty && (busy_op == OP_FLASH)) {
+				flash_btn_set_cancel_mode();
 			}
 		}
 
@@ -989,141 +1031,65 @@ void devicetab_show_device(uv_uitabwindow_st *tabwin, device_st *device) {
 }
 
 
-// Modal "pick an online device to flash instead" dialog. Shown when the user
-// clicks "Flash firmware" on an offline device: it lists every online device with
-// its node id, state and name, and a "Select" button on each row. Its own event
-// loop (uv_uidialog_exec) blocks until a device is selected or the dialog is
-// cancelled; the objects live here so they outlive that loop.
-static struct {
-	uv_uidialog_st dialog;
-	// top-level objects: the title label, the device-row window and the cancel
-	// button
-	uv_uiobject_st *buf[4];
-	uv_uilabel_st title;
-	char title_str[192];
-	// the rows live in their own window so they are not limited by the dialog's
-	// object budget
-	uv_uiwindow_st list_window;
-	uv_uiobject_st *list_buf[2 * SYSTEM_DEV_MAX_COUNT];
-	uv_uilabel_st row_labels[SYSTEM_DEV_MAX_COUNT];
-	char row_strs[SYSTEM_DEV_MAX_COUNT][96];
-	uv_uibutton_st select_btns[SYSTEM_DEV_MAX_COUNT];
-	uv_uibutton_st cancel_btn;
-	// the online devices listed, in row order
-	device_st *targets[SYSTEM_DEV_MAX_COUNT];
-	uint8_t count;
-	// the device whose "Select" was pressed, or NULL if cancelled
-	device_st *chosen;
-} flashpick;
-
-
-/// @brief: Step callback for the flash-target picker dialog: closes it when a row's
-/// "Select" (recording the chosen device) or the "Cancel" button is pressed.
-static uv_uiobject_ret_e flashpick_step(void *user_ptr, uint16_t step_ms) {
-	uv_uiobject_ret_e ret = UIOBJECT_RETURN_ALIVE;
-	if (uv_uibutton_clicked(&flashpick.cancel_btn)) {
-		flashpick.chosen = NULL;
-		ret = UIOBJECT_RETURN_KILLED;
+/// @brief: Fills the nested sub-tab window with the content of the currently
+/// selected sub-tab. Mirrors uvui's show_active_tab() but one level down.
+static void show_active_subtab(void) {
+	uv_uitabwindow_clear(&content.subtabs);
+	if ((selected_subtab == SUBTAB_TERMINAL) && (current_device != NULL)) {
+		terminaltab_build(&content.subtabs, current_device->nodeid);
 	}
 	else {
-		for (uint8_t i = 0; i < flashpick.count; i++) {
-			if (uv_uibutton_clicked(&flashpick.select_btns[i])) {
-				flashpick.chosen = flashpick.targets[i];
-				ret = UIOBJECT_RETURN_KILLED;
-				break;
-			}
-		}
+		build_device_view(&content.subtabs, current_device);
 	}
-	return ret;
+	// uv_uitabwindow_clear() drops the step callback, so re-register it
+	uv_uitabwindow_set_stepcallb(&content.subtabs, &subtab_step, NULL);
+	uv_ui_refresh(&content.subtabs);
 }
 
 
-/// @brief: Shows the modal flash-target picker: a dialog listing every online
-/// device with a "Select" button, used to redirect a flash when the selected
-/// device is offline. Returns the device the user picked, or NULL if there are no
-/// online devices (an information dialog is shown then) or the user cancelled.
-static device_st *pick_online_flash_target(void) {
+/// @brief: Step callback of the nested sub-tab window. Swaps content when the
+/// user switches sub-tabs and drives the terminal while it is the active view.
+static uv_uiobject_ret_e subtab_step(void *me, const uint16_t step_ms) {
+	(void) me;
+	(void) step_ms;
+	if (uv_uitabwindow_tab_changed(&content.subtabs)) {
+		selected_subtab = uv_uitabwindow_get_tab(&content.subtabs);
+		show_active_subtab();
+	}
+	if (uv_uitabwindow_get_tab(&content.subtabs) == SUBTAB_TERMINAL) {
+		// the terminal owns the keyboard unless the log view is expanded over it
+		terminaltab_step(!uvui_log_is_expanded());
+	}
+	return UIOBJECT_RETURN_ALIVE;
+}
+
+
+void devicetab_show_device(uv_uitabwindow_st *tabwin, device_st *device) {
 	const uv_uistyle_st *style = &uv_uistyles[0];
-
-	// collect the online devices (any non-OFFLINE state answers the bootloader)
-	flashpick.count = 0;
-	flashpick.chosen = NULL;
-	for (uint8_t i = 0; i < system_get_dev_count(&dev.system); i++) {
-		device_st *d = system_get_dev(&dev.system, i);
-		if ((d->state != DEV_STATE_OFFLINE) && (d->nodeid != 0) &&
-				(flashpick.count < SYSTEM_DEV_MAX_COUNT)) {
-			flashpick.targets[flashpick.count] = d;
-			flashpick.count++;
-		}
+	// opening a different device's tab resets the sub-tab selection to "Device"
+	if (device != current_device) {
+		selected_subtab = SUBTAB_DEVICE;
 	}
+	current_device = device;
+	showing_system = false;
 
-	if (flashpick.count == 0) {
-		uv_uiacceptdialog_st dialog = { };
-		uv_uiacceptdialog_exec(&dialog,
-				"The selected device is offline and cannot be flashed.\n"
-				"There are no other online devices to flash instead.",
-				"OK", "OK", style);
+	if (device == NULL) {
+		// empty device tab: no sub-tabs, just the placeholder
+		build_device_view(tabwin, NULL);
 	}
 	else {
-		uv_uidialog_init(&flashpick.dialog, flashpick.buf, style);
-		uv_uidialog_set_stepcallback(&flashpick.dialog, &flashpick_step, NULL);
-		uv_bounding_box_st *dbb = uv_uibb(&flashpick.dialog);
-		int16_t w = dbb->w;
-		int16_t h = dbb->h;
-
-		// title / prompt spanning the top
-		int16_t title_h = 70;
-		strcpy(flashpick.title_str,
-				"The selected device is offline and cannot be flashed.\n"
-				"Flash its firmware to another online device instead?");
-		uv_uilabel_init(&flashpick.title, style->font, ALIGN_CENTER,
-				style->text_color, flashpick.title_str);
-		uv_uidialog_addxy(&flashpick.dialog, &flashpick.title,
-				MARGIN, MARGIN, w - 2 * MARGIN, title_h);
-
-		// device-row window filling the space between the title and the cancel row
-		int16_t list_y = MARGIN + title_h + MARGIN;
-		int16_t list_h = h - list_y - BUTTON_H - 2 * MARGIN;
-		int16_t list_w = w - 2 * MARGIN;
-		uv_uiwindow_init(&flashpick.list_window, flashpick.list_buf, style);
-		uv_uidialog_addxy(&flashpick.dialog, &flashpick.list_window,
-				MARGIN, list_y, list_w, list_h);
-
-		// one row per online device: an identity label and a "Select" button. Rows
-		// are scaled to fit so every device is visible, capped at the button height.
-		int16_t gap = 4;
-		int16_t row_h = (list_h - (flashpick.count - 1) * gap) / flashpick.count;
-		if (row_h > BUTTON_H) {
-			row_h = BUTTON_H;
-		}
-		int16_t sel_w = 140;
-		int16_t sel_x = list_w - sel_w;
-		int16_t label_w = sel_x - gap;
-		for (uint8_t i = 0; i < flashpick.count; i++) {
-			device_st *d = flashpick.targets[i];
-			int16_t row_y = i * (row_h + gap);
-			snprintf(flashpick.row_strs[i], sizeof(flashpick.row_strs[i]),
-					"0x%x   %s   %s", (unsigned int) d->nodeid,
-					state_name_str(d->state), device_display_name(d));
-			uv_uilabel_init(&flashpick.row_labels[i], style->font,
-					ALIGN_CENTER_LEFT, style->text_color, flashpick.row_strs[i]);
-			uv_uiwindow_addxy(&flashpick.list_window, &flashpick.row_labels[i],
-					0, row_y, label_w, row_h);
-			uv_uibutton_init(&flashpick.select_btns[i], "Select", style);
-			uv_uiwindow_addxy(&flashpick.list_window, &flashpick.select_btns[i],
-					sel_x, row_y, sel_w, row_h);
-		}
-
-		// cancel button spanning the bottom
-		uv_uibutton_init(&flashpick.cancel_btn, "Cancel", style);
-		uv_uidialog_addxy(&flashpick.dialog, &flashpick.cancel_btn,
-				MARGIN, h - BUTTON_H - MARGIN, w - 2 * MARGIN, BUTTON_H);
-
-		uv_uidialog_exec(&flashpick.dialog);
+		// wrap the device view and the terminal in a nested tab window filling the
+		// device tab's content area
+		uv_uitabwindow_init(&content.subtabs, SUBTAB_COUNT, style,
+				content.subtabs_buf, subtab_names);
+		uv_uiwindow_set_transparent(&content.subtabs, true);
+		uv_bounding_box_st cbb = uv_uitabwindow_get_contentbb(tabwin);
+		uv_uitabwindow_addxy(tabwin, &content.subtabs, 0, 0, cbb.w, cbb.h);
+		uv_uitabwindow_set_tab(&content.subtabs, selected_subtab);
+		show_active_subtab();
 	}
-
-	return flashpick.chosen;
 }
+
 
 
 /// @brief: Rewrites the system-tab search button label to a live countdown of
@@ -1150,6 +1116,22 @@ bool devicetab_step(void) {
 			// keep the search button's countdown ticking while the scan runs
 			refresh_search_btn_text();
 		}
+		// a firmware flash keeps its button live as a cancel button: update the
+		// label as the flash moves between waiting for the device and downloading,
+		// and cancel the flash when it is clicked again
+		if (busy_op == OP_FLASH) {
+			bool waiting = loadbin_is_waiting(&dev.load);
+			if (waiting != flash_btn_waiting) {
+				flash_btn_waiting = waiting;
+				flash_btn_set_cancel_mode();
+			}
+			if (uv_uibutton_clicked(&content.flash_btn)) {
+				printf("Cancelling flashing of node 0x%x...\n",
+						(unsigned int) dev.load.nodeid);
+				fflush(stdout);
+				load_cancel();
+			}
+		}
 		// during a simulator parameter load the system tab stays visible; rebuild
 		// it as the simulators move through Started -> Loading params -> Running
 		if ((busy_op == OP_SIMPARAM) && showing_system && sims_changed) {
@@ -1161,6 +1143,11 @@ bool devicetab_step(void) {
 			// within their own task)
 			if ((busy_op == OP_SAVE) || (busy_op == OP_LOAD)) {
 				uvui_reset_log_title();
+			}
+			// the flash (wfr / uv paths) took the CAN callback over to watch for the
+			// device's boot-up; restore the heartbeat monitor and terminal sniffer
+			if (busy_op == OP_FLASH) {
+				find_reinstall_monitor();
 			}
 			busy = false;
 			busy_op = OP_NONE;
@@ -1177,6 +1164,9 @@ bool devicetab_step(void) {
 		// "Search devices" clicked: scan the CAN bus and add any newly found
 		// devices alongside the existing ones (the existing devices are kept).
 		if (uv_uibutton_clicked(&content.search_btn)) {
+			// a manual search clears the auto-discovery blacklist, so devices the
+			// user previously removed can be found again
+			find_clear_blacklist();
 			// run the scan on its own task so the UI stays live and new device
 			// tabs appear as soon as each device is found (the uvui loop
 			// rebuilds the tabs as the device count grows)
@@ -1394,36 +1384,80 @@ bool devicetab_step(void) {
 		// device. The flash runs asynchronously; the frames are disabled until it
 		// finishes (handled above and in devicetab_show_device).
 		if (uv_uibutton_clicked(&content.flash_btn)) {
-			if (current_device->state != DEV_STATE_OFFLINE) {
-				// the device is on the bus: confirm and flash it directly
-				uv_uiacceptdialog_st dialog = { };
-				if (uv_uiacceptdialog_exec(&dialog,
-						"Flash the firmware to this device? The device will be "
-						"reset and must not be powered off during flashing.",
-						"Yes", "No", &uv_uistyles[0]) ==
-								UIACCEPTDIALOG_RET_YES) {
-					if (load_flash_device(current_device)) {
-						// the firmware changes, so re-read the device's revision
-						// and software version once it is back online after the
-						// flash
-						current_device->dev_revision = 0;
-						current_device->sw_version = 0;
-						start_busy(OP_FLASH);
-					}
+			// A device with no configuration package flashes a .uvdev the user
+			// picks here (that package is then kept as the device's config file); a
+			// configured device flashes its own package. An offline device is
+			// flashed with the wait-for-boot-up logic (wfr): the flash waits until
+			// the device is powered on, then downloads.
+			bool configless = (strlen(current_device->filepath) == 0);
+			bool offline = (current_device->state == DEV_STATE_OFFLINE);
+			char picked[1024] = "";
+			bool proceed = true;
+			if (configless) {
+				// ask the user which firmware package to flash
+				if (!uv_uifiledialog_exec(
+						"Select firmware package (.uvdev) to flash",
+						DEVICE_FILE_FILTERS,
+						sizeof(DEVICE_FILE_FILTERS) / sizeof(DEVICE_FILE_FILTERS[0]),
+						false, picked, sizeof(picked))) {
+					// cancelled: nothing to flash
+					proceed = false;
 				}
 			}
-			else {
-				// the device is offline and cannot be flashed. Offer to flash its
-				// firmware to another online device instead; the picker lists the
-				// online devices and flashes the one whose "Select" is pressed.
-				device_st *target = pick_online_flash_target();
-				if (target != NULL) {
-					if (load_flash_device_to_node(current_device,
-							target->nodeid)) {
-						// the flashed device's firmware changed: re-read its
-						// revision and software version once it is back online
-						target->dev_revision = 0;
-						target->sw_version = 0;
+
+			if (proceed) {
+				uv_uiacceptdialog_st dialog = { };
+				char msgbuf[1600];
+				// note explaining the wait-for-boot-up behaviour for an offline
+				// device (it also tells the user how to cancel)
+				const char *offline_note = offline ?
+						" The device is offline: flashing will begin once it is "
+						"powered on. Click the button again to cancel." : "";
+				if (configless) {
+					// show the node id and chosen package, and make clear uvcan
+					// cannot vouch for the package matching this device
+					const char *base = strrchr(picked, '/');
+					base = (base != NULL) ? base + 1 : picked;
+					snprintf(msgbuf, sizeof(msgbuf),
+							"Flash firmware package '%s' to the device at node "
+							"0x%x?\n\n"
+							"uvcan cannot verify that this package is suitable for "
+							"this device \342\200\224 you are responsible for "
+							"choosing the correct firmware. The device will be reset "
+							"and must not be powered off during flashing.%s",
+							base, (unsigned int) current_device->nodeid,
+							offline_note);
+				}
+				else {
+					snprintf(msgbuf, sizeof(msgbuf),
+							"Flash the firmware to the device at node 0x%x? The "
+							"device will be reset and must not be powered off during "
+							"flashing.%s",
+							(unsigned int) current_device->nodeid, offline_note);
+				}
+				if (uv_uiacceptdialog_exec(&dialog, msgbuf, "Yes", "No",
+						&uv_uistyles[0]) == UIACCEPTDIALOG_RET_YES) {
+					// an offline device waits for its boot-up message before flashing
+					bool wfr = offline;
+					bool started = configless ?
+							load_flash_uvdev_to_node(picked,
+									current_device->nodeid, wfr) :
+							load_flash_device(current_device, wfr);
+					if (started) {
+						// the firmware changes, so re-read the device's revision and
+						// software version once it is back online after the flash
+						current_device->dev_revision = 0;
+						current_device->sw_version = 0;
+						// keep the picked package as this device's configuration file
+						// so it is no longer config-less. Takes visual effect when the
+						// flash finishes and the tab rebuilds. Preserve the node id we
+						// are flashing (assigning a file to an offline device would
+						// otherwise adopt the file's default node id).
+						if (configless) {
+							uint8_t flashed_nodeid = current_device->nodeid;
+							system_set_device_file(current_device, picked);
+							current_device->nodeid = flashed_nodeid;
+						}
 						start_busy(OP_FLASH);
 					}
 				}
@@ -1448,6 +1482,9 @@ bool devicetab_step(void) {
 		// the user clicked "Remove": drop this device from the system and ask the
 		// caller to rebuild the tabs (this device's tab disappears)
 		else if (uv_uimediabutton_clicked(&content.remove_btn)) {
+			// blacklist the node so live auto-discovery does not immediately re-add
+			// the device the user just removed (a manual search clears the list)
+			find_blacklist_node(current_device->nodeid);
 			system_remove_device(&dev.system, current_device);
 			ret = true;
 		}

@@ -29,7 +29,9 @@
 #include "system.h"
 #include "find.h"
 #include "logcap.h"
+#include "uvstdin.h"
 #include "ui/devicetab.h"
+#include "ui/uv_uitextedit.h"
 
 
 // Maximum number of tabs: "System" + one per device + "Add device".
@@ -40,6 +42,8 @@
 #define STEP_MS					20
 // Height of the one-line log strip shown below the tab window.
 #define LOG_LINE_H				26
+// Height of the command-line input shown at the bottom of the expanded log view.
+#define LOG_INPUT_H				34
 // Horizontal margin for the log widgets.
 #define MARGIN_X				8
 
@@ -77,6 +81,11 @@ typedef struct {
 	uv_uilabel_st log_full;
 	char log_full_str[40960];
 	uv_uibutton_st log_close;
+	// command line shown along the bottom of the expanded log view: what the user
+	// types here is fed to uvcan's stdin (uv_stdin_feed), so the interactive
+	// prompts can be answered from the GUI. Hidden while the log is minimized.
+	uv_uitextedit_st log_input;
+	char log_input_buf[256];
 	// height of the window in its minimized state (frame title + one log line)
 	int16_t log_collapsed_h;
 	// how many lines the log view is scrolled back from the newest line (0 = the
@@ -147,6 +156,11 @@ void uvui_reset_log_title(void) {
 }
 
 
+bool uvui_log_is_expanded(void) {
+	return this->log_expanded;
+}
+
+
 /// @brief: Starts the animation that expands the minimized log frame into the
 /// full-screen log view. No-op if it is already expanded.
 static void log_expand(void) {
@@ -154,9 +168,10 @@ static void log_expand(void) {
 		this->log_expanded = true;
 		this->log_animating = true;
 		// open anchored at the newest line (the live tail), and show the Close
-		// button (hidden while minimized)
+		// button and stdin command line (both hidden while minimized)
 		this->log_scroll_lines = 0;
 		uv_uiobject_set_visible(&this->log_close, true);
+		uv_uiobject_set_visible(&this->log_input, true);
 		uv_uitransition_play(&this->log_trans);
 	}
 }
@@ -168,8 +183,9 @@ static void log_collapse(void) {
 	if (this->log_expanded) {
 		this->log_expanded = false;
 		this->log_animating = true;
-		// the Close button has no place in the minimized frame
+		// the Close button and command line have no place in the minimized frame
 		uv_uiobject_set_visible(&this->log_close, false);
+		uv_uiobject_set_visible(&this->log_input, false);
 		uv_uitransition_reverseplay(&this->log_trans);
 	}
 }
@@ -180,15 +196,13 @@ void uvui_exec(void) {
 	// echoing to the terminal). Done first so UI start-up messages are captured.
 	logcap_init();
 
-	// Detach stdin: several CLI flows (saveparam / loadparam / db_check_can_if_
-	// version) prompt for terminal input with fgetc/fgets(stdin) inside a
-	// preemption-disabled critical section. Run from the GUI there is no one at
-	// the terminal, so they would block the UI thread and freeze the whole app.
-	// Pointing stdin at /dev/null makes those reads return EOF immediately, so
-	// each prompt falls through to its default ("continue").
-	if (freopen("/dev/null", "r", stdin) == NULL) {
-		// non-fatal: if this fails the prompts simply behave as before
-	}
+	// Route stdin through an internal pipe so the GUI can answer the interactive
+	// prompts (saveparam / loadparam / db_check_can_if_version) live from the log
+	// view's command line. Those prompts read stdin via uv_stdin_getline/getchar,
+	// which block cooperatively (no scheduler-halting interrupt mask), so the UI
+	// stays responsive while a prompt waits; uv_stdin_feed() then supplies the
+	// typed answer. See uvstdin.c.
+	uv_stdin_use_pipe();
 
 	uv_ui_init();
 
@@ -219,7 +233,7 @@ void uvui_exec(void) {
 
 	// minimized log height: enough for the frame title row plus one line of text.
 	// Two text lines worth of height plus the frame/window margins is ample.
-	int16_t line_h = uv_ui_get_string_height("A", uv_uistyles[0].font);
+	int16_t line_h = uv_ui_get_string_height("A", &UI_MONO_FONT);
 	this->log_collapsed_h = (int16_t) (line_h * 2 + 4 * MARGIN_X);
 
 	// the tab window fills the display above the minimized log frame
@@ -247,7 +261,8 @@ void uvui_exec(void) {
 	uv_bounding_box_st lfc = uv_uiframewindow_get_content_bb(&this->log_frame);
 
 	this->log_full_str[0] = '\0';
-	uv_uilabel_init(&this->log_full, uv_uistyles[0].font, ALIGN_TOP_LEFT,
+	// monospace so log columns (timestamps, hex dumps, progress) line up
+	uv_uilabel_init(&this->log_full, &UI_MONO_FONT, ALIGN_TOP_LEFT,
 			uv_uistyles[0].text_color, this->log_full_str);
 	// Size the label to the frame's content area (not the whole display): the log
 	// pages its own text, so only the visible lines are ever in the string, and a
@@ -262,6 +277,20 @@ void uvui_exec(void) {
 	uv_uiwindow_addxy(&this->log_window, &this->log_close,
 			disp_w - 120 - 2 * MARGIN_X, 2 * MARGIN_X, 120, LOG_LINE_H + 8);
 	uv_uiobject_set_visible(&this->log_close, false);
+
+	// stdin command line, shown only while expanded. Added last so it draws on top
+	// of the log text; positioned along the bottom (within the frame) each cycle
+	// (the window height changes as it animates). What is entered here is fed to
+	// uvcan's stdin.
+	uv_uitextedit_init(&this->log_input, this->log_input_buf,
+			sizeof(this->log_input_buf),
+			UITEXTEDIT_FLAG_ONELINE | UITEXTEDIT_FLAG_CMDLINE, &uv_uistyles[0]);
+	uv_uitextedit_set_font(&this->log_input, &UI_MONO_FONT);
+	uv_uitextedit_set_align(&this->log_input, ALIGN_CENTER_LEFT);
+	uv_uiwindow_addxy(&this->log_window, &this->log_input,
+			MARGIN_X, disp_h - LOG_INPUT_H - MARGIN_X,
+			disp_w - 2 * MARGIN_X, LOG_INPUT_H);
+	uv_uiobject_set_visible(&this->log_input, false);
 
 	// the transition animates the log window's top edge between the minimized
 	// frame (collapsed) and the top of the screen (expanded)
@@ -291,6 +320,11 @@ void uvui_exec(void) {
 	int prev_scroll = -1;
 	int prev_visible_lines = -1;
 
+	// rising-edge tracking for stdin prompts: when a prompt starts waiting for
+	// input, auto-expand the log so its command line is visible. Only on the edge,
+	// so the user can still collapse it back while the prompt waits.
+	bool prev_waiting = false;
+
 	while (true) {
 		uv_uidisplay_step(&this->display, STEP_MS);
 
@@ -298,12 +332,32 @@ void uvui_exec(void) {
 			break;
 		}
 
+		// auto-expand the log view when an interactive prompt appears, so the user
+		// can answer it from the log command line
+		bool waiting_now = uv_stdin_is_waiting();
+		if (waiting_now && !prev_waiting) {
+			log_expand();
+		}
+		prev_waiting = waiting_now;
+
 		// reflect any device that just came online: redraw the tab dots and
 		// refresh the active tab so its state label/dot update too. While an async
 		// device operation is in progress the state is frozen (the operation owns
 		// the SDO client, and a flash resets the device).
 		if (!devicetab_is_busy() && find_update_device_states(&dev.system)) {
 			uv_ui_refresh(&this->tabwindow);
+			show_active_tab();
+		}
+
+		// live auto-discovery: pick up devices as they appear on the bus without a
+		// manual search. Skipped while an async operation owns the SDO client and
+		// while a search runs (the search adds devices itself). New devices grow the
+		// device count, which the block below turns into a tab rebuild; an in-place
+		// identity upgrade (a BOOT-UP placeholder becoming readable) keeps the count,
+		// so refresh here when the poll reports a change.
+		if (!devicetab_is_busy() && find_search_is_finished() &&
+				find_poll_new_devices()) {
+			rebuild_tabs();
 			show_active_tab();
 		}
 
@@ -351,6 +405,15 @@ void uvui_exec(void) {
 			uv_ui_refresh(&this->display);
 		}
 
+		// the command line owns the keyboard only while the log is expanded; feed
+		// what the user submits to uvcan's stdin so the interactive prompts can be
+		// answered live
+		uv_uitextedit_set_focused(&this->log_input, this->log_expanded);
+		if (uv_uitextedit_submitted(&this->log_input)) {
+			uv_stdin_feed(uv_uitextedit_get_text(&this->log_input));
+			uv_uitextedit_set_text(&this->log_input, "");
+		}
+
 		// mouse wheel pages the expanded log view through the captured history
 		int16_t scroll = uv_ui_get_scroll();
 		if ((scroll != 0) && this->log_expanded) {
@@ -362,13 +425,29 @@ void uvui_exec(void) {
 			this->log_scroll_lines = 0;
 		}
 
-		// how many log lines fit the frame's current content height
-		int16_t line_h = uv_ui_get_string_height("A", uv_uistyles[0].font);
+		// how many log lines fit the frame's current content height. While the log
+		// is expanded, reserve a row at the bottom for the stdin command line so the
+		// text does not run underneath it.
+		int16_t line_h = uv_ui_get_string_height("A", &UI_MONO_FONT);
 		uv_bounding_box_st fc =
 				uv_uiframewindow_get_content_bb(&this->log_frame);
-		int visible_lines = fc.height / line_h;
+		int usable_h = fc.height;
+		if (this->log_expanded) {
+			usable_h -= (LOG_INPUT_H + MARGIN_X);
+		}
+		int visible_lines = usable_h / line_h;
 		if (visible_lines < 1) {
 			visible_lines = 1;
+		}
+
+		// pin the command line to the bottom of the frame's content area, matching
+		// the log text's left edge and width so it stays inside the frame border
+		// (fc is in log-window coordinates, as is the command line)
+		if (this->log_expanded) {
+			uv_uibb(&this->log_input)->x = fc.x;
+			uv_uibb(&this->log_input)->width = fc.width;
+			uv_uibb(&this->log_input)->y = fc.y + fc.height - LOG_INPUT_H;
+			uv_uibb(&this->log_input)->height = LOG_INPUT_H;
 		}
 		// clamp the scroll-back to the available history
 		int line_count = logcap_get_line_count();

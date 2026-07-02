@@ -21,6 +21,7 @@
 #include <string.h>
 #include <uv_json.h>
 #include "saveparam.h"
+#include "uvstdin.h"
 #include "main.h"
 #include "db.h"
 #include "system.h"
@@ -226,9 +227,7 @@ static uv_errors_e save_device(uv_json_st *json) {
 				PROMPTSTR("ALERT: Could not read CAN interface version\n"
 						"number from device.\n"
 						"Press anything to continue...\n\n");
-				portDISABLE_INTERRUPTS();
-				fgetc(stdin);
-				portENABLE_INTERRUPTS();
+				uv_stdin_getchar();
 				printf("User acknowledged: CAN IF version read failed\n");
 			}
 			break;
@@ -240,9 +239,7 @@ static uv_errors_e save_device(uv_json_st *json) {
 				"CAN interface version number. Parameter saving might result\n"
 				"in undefined behaviour.\n\n"
 				"Press anything to continue...\n\n");
-		portDISABLE_INTERRUPTS();
-		fgetc(stdin);
-		portENABLE_INTERRUPTS();
+		uv_stdin_getchar();
 		printf("User acknowledged: CAN IF version not defined\n");
 	}
 

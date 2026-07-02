@@ -38,6 +38,16 @@ typedef struct {
 	uint8_t progress;
 	// true if the loading has finished
 	bool finished;
+	// set from the UI to abort the flash: honored while waiting for the device
+	// (wfr) and between block-transfer chunks
+	volatile bool cancel;
+	// true while waiting for the target device's boot-up message (wfr), so the UI
+	// can show a "waiting for device" state
+	volatile bool waiting;
+	// when true the wfr wait does not time out; it waits until the device boots
+	// up or the flash is cancelled. Used by the UI to flash an offline device once
+	// it is powered on.
+	bool wait_forever;
 } load_st;
 
 
@@ -55,6 +65,17 @@ static inline uint8_t loadbin_get_progress(load_st *this) {
 	return this->progress;
 }
 
+/// @brief: Returns true while the flash is waiting for the target device to send
+/// its boot-up message (a wfr / offline flash), before the download begins.
+static inline bool loadbin_is_waiting(load_st *this) {
+	return this->waiting;
+}
+
+/// @brief: Requests the in-progress flash to abort. Honored while waiting for the
+/// device (wfr) and between block-transfer chunks; a download already committed to
+/// a single SDO transfer runs to completion. Safe to call from the UI thread.
+void load_cancel(void);
+
 /// @brief: Can be used to trigger the loading of the binary via uvcan, for example from ui
 void loadbin(char *filepath, uint8_t nodeid, bool wfr, bool uv, bool block_transfer);
 
@@ -64,13 +85,24 @@ void loadbin(char *filepath, uint8_t nodeid, bool wfr, bool uv, bool block_trans
 /// Starts an asynchronous flash task and returns immediately; poll
 /// loadbin_is_finished(&dev.load) for completion. Returns true if the flash was
 /// started.
-bool load_flash_device(device_st *device);
+///
+/// @param wfr: wait for the device's boot-up message before flashing (used for an
+/// offline device that will be powered on), waiting indefinitely until it boots
+/// up or the flash is cancelled. When false the device is reset and flashed now.
+bool load_flash_device(device_st *device, bool wfr);
 
 
 /// @brief: Same as load_flash_device(), but flashes *device*'s firmware to the
-/// explicit *nodeid* instead of the device's own node id. Used to redirect a
-/// flash to another (online) device when the selected device is offline.
-bool load_flash_device_to_node(device_st *device, uint8_t nodeid);
+/// explicit *nodeid* instead of the device's own node id.
+bool load_flash_device_to_node(device_st *device, uint8_t nodeid, bool wfr);
+
+
+/// @brief: Flashes the FIRMWARE binary from an explicit .uvdev package at
+/// *uvdev_path* to *nodeid*, without needing a configured device. Used by the UI
+/// to flash a device that has no configuration file assigned: the user picks the
+/// package and takes responsibility for its suitability. Starts an asynchronous
+/// flash task; returns true if the flash was started.
+bool load_flash_uvdev_to_node(const char *uvdev_path, uint8_t nodeid, bool wfr);
 
 
 /// @brief: Single entry point for flashing firmware from a file path. The load

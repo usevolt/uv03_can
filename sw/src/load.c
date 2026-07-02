@@ -70,6 +70,11 @@ static void load_configure(const char *path, bool wfr, bool uv, bool block_trans
 	this->uv = uv;
 	this->block_transfer = block_transfer;
 	this->nodeid = db_get_nodeid(&dev.db);
+	this->cancel = false;
+	this->waiting = false;
+	// the CLI wfr variants keep their bounded wait; the UI's loadbin() opts into
+	// an indefinite wait explicitly after this call
+	this->wait_forever = false;
 	uv_delay_init(&this->delay, wfr ? LOADWFR_WAIT_TIME_MS : RESPONSE_DELAY_MS);
 }
 
@@ -102,6 +107,11 @@ static void loadbin_task(void *ptr) {
 }
 
 
+void load_cancel(void) {
+	this->cancel = true;
+}
+
+
 void loadbin(char *filepath, uint8_t nodeid, bool wfr, bool uv, bool block_transfer) {
 	load_configure(filepath, wfr, uv, block_transfer);
 	// the in-software entry targets an explicitly given node instead of the
@@ -110,29 +120,33 @@ void loadbin(char *filepath, uint8_t nodeid, bool wfr, bool uv, bool block_trans
 	// mark as in-progress synchronously so a caller that polls right away does
 	// not see a stale "finished" from a previous flash before the task starts
 	this->finished = false;
+	this->cancel = false;
+	this->waiting = false;
+	// the in-software (UI) entry waits indefinitely for the device when flashing
+	// with wfr, so an offline device can be powered on and then flashed
+	this->wait_forever = wfr;
 
 	uv_rtos_task_create(&loadbin_task, "loadbin_task",
 			UV_RTOS_MIN_STACK_SIZE, NULL, UV_RTOS_IDLE_PRIORITY + 1, NULL);
 }
 
 
-bool load_flash_device_to_node(device_st *device, uint8_t nodeid) {
+bool load_flash_uvdev_to_node(const char *uvdev_path, uint8_t nodeid, bool wfr) {
 	bool ret = false;
-	if ((device == NULL) || (strlen(device->filepath) == 0)) {
+	if ((uvdev_path == NULL) || (strlen(uvdev_path) == 0)) {
 		printf(PRINT_BOLDRED
-				"ERROR: the device has no configuration package; assign a .uvdev\n"
-				"file before flashing firmware.\n" PRINT_RESET);
+				"ERROR: no firmware package given to flash.\n" PRINT_RESET);
 	}
 	else {
 		uvdev_st pkg;
-		if (!uvdev_open(&pkg, device->filepath)) {
+		if (!uvdev_open(&pkg, uvdev_path)) {
 			printf(PRINT_BOLDRED "ERROR: failed to open the device package '%s'.\n"
-					PRINT_RESET, device->filepath);
+					PRINT_RESET, uvdev_path);
 		}
 		else {
 			if (strlen(pkg.firmware) == 0) {
 				printf(PRINT_BOLDRED "ERROR: package '%s' has no FIRMWARE entry in "
-						"its manifest.\n" PRINT_RESET, device->filepath);
+						"its manifest.\n" PRINT_RESET, uvdev_path);
 			}
 			else {
 				// copy the firmware out of the (soon to be removed) package temp
@@ -143,9 +157,10 @@ bool load_flash_device_to_node(device_st *device, uint8_t nodeid) {
 				snprintf(src, sizeof(src), "%s/%s", pkg.dir, pkg.firmware);
 				snprintf(cmd, sizeof(cmd), "cp '%s' '%s'", src, dst);
 				if (system(cmd) == 0) {
-					printf("Flashing firmware '%s' to node 0x%x\n",
-							pkg.firmware, nodeid);
-					loadbin(dst, nodeid, false, false, true);
+					printf("Flashing firmware '%s' to node 0x%x%s\n",
+							pkg.firmware, nodeid,
+							wfr ? " once it boots up" : "");
+					loadbin(dst, nodeid, wfr, false, true);
 					ret = true;
 				}
 				else {
@@ -160,10 +175,24 @@ bool load_flash_device_to_node(device_st *device, uint8_t nodeid) {
 }
 
 
-bool load_flash_device(device_st *device) {
+bool load_flash_device_to_node(device_st *device, uint8_t nodeid, bool wfr) {
+	bool ret = false;
+	if ((device == NULL) || (strlen(device->filepath) == 0)) {
+		printf(PRINT_BOLDRED
+				"ERROR: the device has no configuration package; assign a .uvdev\n"
+				"file before flashing firmware.\n" PRINT_RESET);
+	}
+	else {
+		ret = load_flash_uvdev_to_node(device->filepath, nodeid, wfr);
+	}
+	return ret;
+}
+
+
+bool load_flash_device(device_st *device, bool wfr) {
 	// flash the device's own package to its own node id
 	return load_flash_device_to_node(device,
-			(device != NULL) ? device->nodeid : 0);
+			(device != NULL) ? device->nodeid : 0, wfr);
 }
 
 
@@ -250,20 +279,28 @@ void load_step(void *ptr) {
 			// wait for a response to NMT reset command
 			printf("Waiting to receive boot up message from node 0x%x...\n", this->nodeid);
 			fflush(stdout);
+			this->waiting = true;
 			while (true) {
 				uint16_t step_ms = 1;
 				if (this->response) {
 					break;
 				}
+				else if (this->cancel) {
+					printf("Flashing cancelled.\n");
+					fflush(stdout);
+					break;
+				}
+				else if (!this->wait_forever && uv_delay(&this->delay, step_ms)) {
+					printf("Couldn't reset node. No response to NMT Reset Node.\n");
+					fflush(stdout);
+					break;
+				}
 				else {
-					if (uv_delay(&this->delay, step_ms)) {
-						printf("Couldn't reset node. No response to NMT Reset Node.\n");
-						fflush(stdout);
-						break;
-					}
+					// keep waiting for the boot-up message
 				}
 				uv_rtos_task_delay(step_ms);
 			}
+			this->waiting = false;
 			printf("Reset OK. Now downloading...\n");
 			fflush(stdout);
 
@@ -282,6 +319,12 @@ void load_step(void *ptr) {
 					}
 					else {
 						data_length = size - index;
+					}
+					if (this->cancel) {
+						printf("Flashing cancelled.\n");
+						fflush(stdout);
+						success = false;
+						break;
 					}
 					size_t ret = fread(data, data_length, 1, fptr);
 
@@ -319,26 +362,39 @@ void load_step(void *ptr) {
 				this->response = false;
 				// set canopen callback function
 				uv_canopen_set_can_callback(&can_callb);
-				// wait for a response to NMT reset command
+				// wait for the device to send its boot-up message. With
+				// wait_forever set (the UI's offline flash) this waits until the
+				// device is powered on or the flash is cancelled.
 				printf("Waiting to receive boot up message from node 0x%x...\n", this->nodeid);
 				fflush(stdout);
+				this->waiting = true;
 				while (true) {
 					uint16_t step_ms = 1;
 					if (this->response) {
 						break;
 					}
+					else if (this->cancel) {
+						printf("Flashing cancelled.\n");
+						fflush(stdout);
+						break;
+					}
+					else if (!this->wait_forever && uv_delay(&this->delay, step_ms)) {
+						printf("Couldn't reset node. No response to NMT Reset Node.\n");
+						fflush(stdout);
+						break;
+					}
 					else {
-						if (uv_delay(&this->delay, step_ms)) {
-							printf("Couldn't reset node. No response to NMT Reset Node.\n");
-							fflush(stdout);
-							break;
-						}
+						// keep waiting for the boot-up message
 					}
 					uv_rtos_task_delay(step_ms);
 				}
+				this->waiting = false;
+				// the callback is no longer needed once we stop waiting (it is
+				// cleared on boot-up too, but not on cancel/timeout)
+				uv_canopen_set_can_callback(NULL);
 			}
 
-			if (this->response) {
+			if (this->response && !this->cancel) {
 
 				printf("Now downloading...\n");
 				fflush(stdout);

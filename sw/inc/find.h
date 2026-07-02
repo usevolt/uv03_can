@@ -22,6 +22,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <uv_can.h>
 #include "system.h"
 
 
@@ -30,10 +31,46 @@
 bool cmd_find(const char *arg);
 
 
+/// @brief: Registers an additional CAN receive sniffer, invoked (after the
+/// heartbeat monitor) for every received CAN frame once find_start_monitor() has
+/// installed the monitor. Only one extra sniffer is supported; pass NULL to
+/// unregister. The heartbeat monitor owns the single HAL CAN callback, so any
+/// feature that also needs to observe raw frames while the UI is open (e.g. the
+/// GUI device terminal) hooks in through here rather than replacing it.
+void find_set_extra_can_callback(void (*callb)(void *user_ptr, uv_can_message_st *msg));
+
+
+/// @brief: Live device auto-discovery. Scans the heartbeat monitor's records for
+/// nodes that are on the bus but not yet in *sys* and adds them (reading the
+/// Identity object of readable nodes, or a BOOT-UP placeholder otherwise),
+/// upgrading a placeholder once it becomes readable. Blacklisted node ids (see
+/// find_blacklist_node()) are skipped. Meant to be called every UI cycle while
+/// the display is open, so devices appear as soon as they power up without a
+/// manual search. Returns true if the device list changed.
+bool find_poll_new_devices(void);
+
+
+/// @brief: Blocks *nodeid* from live auto-discovery, so a device the user removed
+/// from the UI does not immediately reappear. Cleared by find_clear_blacklist().
+void find_blacklist_node(uint8_t nodeid);
+
+
+/// @brief: Clears the auto-discovery blacklist so previously removed devices can
+/// be rediscovered. Invoked by the System tab's "Search" button.
+void find_clear_blacklist(void);
+
+
 /// @brief: Installs the CAN heartbeat sniffer (and brings the CAN bus up) so
 /// OPERATIONAL nodes are recorded as they appear. Idempotent. Used by the --ui
 /// live monitor; find_devices() installs it implicitly too.
 void find_start_monitor(void);
+
+
+/// @brief: Re-installs the heartbeat monitor as the active CAN receive callback.
+/// The firmware flash (wfr / uv bootloader paths) temporarily takes the single HAL
+/// CAN callback over to watch for the device's boot-up message; this restores the
+/// monitor (and the terminal sniffer chained off it) once the flash is done.
+void find_reinstall_monitor(void);
 
 
 /// @brief: Returns true when *nodeid* has been seen sending an OPERATIONAL

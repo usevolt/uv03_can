@@ -27,6 +27,7 @@
 #include "loadparam.h"
 #include "main.h"
 #include "db.h"
+#include "uvstdin.h"
 #include "uvdev.h"
 #include "find.h"
 #include "ui/uvui.h"
@@ -645,10 +646,8 @@ static uv_errors_e parse_dev(char *json) {
 						   "Failed to read CAN interface from the device.\n"
 							"The CAN IF VERSION object dictionary entry might not be defined.\n"
 							"Press anything to continue or 'skip' to skip this device.\n\n");
-					portDISABLE_INTERRUPTS();
 					char str[128] = {};
-					fgets(str, sizeof(str) - 1, stdin);
-					portENABLE_INTERRUPTS();
+					uv_stdin_getline(str, sizeof(str) - 1);
 					if (strstr(str, "skip")) {
 						printf("User selected: skip device\n");
 						ret = ERR_SKIPPED;
@@ -662,10 +661,8 @@ static uv_errors_e parse_dev(char *json) {
 				PROMPTSTR(
 					   "\"CAN IF MINDEX\" or \"CAN IF SINDEX\" not found in the parameter file.\n\n"
 					   "Press anything to continue or type 'skip' to skip this device.\n\n");
-				portDISABLE_INTERRUPTS();
 				char str[128] = {};
-				fgets(str, sizeof(str) - 1, stdin);
-				portENABLE_INTERRUPTS();
+				uv_stdin_getline(str, sizeof(str) - 1);
 				if (strstr(str, "skip")) {
 					printf("User selected: skip device\n");
 					ret = ERR_SKIPPED;
@@ -682,10 +679,8 @@ static uv_errors_e parse_dev(char *json) {
 					"Undefined behaviour might occur while loading the parameters.\n\n"
 					"Press anything to continue or type 'skip' to skip this device.\n\n",
 					db_get_nodeid(&dev.db));
-			portDISABLE_INTERRUPTS();
 			char str[128] = {};
-			fgets(str, sizeof(str) - 1, stdin);
-			portENABLE_INTERRUPTS();
+			uv_stdin_getline(str, sizeof(str) - 1);
 			if (strstr(str, "skip")) {
 				printf("User selected: skip device 0x%x\n", db_get_nodeid(&dev.db));
 				ret = ERR_SKIPPED;
@@ -1047,9 +1042,10 @@ void loadparam_step(void *ptr) {
 								}
 							}
 							if (already_answered == false) {
-								// Disable FreeRTOS scheduler signals so fgets can
-								// block for real user input without being interrupted
-								portDISABLE_INTERRUPTS();
+								// uv_stdin_getline() blocks for real user input
+								// without halting the scheduler (so the GUI stays
+								// live and can feed the answer via its log command
+								// line)
 								while (true) {
 									PROMPT("\n\n "
 											"User input requested: \n"
@@ -1061,7 +1057,7 @@ void loadparam_step(void *ptr) {
 
 									char ans_str[128] = {};
 									int32_t ans = 0;
-									fgets(ans_str, sizeof(ans_str) - 1, stdin);
+									uv_stdin_getline(ans_str, sizeof(ans_str) - 1);
 									if (sscanf(ans_str, " %d", &ans) < 1) {
 										ans = 1;
 									}
@@ -1076,7 +1072,6 @@ void loadparam_step(void *ptr) {
 										break;
 									}
 								}
-								portENABLE_INTERRUPTS();
 
 								uv_vector_push_back(&this->queries, &q);
 							}

@@ -184,6 +184,7 @@ win-package-stage:
 	cp "$(BINARY)" "$(PKGDIR)/"
 	cp "$(PLATFORM_SRCDIR)/PCANBasic.dll" "$(PKGDIR)/"
 	cp fonts/LiberationSans-Regular.ttf "$(PKGDIR)/fonts/"
+	cp fonts/LiberationMono-Regular.ttf "$(PKGDIR)/fonts/"
 	cp packaging/uvcan-ui.bat "$(PKGDIR)/"
 	cp packaging/uvcan-open.bat "$(PKGDIR)/"
 	cp packaging/uvsys.ico "$(PKGDIR)/"

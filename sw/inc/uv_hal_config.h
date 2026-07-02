@@ -77,6 +77,9 @@ extern bool silent;
 #define CONFIG_UI_TABWINDOW_HEADER_MIN_WIDTH		90
 #define CONFIG_UI_LIST_ENTRY_HEIGHT					50
 #define UI_TEXT_FONT								font16
+// Monospace font (same size as UI_TEXT_FONT) used by the log and device terminal
+// views so their text lines up in columns.
+#define UI_MONO_FONT								mono_font16
 #define UI_TITLE_FONT								font25
 #define UI_BIG_FONT									font28
 #define UI_LARGE_FONT								font36
@@ -85,8 +88,10 @@ extern bool silent;
 #define UI_MAXIMUM_FONT								font108
 // Logical UI canvas size. On the host OpenGL/X11 backend this is the window
 // size; the framework also uses it for visibility/clipping calculations.
-#define CONFIG_FT81X_HSIZE							800
-#define CONFIG_FT81X_VSIZE							480
+// Enlarged 1.5x from the FT81X's native 800x480 (same 5:3 aspect) to give the
+// desktop tool more room; widget pixel sizes are unchanged, so more content fits.
+#define CONFIG_FT81X_HSIZE							1200
+#define CONFIG_FT81X_VSIZE							720
 
 #define CONFIG_PWM									0
 #define CONFIG_PWM0									0

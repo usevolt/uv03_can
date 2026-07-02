@@ -126,7 +126,12 @@ static void cleanup_signal_callb(int signum) {
 	}
 	simrun_kill_all();
 	system_remove_tmpdirs();
-	uv_deinit();
+	// Deliberately do NOT call uv_deinit()/uv_ui_destroy() here: it makes Xlib and
+	// GLFW calls, which are not async-signal-safe and — because Xlib is not thread
+	// safe — can deadlock against the UI thread that may be mid-render, leaving the
+	// process alive so Ctrl-C (and the window-close path, which routes here) never
+	// terminates it. _exit() closes the X connection and the server destroys the
+	// window automatically, so the on-screen window still goes away.
 	_exit(signum);
 }
 #endif

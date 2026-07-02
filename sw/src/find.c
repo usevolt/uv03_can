@@ -67,6 +67,18 @@ static volatile uint32_t last_seen_tick[NODEID_MAX + 1];
 static volatile uint8_t last_nmt_state[NODEID_MAX + 1];
 // True once the CAN rx sniffer has been installed, so it is only installed once.
 static bool monitor_installed;
+// Optional additional CAN rx sniffer, called from find_can_callb() for every
+// frame (see find_set_extra_can_callback()). NULL when none is registered.
+static void (*extra_can_callb)(void *user_ptr, uv_can_message_st *msg);
+// Node ids blocked from live auto-discovery (find_poll_new_devices). A device
+// removed from the UI is blacklisted so it does not immediately reappear; the
+// System tab's search clears the list.
+static uint8_t blacklist_bits[(NODEID_MAX + 1 + 7) / 8];
+// Per-node live-discovery state: 0 = not handled by the poll, 1 = added as a
+// BOOT-UP placeholder (identity unread), 2 = added / attempted with a full
+// identity read. Reset to 0 when the node goes offline so a reconnect is
+// rediscovered.
+static uint8_t live_added[NODEID_MAX + 1];
 // True once an asynchronous UI search (see find_search_async()) has finished.
 static volatile bool search_finished = true;
 // Remaining listen time of the search in progress, in milliseconds (0 when no
@@ -129,6 +141,16 @@ static void find_can_callb(void *ptr, uv_can_msg_st *msg) {
 			last_seen_tick[nodeid] = (t != 0) ? t : 1;
 		}
 	}
+	// forward the frame to the optional extra sniffer (e.g. the GUI terminal),
+	// so it can observe raw traffic without displacing the heartbeat monitor
+	if (extra_can_callb != NULL) {
+		extra_can_callb(ptr, msg);
+	}
+}
+
+
+void find_set_extra_can_callback(void (*callb)(void *user_ptr, uv_can_message_st *msg)) {
+	extra_can_callb = callb;
 }
 
 
@@ -140,6 +162,12 @@ void find_start_monitor(void) {
 		uv_canopen_set_can_callback(&find_can_callb);
 		monitor_installed = true;
 	}
+}
+
+
+void find_reinstall_monitor(void) {
+	uv_canopen_set_can_callback(&find_can_callb);
+	monitor_installed = true;
 }
 
 
@@ -314,6 +342,92 @@ static void find_drop_device(uint8_t nodeid) {
 			break;
 		}
 	}
+}
+
+
+static bool node_blacklisted(uint8_t nodeid) {
+	return (blacklist_bits[nodeid / 8] & (uint8_t) (1u << (nodeid % 8))) != 0;
+}
+
+
+void find_blacklist_node(uint8_t nodeid) {
+	if ((nodeid >= 1) && (nodeid <= NODEID_MAX)) {
+		blacklist_bits[nodeid / 8] |= (uint8_t) (1u << (nodeid % 8));
+		// forget any live-discovery state so it is re-evaluated if un-blacklisted
+		live_added[nodeid] = 0;
+	}
+}
+
+
+void find_clear_blacklist(void) {
+	memset(blacklist_bits, 0, sizeof(blacklist_bits));
+}
+
+
+/// @brief: Returns the first device in the system with the given node id, or NULL.
+static device_st *find_device_by_nodeid(uint8_t nodeid) {
+	device_st *ret = NULL;
+	for (uint8_t i = 0; i < system_get_dev_count(&dev.system); i++) {
+		device_st *d = system_get_dev(&dev.system, i);
+		if (d->nodeid == nodeid) {
+			ret = d;
+			break;
+		}
+	}
+	return ret;
+}
+
+
+bool find_poll_new_devices(void) {
+	bool changed = false;
+	uint32_t now = uv_rtos_get_tick_count();
+	for (uint8_t nodeid = 1; nodeid <= NODEID_MAX; nodeid++) {
+		uint32_t seen = last_seen_tick[nodeid];
+		bool online = (seen != 0) &&
+				(((now - seen) * UV_RTOS_TICK_PERIOD_MS) < FIND_ONLINE_TIMEOUT_MS);
+		if (!online) {
+			// forget the node so a later reconnect is rediscovered / re-attempted
+			live_added[nodeid] = 0;
+			continue;
+		}
+		if (node_blacklisted(nodeid) || (live_added[nodeid] == 2)) {
+			continue;
+		}
+		device_st *existing = find_device_by_nodeid(nodeid);
+		uint8_t nmt = last_nmt_state[nodeid];
+		bool readable = (nmt == CANOPEN_OPERATIONAL) ||
+				(nmt == CANOPEN_PREOPERATIONAL);
+		if (readable) {
+			if ((existing == NULL) || (live_added[nodeid] == 1)) {
+				// a brand-new readable node, or our BOOT-UP placeholder that has
+				// become readable: read its identity and add it as a full device,
+				// dropping the placeholder afterwards
+				uint8_t prev = live_added[nodeid];
+				live_added[nodeid] = 2;
+				if (find_try_add_node(nodeid)) {
+					if (prev == 1) {
+						find_drop_device(nodeid);
+					}
+					changed = true;
+				}
+			}
+			else {
+				// device already present (from a file or an earlier scan): leave it
+				live_added[nodeid] = 2;
+			}
+		}
+		else {
+			// not readable (BOOT-UP): show a placeholder so the node is visible and
+			// can be flashed, but read nothing from it
+			if ((existing == NULL) && (live_added[nodeid] == 0)) {
+				if (find_add_bootup_node(nodeid)) {
+					live_added[nodeid] = 1;
+					changed = true;
+				}
+			}
+		}
+	}
+	return changed;
 }
 
 

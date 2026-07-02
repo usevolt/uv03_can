@@ -25,6 +25,7 @@
 #include <uv_json.h>
 #include <ctype.h>
 #include "main.h"
+#include "uvstdin.h"
 #if CONFIG_TARGET_WIN
 #include "uv_win_compat.h"
 #else
@@ -1829,13 +1830,12 @@ uv_errors_e db_check_can_if_version(db_st *db, uint16_t file_version,
 			print_revnotes(&db->revnotes, low, high);
 			PROMPTSTR(
 					"\nPress ENTER to continue or type 'skip' to skip this device\n\n");
-			// FreeRTOS POSIX port uses signals for context switching.
-			// Without disabling interrupts, fgets gets interrupted by
-			// these signals and returns empty, causing default answer 1.
-			portDISABLE_INTERRUPTS();
+			// uv_stdin_getline() blocks for user input without halting the
+			// scheduler (the FreeRTOS POSIX port uses signals for context
+			// switching, which would interrupt a plain fgets), so the GUI stays
+			// live and can feed the answer via its log command line.
 			char str[256] = {};
-			fgets(str, sizeof(str) - 1, stdin);
-			portENABLE_INTERRUPTS();
+			uv_stdin_getline(str, sizeof(str) - 1);
 			if (strstr(str, "skip")) {
 				printf("User selected: skip device\n");
 				ret = ERR_SKIPPED;

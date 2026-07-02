@@ -46,6 +46,12 @@ void uvui_set_log_title(const char *title);
 /// @brief: Resets the log view's frame title back to the default "Log".
 void uvui_reset_log_title(void);
 
+
+/// @brief: Returns true while the bottom log view is expanded to full screen.
+/// Used by front-most views (e.g. the device terminal) to yield keyboard focus to
+/// the log view's own command line while it covers them.
+bool uvui_log_is_expanded(void);
+
 #endif
 
 #endif /* UI_UVUI_H_ */
