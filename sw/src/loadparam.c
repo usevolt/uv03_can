@@ -47,6 +47,118 @@ void loadparam_step(void *dev);
 #define WARNING(str, ...) printf(PRINT_BOLDYELLOW str PRINT_RESET, __VA_ARGS__)
 #define WARNINGSTR(str) printf(PRINT_BOLDYELLOW str PRINT_RESET)
 
+
+// Extra attempts (and back-off) made when a device aborts an SDO transfer with
+// CANOPEN_SDO_ERROR_UNSUPPORTED_ACCESS_TO_OBJECT. The SDO client already retries
+// protocol timeouts and server-busy aborts on its own; while loading parameters
+// a device that is still coming up (e.g. just reset, copying operators, or busy
+// storing) can transiently reject a write/read with "unsupported access to
+// object" before its object dictionary is fully available, so the whole transfer
+// is worth repeating here too.
+#define LOADPARAM_SDO_RETRY_COUNT		5
+#define LOADPARAM_SDO_RETRY_DELAY_MS	200
+
+// Gap inserted after each successful SDO write. After a device sends an SDO
+// download response it needs a few ms before its CAN RX can accept the next
+// request; if the following write's request frame arrives back-to-back
+// (uv_canopen_sdo_write returns ~1.5 ms after the response), the device drops
+// it and the SDO client only notices via a full ~1.2 s protocol timeout before
+// retransmitting -- once per parameter, which is what makes a --loadparam crawl
+// (e.g. across the 120 subindices of a UV0D VEHICLE_PART_CONF array). Measured
+// on a UV0D: 0 ms gap -> ~45% of writes dropped, 3 ms -> ~10%, >=6 ms -> 0%.
+// 10 ms leaves margin (GUI/render busy windows) at ~10 ms/param overhead, which
+// is negligible next to the multi-second timeouts it prevents.
+#define LOADPARAM_SDO_WRITE_PACING_MS	10
+
+// Returns true while *ret* is a failed transfer whose last SDO abort code was
+// "unsupported access to object" and another retry is still allowed. Backs off
+// LOADPARAM_SDO_RETRY_DELAY_MS and logs the retry before returning true.
+static bool loadparam_sdo_should_retry(uv_errors_e ret, uint8_t node_id,
+		uint16_t mindex, uint8_t attempt, const char *op) {
+	bool retry = (ret != ERR_NONE) &&
+			(uv_canopen_sdo_get_error() ==
+					CANOPEN_SDO_ERROR_UNSUPPORTED_ACCESS_TO_OBJECT) &&
+			(attempt < LOADPARAM_SDO_RETRY_COUNT);
+	if (retry) {
+		// finish the current live "Writing..." LOG line so the warning below
+		// starts on its own fresh line
+		LOG_END();
+		WARNING("Node 0x%x rejected SDO %s to 0x%x with UNSUPPORTED ACCESS TO "
+				"OBJECT, retrying (%u/%u)...\n",
+				(unsigned int) node_id, op, (unsigned int) mindex,
+				(unsigned int) (attempt + 1), LOADPARAM_SDO_RETRY_COUNT);
+		fflush(stdout);
+		uv_rtos_task_delay(LOADPARAM_SDO_RETRY_DELAY_MS);
+	}
+	return retry;
+}
+
+// Reports the outcome of a wrapped transfer that needed one or more retries.
+// *attempt* is the number of retries performed (0 when the first try already
+// succeeded, so nothing is logged). On eventual success this logs a self-
+// contained green note so the user sees that the retry worked; loadparam_sdo_-
+// should_retry() has already finished the live LOG line before its warning, so
+// this note stands on its own line and no LOG_OK() from the caller attaches to
+// it. Failures are left to the caller's own error path.
+static void loadparam_sdo_log_retried(uv_errors_e ret, uint8_t node_id,
+		uint16_t mindex, uint8_t attempt, const char *op) {
+	if ((attempt > 0) && (ret == ERR_NONE)) {
+		printf(PRINT_GREEN "Node 0x%x SDO %s to 0x%x succeeded on retry %u/%u."
+				PRINT_BOLDGREEN " OK\n" PRINT_RESET,
+				(unsigned int) node_id, op, (unsigned int) mindex,
+				(unsigned int) attempt, LOADPARAM_SDO_RETRY_COUNT);
+		fflush(stdout);
+	}
+}
+
+// Wrappers around the SDO client that additionally retry the whole transfer when
+// the device aborts with CANOPEN_SDO_ERROR_UNSUPPORTED_ACCESS_TO_OBJECT (see
+// LOADPARAM_SDO_RETRY_COUNT). All of loadparam's parameter reads/writes go
+// through these instead of calling uv_canopen_sdo_*() directly.
+static uv_errors_e loadparam_sdo_write(uint8_t node_id, uint16_t mindex,
+		uint8_t sindex, uint32_t data_len, void *data) {
+	uv_errors_e ret = uv_canopen_sdo_write(node_id, mindex, sindex, data_len, data);
+	uint8_t attempt = 0;
+	while (loadparam_sdo_should_retry(ret, node_id, mindex, attempt, "write")) {
+		attempt++;
+		ret = uv_canopen_sdo_write(node_id, mindex, sindex, data_len, data);
+	}
+	loadparam_sdo_log_retried(ret, node_id, mindex, attempt, "write");
+	// pace consecutive writes so the next request does not arrive inside the
+	// device's post-response CAN RX recovery window (see the pacing #define)
+	if (ret == ERR_NONE) {
+		uv_rtos_task_delay(LOADPARAM_SDO_WRITE_PACING_MS);
+	}
+	return ret;
+}
+
+static uv_errors_e loadparam_sdo_read(uint8_t node_id, uint16_t mindex,
+		uint8_t sindex, uint32_t data_len, void *data) {
+	uv_errors_e ret = uv_canopen_sdo_read(node_id, mindex, sindex, data_len, data);
+	uint8_t attempt = 0;
+	while (loadparam_sdo_should_retry(ret, node_id, mindex, attempt, "read")) {
+		attempt++;
+		ret = uv_canopen_sdo_read(node_id, mindex, sindex, data_len, data);
+	}
+	loadparam_sdo_log_retried(ret, node_id, mindex, attempt, "read");
+	return ret;
+}
+
+static uv_errors_e loadparam_sdo_store_params(uint8_t node_id,
+		memory_scope_e_ param_scope) {
+	uv_errors_e ret = uv_canopen_sdo_store_params(node_id, param_scope);
+	uint8_t attempt = 0;
+	while (loadparam_sdo_should_retry(ret, node_id,
+			CONFIG_CANOPEN_STORE_PARAMS_INDEX, attempt, "store")) {
+		attempt++;
+		ret = uv_canopen_sdo_store_params(node_id, param_scope);
+	}
+	loadparam_sdo_log_retried(ret, node_id, CONFIG_CANOPEN_STORE_PARAMS_INDEX,
+			attempt, "store");
+	return ret;
+}
+
+
 bool loadparam_load(const char *path) {
 	bool ret = false;
 
@@ -446,14 +558,19 @@ static uv_errors_e load_param(char *json_obj,
 						uint32_t d = uv_jsonreader_array_get_int(array, i);
 						LOG("Writing '%s' (0x%x) [%u] = 0x%x",
 								info, mindex, i + 1 + sindex_offset, d);
-						ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
+						ret |= loadparam_sdo_write(db_get_nodeid(&dev.db),
 													mindex,
 													i + 1 + sindex_offset,
 													CANOPEN_SIZEOF(objtype), &d);
+						if (ret == ERR_NONE) {
+							// mark the successful CAN-bus write on the same line
+							LOG_OK();
+						}
 						break;
 						case JSON_OBJECT: {
 							char *obj = uv_jsonreader_array_at(array, i);
-							// child objects are loaded recursively
+							// child objects are loaded recursively (they log and
+							// confirm their own transfers)
 							ret |= load_param(
 									obj,
 									mindex,
@@ -469,8 +586,8 @@ static uv_errors_e load_param(char *json_obj,
 						fflush(stdout);
 						break;
 				}
-				LOG_END();
 				if (ret != ERR_NONE) {
+					LOG_END();
 					ERROR("Array loading failed for subindex %u\n",
 						  i + 1 + sindex_offset);
 					LOG_SDO_ERROR();
@@ -500,12 +617,16 @@ static uv_errors_e load_param(char *json_obj,
 			}
 			LOG("Writing '%s' (0x%x) = \"%s\"",
 					info, mindex, str);
-			ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
+			ret |= loadparam_sdo_write(db_get_nodeid(&dev.db),
 					mindex, sindex + sindex_offset, strlen(str) + 1, str);
 			if (ret != ERR_NONE) {
 				LOG_END();
 				ERROR("Loading string '%s' failed.\n", str);
 				LOG_SDO_ERROR();
+			}
+			else {
+				// mark the successful CAN-bus write on the same line
+				LOG_OK();
 			}
 		}
 		else {
@@ -522,12 +643,16 @@ static uv_errors_e load_param(char *json_obj,
 			}
 			LOG("Writing '%s' (0x%x) = 0x%x",
 					info, mindex, d);
-			ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
+			ret |= loadparam_sdo_write(db_get_nodeid(&dev.db),
 					mindex, sindex + sindex_offset, CANOPEN_SIZEOF(objtype), &d);
 			if (ret != ERR_NONE) {
 				LOG_END();
 				ERROR("Parameter loading failed for subindex %u\n", sindex);
 				LOG_SDO_ERROR();
+			}
+			else {
+				// mark the successful CAN-bus write on the same line
+				LOG_OK();
 			}
 		}
 	}
@@ -568,7 +693,7 @@ static uv_errors_e parse_dev(char *json) {
 			printf("Writing new NODEID 0x%x to device 0x%x\n",
 					nodeid,
 					db_get_nodeid(&dev.db));
-			uv_canopen_sdo_write(db_get_nodeid(&dev.db),
+			loadparam_sdo_write(db_get_nodeid(&dev.db),
 					CONFIG_CANOPEN_NODEID_INDEX,
 					0,
 					1,
@@ -632,15 +757,18 @@ static uv_errors_e parse_dev(char *json) {
 			char *sindex = uv_jsonreader_find_child(json, "CAN IF SINDEX");
 			if (mindex != NULL &&
 					sindex != NULL) {
-				LOG("Reading CAN IF from 0x%x\n", db_get_nodeid(&dev.db));
-				if (uv_canopen_sdo_read(db_get_nodeid(&dev.db), uv_jsonreader_get_int(mindex),
+				LOG("Reading CAN IF from 0x%x", db_get_nodeid(&dev.db));
+				if (loadparam_sdo_read(db_get_nodeid(&dev.db), uv_jsonreader_get_int(mindex),
 						uv_jsonreader_get_int(sindex), CANOPEN_SIZEOF(CANOPEN_UNSIGNED16),
 						&dev_if) == ERR_NONE) {
+					// mark the successful CAN-bus read on the same line
+					LOG_OK();
 					ret = db_check_can_if_version(&dev.db,
 							can_if, dev_if,
 							"parameter file", "device");
 				}
 				else {
+					LOG_END();
 					LOG_SDO_ERROR();
 					PROMPTSTR(
 						   "Failed to read CAN interface from the device.\n"
@@ -762,7 +890,7 @@ static uv_errors_e parse_dev(char *json) {
 				// PARAMS above already failed, so no further bus traffic is sent.
 				uint16_t devopcount = 1;
 				if (ret == ERR_NONE) {
-					ret |= uv_canopen_sdo_read(db_get_nodeid(&dev.db),
+					ret |= loadparam_sdo_read(db_get_nodeid(&dev.db),
 							opdb_mindex + 1, 0, sizeof(devopcount), &devopcount);
 				}
 
@@ -772,7 +900,7 @@ static uv_errors_e parse_dev(char *json) {
 					printf("Creating new operator by copying operator %u\n", 1);
 					fflush(stdout);
 					uint32_t data = 1;
-					ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db),
+					ret |= loadparam_sdo_write(db_get_nodeid(&dev.db),
 							opdb_mindex, 3, CANOPEN_SIZEOF(opdb_type), &data);
 					// wait for the device to copy the operators
 					uv_rtos_task_delay(300);
@@ -782,8 +910,12 @@ static uv_errors_e parse_dev(char *json) {
 				for (uint32_t i = 0; (i < op_count) && (ret == ERR_NONE); i++) {
 					uint32_t data = i + 1;
 					LOG("Changing active operator to op %u...", data);
-					ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), opdb_mindex,
+					ret |= loadparam_sdo_write(db_get_nodeid(&dev.db), opdb_mindex,
 							1, CANOPEN_SIZEOF(opdb_type), &data);
+					if (ret == ERR_NONE) {
+						// mark the successful CAN-bus write on the same line
+						LOG_OK();
+					}
 					// wait for the device to switch operator before loading params
 					uv_rtos_task_delay(500);
 					LOG("Loading parameters for operator %u", data);
@@ -808,13 +940,17 @@ static uv_errors_e parse_dev(char *json) {
 					LOG_END();
 					// only store if every parameter of this operator was written
 					if (ret == ERR_NONE) {
-						printf("Saving the parameters for op %u...\n", i + 1);
-						fflush(stdout);
-						ret |= uv_canopen_sdo_store_params(db_get_nodeid(&dev.db),
+						LOG("Saving the parameters for op %u...", i + 1);
+						ret |= loadparam_sdo_store_params(db_get_nodeid(&dev.db),
 								MEMORY_ALL_PARAMS);
 						if (ret != ERR_NONE) {
+							LOG_END();
 							ERROR("Error encountered when storing the parameters for op %u\n", i + 1);
 							LOG_SDO_ERROR();
+						}
+						else {
+							// mark the successful CAN-bus store on the same line
+							LOG_OK();
 						}
 						// wait for the parameters to be saved
 						uv_rtos_task_delay(100);
@@ -827,7 +963,7 @@ static uv_errors_e parse_dev(char *json) {
 					uint32_t data = uv_jsonreader_get_int(current_op_json) + 1;
 					printf("Setting the current operator to op %i\n", data);
 					fflush(stdout);
-					ret |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), opdb_mindex, 1,
+					ret |= loadparam_sdo_write(db_get_nodeid(&dev.db), opdb_mindex, 1,
 							 CANOPEN_SIZEOF(opdb_type), &data);
 					uv_rtos_task_delay(300);
 				}
@@ -906,7 +1042,7 @@ static bool emcy_suppress_find(emcy_suppress_st *out) {
 static void emcy_suppress_write(const emcy_suppress_st *s, uint8_t node,
 		uint32_t value) {
 	uint32_t v = value;
-	uv_errors_e e = uv_canopen_sdo_write(node, s->mindex, s->sindex,
+	uv_errors_e e = loadparam_sdo_write(node, s->mindex, s->sindex,
 			CANOPEN_SIZEOF(s->type), &v);
 	if (e == ERR_NONE) {
 		printf("%s EMCY messages on node 0x%x\n",
@@ -1153,16 +1289,26 @@ void loadparam_step(void *ptr) {
 	else if (!this->sys_load_mode) {
 		for (uint8_t i = 0; i < this->dev_count; i++) {
 			uint8_t nodeid = this->modified_dev_nodeids[i];
-			printf("Saving the parameters to dev 0x%x...\n", nodeid);
-			fflush(stdout);
-			ret |= uv_canopen_sdo_store_params(nodeid,
+			LOG("Saving the parameters to dev 0x%x...", nodeid);
+			ret |= loadparam_sdo_store_params(nodeid,
 					MEMORY_ALL_PARAMS);
-			uv_rtos_task_delay(300);
-			printf("Resetting the device 0x%x...\n", nodeid);
-			fflush(stdout);
 			if (ret == ERR_NONE) {
+				// mark the successful CAN-bus store on the same line
+				LOG_OK();
+			}
+			else {
+				LOG_END();
+			}
+			uv_rtos_task_delay(300);
+			if (ret == ERR_NONE) {
+				printf("Resetting the device 0x%x...", nodeid);
+				fflush(stdout);
 				uv_canopen_nmt_master_send_cmd(nodeid,
 						CANOPEN_NMT_CMD_RESET_NODE);
+				// the reset is a fire-and-forget NMT broadcast; confirm it was
+				// sent on the same line
+				printf(PRINT_BOLDGREEN " OK\n" PRINT_RESET);
+				fflush(stdout);
 			}
 			else {
 				printf(PRINT_YELLOW
@@ -1372,7 +1518,7 @@ static void loadparam_system_task(void *ptr) {
 			printf("Saving the parameters to dev 0x%x...\n",
 					(unsigned int) d->nodeid);
 			fflush(stdout);
-			uv_canopen_sdo_store_params(d->nodeid, MEMORY_ALL_PARAMS);
+			loadparam_sdo_store_params(d->nodeid, MEMORY_ALL_PARAMS);
 			uv_rtos_task_delay(300);
 		}
 	}

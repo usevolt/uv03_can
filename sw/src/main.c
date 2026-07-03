@@ -24,6 +24,11 @@
 struct _dev_st dev;
 #define this (&dev)
 
+// Backs the LOG()/LOG_END()/LOG_OK() macros (see main.h): tracks whether a
+// progress log line is currently open so LOG_OK() only appends " OK" when there
+// is a live line to append to.
+bool log_line_live = false;
+
 
 
 const canopen_object_st obj_dict[] = {

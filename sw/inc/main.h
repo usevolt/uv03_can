@@ -40,25 +40,50 @@
 } while (0)
 
 
+/// @brief: True while a LOG() line has been started but not yet finalized with
+/// LOG_END() or LOG_OK(). Lets LOG_OK() append " OK" only when there really is a
+/// live line to append it to, so a success reported after intervening output
+/// (e.g. an SDO retry note) does not leave a stray " OK" on its own line.
+extern bool log_line_live;
+
 /// @brief: Progress log that overwrites the same terminal line.
 /// On a terminal: uses \\r and erase-to-EOL so successive calls
-/// overwrite each other. When output is redirected (pipe/file),
-/// prints a normal line instead.
+/// overwrite each other. When output is redirected (pipe/file), the
+/// newline is deferred: the previous live line is terminated first, and
+/// this line is left open so a following LOG_OK()/LOG_END() can append
+/// " OK" (or an error) on the same line, matching the terminal look.
 #define LOG(fmt, ...) do { \
 	if (isatty(STDOUT_FILENO)) { \
 		printf("\r" fmt "\033[K", ##__VA_ARGS__); \
 	} \
 	else { \
-		printf(fmt "\n", ##__VA_ARGS__); \
+		if (log_line_live) { \
+			printf("\n"); \
+		} \
+		printf(fmt, ##__VA_ARGS__); \
 	} \
 	fflush(stdout); \
+	log_line_live = true; \
 } while (0)
 
 /// @brief: Finalize the current LOG line so that subsequent output
 /// (errors, warnings, final messages) starts on a fresh line.
 #define LOG_END() do { \
-	if (isatty(STDOUT_FILENO)) { \
+	if (log_line_live) { \
 		printf("\n"); \
+		log_line_live = false; \
+	} \
+} while (0)
+
+/// @brief: Finalize the current LOG line with a green "OK" appended, marking a
+/// successful CAN-bus read/write on the same line. No-op when no LOG line is
+/// live (e.g. the transfer was already reported by an SDO retry note), so it is
+/// always safe to call after a successful transfer.
+#define LOG_OK() do { \
+	if (log_line_live) { \
+		printf(PRINT_BOLDGREEN " OK" PRINT_RESET "\n"); \
+		fflush(stdout); \
+		log_line_live = false; \
 	} \
 } while (0)
 

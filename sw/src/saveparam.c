@@ -194,6 +194,10 @@ static uv_errors_e json_add_obj(uv_json_st *dest_json, db_obj_st *obj, char *inf
 		ERROR("Error in obj 0x%x\n", obj->obj.main_index);
 		LOG_SDO_ERROR();
 	}
+	else {
+		// mark the successful CAN-bus read on the same line
+		LOG_OK();
+	}
 
 	return ret;
 }
@@ -373,6 +377,10 @@ static uv_errors_e save_device(uv_json_st *json) {
 			LOG("Changing active operator to op %u...", val);
 			e |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), opdb_obj->obj.main_index,
 					1, CANOPEN_SIZEOF(opdb_obj->obj.type), &val);
+			if (e == ERR_NONE) {
+				// mark the successful CAN-bus write on the same line
+				LOG_OK();
+			}
 			// wait for the device to switch the operator before reading params
 			uv_rtos_task_delay(500);
 			LOG("Saving parameters for operator %u", val);
