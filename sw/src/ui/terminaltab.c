@@ -84,6 +84,12 @@ static uv_uitextedit_st input;
 static char input_buf[INPUT_BUF_LEN];
 // True while the widgets are built into a parent window.
 static bool built;
+// True while the view follows the newest text (the live tail). Cleared when the
+// user scrolls back with the mouse wheel and re-set once they scroll to the
+// bottom again, so incoming text does not yank the view away from history.
+static bool pinned_bottom = true;
+// Receive-history lines advanced per mouse-wheel notch.
+#define SCROLL_LINES_PER_NOTCH	3
 
 
 // --- receive path ----------------------------------------------------------
@@ -151,7 +157,43 @@ static void rx_relayout(void) {
 	if (maxy < 0) {
 		maxy = 0;
 	}
-	uv_uiwindow_content_move_to(&term_win, 0, maxy);
+	if (pinned_bottom) {
+		// follow the newest text
+		uv_uiwindow_content_move_to(&term_win, 0, maxy);
+	}
+	else {
+		// the user scrolled back: keep their position, only re-clamping it to the
+		// (possibly grown) content height so it stays in range
+		int16_t cur = -uv_uiwindow_get_contentbb(&term_win).y;
+		if (cur > maxy) {
+			cur = maxy;
+		}
+		if (cur < 0) {
+			cur = 0;
+		}
+		uv_uiwindow_content_move_to(&term_win, 0, cur);
+	}
+	uv_ui_refresh(&term_win);
+}
+
+
+/// @brief: Scrolls the receive view by *notches* mouse-wheel steps (positive =
+/// wheel up = back towards older text) and updates the pinned-to-bottom state so
+/// the live tail resumes only once the user scrolls all the way down again.
+static void rx_wheel_scroll(int16_t notches) {
+	if (!built || (notches == 0)) {
+		return;
+	}
+	int16_t line_h = uv_ui_get_string_height("A", &UI_MONO_FONT);
+	uv_uiwindow_content_move(&term_win, 0, notches * line_h * SCROLL_LINES_PER_NOTCH);
+
+	uv_bounding_box_st cbb = uv_uiwindow_get_contentbb(&term_win);
+	int16_t maxy = cbb.h - uv_uibb(&term_win)->h;
+	if (maxy < 0) {
+		maxy = 0;
+	}
+	// re-pin to the live tail only when scrolled back down to the bottom
+	pinned_bottom = (-cbb.y >= maxy);
 	uv_ui_refresh(&term_win);
 }
 
@@ -303,6 +345,8 @@ void terminaltab_build(void *parent, uint8_t nodeid) {
 			MARGIN, MARGIN + win_h + MARGIN, cbb.w - 2 * MARGIN, INPUT_H);
 
 	built = true;
+	// a freshly opened terminal shows the live tail
+	pinned_bottom = true;
 	rx_relayout();
 }
 
@@ -324,6 +368,16 @@ void terminaltab_step(bool focused) {
 	if (got) {
 		uv_ui_refresh(&term_label);
 		rx_relayout();
+	}
+
+	// mouse wheel scrolls the receive history. Only drained while the terminal
+	// owns input (log view collapsed); otherwise the wheel notches are left for
+	// the expanded log view, which reads them in uvui.c.
+	if (focused) {
+		int16_t scroll = uv_ui_get_scroll();
+		if (scroll != 0) {
+			rx_wheel_scroll(scroll);
+		}
 	}
 
 	// command line: send on Enter, keeping focus
