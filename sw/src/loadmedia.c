@@ -33,7 +33,13 @@
 static void loadmedia_step(void *dev);
 static void load(char *filename, uint32_t count, uint32_t index);
 static bool is_known_mediafile(char *filename);
+static uint32_t count_media_path(const char *path);
+static void load_media_path(const char *path, uint32_t count, uint32_t *index);
 static void run_media_path(const char *path);
+static void run_media_paths(const char *const *paths, uint32_t n);
+static bool loadmedia_uvdev(const char *uvdev_path, uint8_t nodeid);
+static void loadmedia_devices(uint8_t start, uint8_t end);
+static void loadmedia_dispatch_step(void *ptr);
 
 
 
@@ -57,7 +63,14 @@ bool loadmedia_load(const char *path) {
 
 
 bool cmd_loadmedia(const char *arg) {
-	return loadmedia_load(arg);
+	// store the option's attached argument (may be empty); the dispatch task
+	// resolves it against the non-option arguments and the loaded system once the
+	// scheduler is running
+	strncpy(this->file, (arg != NULL) ? arg : "", sizeof(this->file) - 1);
+	this->file[sizeof(this->file) - 1] = '\0';
+	add_task(loadmedia_dispatch_step);
+	uv_can_set_up(false);
+	return true;
 }
 
 
@@ -194,18 +207,17 @@ static void loadmedia_step(void *ptr) {
 }
 
 
-// Loads every recognized media file under *path* (a single file or a directory
-// of files) onto the device at the node id currently set in dev.db.
-static void run_media_path(const char *path) {
-	const char *str = path;
+// Counts the recognized media files reachable from *path*: 1 for a single media
+// file, or the number of recognized files directly inside a directory (0 for an
+// unreadable or unrecognized path). Used to size the batch progress counter.
+static uint32_t count_media_path(const char *path) {
+	uint32_t count = 0;
 	struct stat path_stat;
-	stat(str, &path_stat);
-	if (S_ISDIR(path_stat.st_mode)) {
-		DIR *dirp;
-		// check media file count
-		uint32_t count = 0;
-		uint32_t index = 0;
-		dirp = opendir(str);
+	if (stat(path, &path_stat) != 0) {
+		// unreadable path: nothing to count (load_media_path reports it)
+	}
+	else if (S_ISDIR(path_stat.st_mode)) {
+		DIR *dirp = opendir(path);
 		while (dirp) {
 			struct dirent *d;
 			if ((d = readdir(dirp)) != NULL) {
@@ -218,8 +230,29 @@ static void run_media_path(const char *path) {
 				break;
 			}
 		}
+	}
+	else if (S_ISREG(path_stat.st_mode)) {
+		count = 1;
+	}
+	else {
+		// not a regular file or a directory
+	}
+	return count;
+}
 
-		dirp = opendir(str);
+
+// Loads every recognized media file reachable from *path* (a single file or a
+// directory of files) onto the device at the node id currently set in dev.db.
+// *count* is the batch total shown in the progress line and *index points at the
+// running file number, advanced past each file loaded here.
+static void load_media_path(const char *path, uint32_t count, uint32_t *index) {
+	const char *str = path;
+	struct stat path_stat;
+	if (stat(str, &path_stat) != 0) {
+		printf("Unknown file '%s' given to *loadmedia*\n", str);
+	}
+	else if (S_ISDIR(path_stat.st_mode)) {
+		DIR *dirp = opendir(str);
 		while(dirp) {
 			struct dirent *d;
 			if ((d = readdir(dirp)) != NULL) {
@@ -230,8 +263,8 @@ static void run_media_path(const char *path) {
 						strcat(s, "/");
 					}
 					strcat(s, d->d_name);
-					load(s, count, index);
-					index++;
+					load(s, count, *index);
+					(*index)++;
 				}
 			}
 			else {
@@ -244,10 +277,34 @@ static void run_media_path(const char *path) {
 		char s[1024];
 		strncpy(s, str, sizeof(s) - 1);
 		s[sizeof(s) - 1] = '\0';
-		load(s, 1, 0);
+		load(s, count, *index);
+		(*index)++;
 	}
 	else {
 		printf("Unknown file '%s' given to *loadmedia*\n", str);
+	}
+}
+
+
+// Loads every recognized media file under *path* (a single file or a directory
+// of files) onto the device at the node id currently set in dev.db.
+static void run_media_path(const char *path) {
+	uint32_t index = 0;
+	load_media_path(path, count_media_path(path), &index);
+}
+
+
+// Loads media from each of *n* paths (files and/or directories) as one logical
+// batch, so the per-file progress counter runs across all of them. Used when the
+// shell expands a glob (e.g. "*_hd.png") into several file arguments.
+static void run_media_paths(const char *const *paths, uint32_t n) {
+	uint32_t count = 0;
+	for (uint32_t i = 0; i < n; i++) {
+		count += count_media_path(paths[i]);
+	}
+	uint32_t index = 0;
+	for (uint32_t i = 0; i < n; i++) {
+		load_media_path(paths[i], count, &index);
 	}
 }
 
@@ -263,32 +320,119 @@ bool loadmedia_load_device_is_finished(void) {
 }
 
 
-// Task body: opens the device's .uvdev package, points the media protocol at the
-// target node, loads every media file from the package's MEDIA directory, then
-// releases the package. Runs off the UI thread.
-static void loadmedia_device_task(void *ptr) {
+// Opens the device's .uvdev package, points the media protocol at *nodeid*, loads
+// every media file from the package's MEDIA directory, then releases the package.
+// The transfer runs while the package is still extracted. Returns true when the
+// package had a media directory (whether or not every file loaded). Warns when the
+// package is unreadable or bundles no media.
+static bool loadmedia_uvdev(const char *uvdev_path, uint8_t nodeid) {
+	bool ret = false;
 	uvdev_st pkg;
-	if (!uvdev_open(&pkg, async_media_filepath)) {
-		printf("Failed to open the device package '%s' for media loading.\n",
-				async_media_filepath);
+	if (!uvdev_open(&pkg, uvdev_path)) {
+		printf(PRINT_BOLDRED "Failed to open the device package '%s' for media "
+				"loading.\n" PRINT_RESET, uvdev_path);
 	}
 	else {
 		if (strlen(pkg.media) == 0) {
-			printf("Device package '%s' bundles no media to load.\n",
-					async_media_filepath);
+			printf(PRINT_BOLDYELLOW "WARNING: device package '%s' bundles no media "
+					"files to load.\n" PRINT_RESET, uvdev_path);
 		}
 		else {
 			// loadmedia's transfer targets db_get_nodeid(&dev.db); force it to the
 			// device's node id so the media goes to the right device
-			db_set_nodeid_force(&dev.db, async_media_nodeid);
+			db_set_nodeid_force(&dev.db, nodeid);
 			char mediadir[2048];
 			snprintf(mediadir, sizeof(mediadir), "%s/%s", pkg.dir, pkg.media);
 			run_media_path(mediadir);
+			ret = true;
 		}
 		uvdev_close(&pkg);
 	}
+	return ret;
+}
+
+
+// Task body: loads a single device's bundled media off the UI thread.
+static void loadmedia_device_task(void *ptr) {
+	loadmedia_uvdev(async_media_filepath, async_media_nodeid);
 	async_media_finished = true;
 	uv_rtos_task_delete(NULL);
+}
+
+
+// Loads bundled media onto each system device in the index range [start, end).
+// Each device's own .uvdev package supplies the media; a device with no package,
+// or whose package bundles no media, is skipped with a warning.
+static void loadmedia_devices(uint8_t start, uint8_t end) {
+	for (uint8_t i = start; i < end; i++) {
+		device_st *d = &dev.system.devs[i];
+		if (strlen(d->filepath) == 0) {
+			printf(PRINT_BOLDYELLOW "Skipping device '%s' (node 0x%x): no "
+					"configuration package.\n" PRINT_RESET,
+					d->name, (unsigned int) d->nodeid);
+			continue;
+		}
+		printf("\n=== Loading media to device '%s' (node 0x%x) ===\n",
+				d->name, (unsigned int) d->nodeid);
+		loadmedia_uvdev(d->filepath, d->nodeid);
+	}
+}
+
+
+// Task body for the --loadmedia command. Dispatches on the effective argument:
+//   - a .uvsys package: load it and push each device's bundled media
+//   - a .uvdev package:  push that package's media to the selected node
+//   - any other path:    load it as a raw media file or directory (legacy)
+//   - no argument:       push bundled media for every --dev / --sys device
+static void loadmedia_dispatch_step(void *ptr) {
+	const char *arg = cmdline_load_arg(this->file);
+
+	if (path_is_uvsys(arg)) {
+		uint8_t prev = dev.system.dev_count;
+		if (!system_set_file(&dev.system, arg)) {
+			printf(PRINT_BOLDRED "ERROR: failed to load system package '%s'.\n"
+					PRINT_RESET, arg);
+		}
+		else {
+			loadmedia_devices(prev, dev.system.dev_count);
+		}
+	}
+	else if (path_is_uvdev(arg)) {
+		uint8_t prev = dev.system.dev_count;
+		// use the node id forced with --nodeid when given (0 -> the package's own)
+		if (!system_add_device(&dev.system, arg, db_get_nodeid(&dev.db))) {
+			printf(PRINT_BOLDRED "ERROR: failed to add device package '%s'.\n"
+					PRINT_RESET, arg);
+		}
+		else {
+			loadmedia_devices(prev, dev.system.dev_count);
+		}
+	}
+	else if (arg != NULL) {
+		// raw media file(s) or directory (legacy behavior). When the shell expands
+		// a glob such as "*_hd.png", every match arrives as a separate non-option
+		// argument; load them all, not just the first.
+		const char *paths[dev.argv_count + 1];
+		uint32_t n = 0;
+		paths[n++] = arg;
+		// when the value was NOT attached to the option, arg is nonopt_argv[0];
+		// skip that token below so it is not loaded twice
+		unsigned int start = ((strlen(this->file) == 0) &&
+				(dev.argv_count > 0)) ? 1 : 0;
+		for (unsigned int i = start; i < dev.argv_count; i++) {
+			paths[n++] = dev.nonopt_argv[i];
+		}
+		run_media_paths(paths, n);
+	}
+	else if (dev.system.dev_count != 0) {
+		// no file given: push bundled media for the loaded --dev / --sys devices
+		loadmedia_devices(0, dev.system.dev_count);
+	}
+	else {
+		printf(PRINT_BOLDRED "ERROR: no media given. Provide a media file or "
+				"directory, a .uvdev / .uvsys package, or load devices with "
+				"--dev / --sys first.\n" PRINT_RESET);
+	}
 }
 
 

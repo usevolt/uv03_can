@@ -511,6 +511,47 @@ void system_set_device_file(device_st *device, const char *filepath) {
 }
 
 
+bool path_ends_with(const char *path, const char *suffix) {
+	bool ret = false;
+	if ((path != NULL) && (suffix != NULL)) {
+		size_t pl = strlen(path);
+		size_t sl = strlen(suffix);
+		if (sl <= pl) {
+			ret = true;
+			const char *p = path + (pl - sl);
+			for (size_t i = 0; i < sl; i++) {
+				if (tolower((unsigned char) p[i]) !=
+						tolower((unsigned char) suffix[i])) {
+					ret = false;
+					break;
+				}
+			}
+		}
+	}
+	return ret;
+}
+
+
+const char *cmdline_load_arg(const char *stored) {
+	const char *ret = NULL;
+	if ((stored != NULL) && (strlen(stored) != 0)) {
+		// the file was attached to the option (e.g. "--loadbin=fw.bin")
+		ret = stored;
+	}
+	else if (dev.argv_count > 0) {
+		// fall back to the first non-option token so the space-separated form
+		// ("--loadbin fw.bin") keeps working now that the option's argument is
+		// optional (getopt does not attach a space-separated value to an
+		// optional-argument long option)
+		ret = dev.nonopt_argv[0];
+	}
+	else {
+		// no file given at all: operate on the already-loaded --dev/--sys devices
+	}
+	return ret;
+}
+
+
 bool cmd_system(const char *arg) {
 	bool ret = system_set_file(&dev.system, arg);
 	if (ret) {

@@ -48,6 +48,17 @@ typedef struct {
 	// up or the flash is cancelled. Used by the UI to flash an offline device once
 	// it is powered on.
 	bool wait_forever;
+	// true if the last finished flash completed successfully. Set by load_step()
+	// so the command-line multi-device flash can report per-device success.
+	bool success;
+	// Command-line dispatch parameters captured by the cmd_* callbacks. The load
+	// dispatch task resolves them (once the non-option arguments are known) into a
+	// .uvdev / .uvsys / raw-binary / prior-system flash. *dispatch_arg* holds the
+	// option's attached argument (empty when none was given).
+	char dispatch_arg[1024];
+	bool dispatch_wfr;
+	bool dispatch_uv;
+	bool dispatch_block;
 } load_st;
 
 

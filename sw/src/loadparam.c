@@ -185,8 +185,116 @@ bool loadparam_load(const char *path) {
 }
 
 
+// Loads bundled parameters onto each system device in the index range [start,
+// end). Each device's own PARAM file (recorded when the system package was loaded)
+// is the source; a device with no bundled parameters is skipped with a warning.
+// Runs the full per-device cycle (suppress EMCY, write, store, reset) for each.
+static void loadparam_devices(uint8_t start, uint8_t end) {
+	uint8_t total = 0;
+	uint8_t ok = 0;
+	for (uint8_t i = start; i < end; i++) {
+		device_st *d = &dev.system.devs[i];
+		if (strlen(d->param_file) == 0) {
+			WARNING("Device '%s' (node 0x%x) has no bundled parameters; "
+					"skipping.\n", d->name, (unsigned int) d->nodeid);
+			continue;
+		}
+		total++;
+		printf("\nLoading parameters to node 0x%x from '%s'\n",
+				(unsigned int) d->nodeid, d->param_file);
+		fflush(stdout);
+		if (loadparam_load_device(d, d->param_file)) {
+			ok++;
+		}
+		else {
+			ERROR("Parameter loading to node 0x%x failed.\n",
+					(unsigned int) d->nodeid);
+		}
+	}
+	printf("\nLoaded parameters to %u/%u device(s).\n",
+			(unsigned int) ok, (unsigned int) total);
+}
+
+
+// Loads one or more raw parameter JSON files: *primary* plus any additional
+// non-option file arguments from the command line (skipping the token already used
+// as *primary* when it came from the non-option list itself). This is the legacy
+// --loadparam behavior, preserved now that the option's argument is optional.
+static void loadparam_run_files(const char *primary) {
+	this->current_file = 0;
+	this->dev_count = 0;
+	this->sys_load_mode = false;
+	memset(this->files, 0, sizeof(this->files));
+	uv_vector_init(&this->queries, this->queries_buffer,
+			QUERY_COUNT, sizeof(this->queries_buffer[0]));
+
+	strncpy(this->files[0], primary, sizeof(this->files[0]) - 1);
+	this->files[0][sizeof(this->files[0]) - 1] = '\0';
+
+	// append the remaining non-option file arguments. When the primary itself came
+	// from the first non-option token (no =value was attached), skip that token so
+	// it is not loaded twice.
+	unsigned int start = ((strlen(this->dispatch_arg) == 0) &&
+			(dev.argv_count > 0)) ? 1 : 0;
+	unsigned int fi = 1;
+	for (unsigned int i = start;
+			(i < dev.argv_count) && (fi < sizeof(this->files) / sizeof(this->files[0]));
+			i++) {
+		strncpy(this->files[fi], dev.nonopt_argv[i], sizeof(this->files[fi]) - 1);
+		this->files[fi][sizeof(this->files[fi]) - 1] = '\0';
+		fi++;
+	}
+
+	loadparam_step(NULL);
+}
+
+
+// Task body for the --loadparam command. Dispatches on the effective argument:
+//   - a .uvsys package: load it and push each device's bundled parameters
+//   - a .uvdev package:  warns (device packages carry no parameters)
+//   - any other path:    load it (and any extra non-option files) as raw
+//                        parameter JSON (legacy behavior)
+//   - no argument:       push bundled parameters for every --dev / --sys device
+static void loadparam_dispatch_step(void *ptr) {
+	const char *arg = cmdline_load_arg(this->dispatch_arg);
+
+	if (path_is_uvsys(arg)) {
+		uint8_t prev = dev.system.dev_count;
+		if (!system_set_file(&dev.system, arg)) {
+			ERROR("ERROR: failed to load system package '%s'.\n", arg);
+		}
+		else {
+			loadparam_devices(prev, dev.system.dev_count);
+		}
+	}
+	else if (path_is_uvdev(arg)) {
+		WARNING(".uvdev packages carry no parameters; nothing to load from "
+				"'%s'.\n", arg);
+	}
+	else if (arg != NULL) {
+		// raw parameter JSON file(s): legacy behavior
+		loadparam_run_files(arg);
+	}
+	else if (dev.system.dev_count != 0) {
+		// no file given: push bundled parameters for the loaded --dev / --sys devices
+		loadparam_devices(0, dev.system.dev_count);
+	}
+	else {
+		ERRORSTR("ERROR: no parameter file given and no devices loaded with "
+				"--sys / --dev.\n");
+	}
+}
+
+
 bool cmd_loadparam(const char *arg) {
-	return loadparam_load(arg);
+	// store the option's attached argument (may be empty); the dispatch task
+	// resolves it once the scheduler is running (see loadparam_dispatch_step)
+	strncpy(this->dispatch_arg, (arg != NULL) ? arg : "",
+			sizeof(this->dispatch_arg) - 1);
+	this->dispatch_arg[sizeof(this->dispatch_arg) - 1] = '\0';
+	add_task(loadparam_dispatch_step);
+	uv_can_set_up(false);
+	return true;
 }
 
 
@@ -1060,13 +1168,9 @@ void loadparam_step(void *ptr) {
 	this->finished = false;
 	this->success = false;
 
-	// scan for additional files given in the parameters
-	unsigned int arg_count = 0;
-	while (arg_count < dev.argv_count) {
-		// argument was given. Write the argument to the device
-		strcpy(this->files[arg_count + 1], dev.nonopt_argv[arg_count]);
-		arg_count++;
-	}
+	// NOTE: the file list (this->files) is prepared by the caller. The
+	// command-line entry (loadparam_run_files) collects the primary file and any
+	// extra non-option files; the single-device/system loaders set a single file.
 
 	uv_errors_e e = ERR_NONE;
 

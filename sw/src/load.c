@@ -196,33 +196,177 @@ bool load_flash_device(device_st *device, bool wfr) {
 }
 
 
+// Synchronously flashes the binary at *bin_path* to *nodeid* using the shared
+// load state and bootloader options, running the whole transfer in the calling
+// task (blocks until done). Returns true on a completed, successful flash. Used
+// to flash several devices in turn from the load dispatch task.
+static bool flash_bin_sync(const char *bin_path, uint8_t nodeid,
+		bool wfr, bool uv, bool block_transfer) {
+	load_configure(bin_path, wfr, uv, block_transfer);
+	// load_configure sets the node from the loaded database; override it with the
+	// explicit target node of this flash
+	this->nodeid = nodeid;
+	this->finished = false;
+	load_step(NULL);
+	return this->success;
+}
+
+
+// Extracts the FIRMWARE binary from the .uvdev package at *uvdev_path* and flashes
+// it to *nodeid* synchronously. The transfer runs while the package's temporary
+// directory is still open, so the binary is read straight from it. Returns true on
+// a successful flash; warns and returns false when the package is unreadable or
+// has no FIRMWARE entry.
+static bool flash_uvdev_sync(const char *uvdev_path, uint8_t nodeid,
+		bool wfr, bool uv, bool block_transfer) {
+	bool ret = false;
+	uvdev_st pkg;
+	if (!uvdev_open(&pkg, uvdev_path)) {
+		printf(PRINT_BOLDRED "ERROR: failed to open the device package '%s'.\n"
+				PRINT_RESET, uvdev_path);
+	}
+	else {
+		if (strlen(pkg.firmware) == 0) {
+			printf(PRINT_BOLDRED "ERROR: package '%s' has no FIRMWARE entry in "
+					"its manifest.\n" PRINT_RESET, uvdev_path);
+		}
+		else {
+			char src[1600];
+			snprintf(src, sizeof(src), "%s/%s", pkg.dir, pkg.firmware);
+			printf("Flashing firmware '%s' to node 0x%x%s\n", pkg.firmware,
+					nodeid, wfr ? " once it boots up" : "");
+			ret = flash_bin_sync(src, nodeid, wfr, uv, block_transfer);
+		}
+		uvdev_close(&pkg);
+	}
+	return ret;
+}
+
+
+// Flashes the firmware of every system device in the index range [start, end)
+// to its own node id, in turn. Devices with no configuration package are skipped
+// with a warning. Prints a per-run summary.
+static void flash_devices(uint8_t start, uint8_t end,
+		bool wfr, bool uv, bool block_transfer) {
+	uint8_t total = 0;
+	uint8_t ok = 0;
+	for (uint8_t i = start; i < end; i++) {
+		device_st *d = &dev.system.devs[i];
+		if (strlen(d->filepath) == 0) {
+			printf(PRINT_BOLDYELLOW "Skipping device '%s' (node 0x%x): no "
+					"configuration package.\n" PRINT_RESET,
+					d->name, (unsigned int) d->nodeid);
+			continue;
+		}
+		total++;
+		printf("\n=== Flashing device %u/%u: '%s' (node 0x%x) ===\n",
+				(unsigned int) (i - start + 1), (unsigned int) (end - start),
+				d->name, (unsigned int) d->nodeid);
+		if (flash_uvdev_sync(d->filepath, d->nodeid, wfr, uv, block_transfer)) {
+			ok++;
+		}
+		else {
+			printf(PRINT_BOLDRED "Flashing device '%s' (node 0x%x) failed.\n"
+					PRINT_RESET, d->name, (unsigned int) d->nodeid);
+		}
+	}
+	printf("\nFlashed %u/%u device(s) successfully.\n",
+			(unsigned int) ok, (unsigned int) total);
+}
+
+
+// Task body for the loadbin command family. Runs once the scheduler is up (so the
+// non-option arguments are resolvable) and dispatches on the effective argument:
+//   - a .uvsys package: load it and flash every device it adds
+//   - a .uvdev package:  flash its FIRMWARE to the selected node
+//   - any other path:    flash it as a raw firmware binary (legacy behavior)
+//   - no argument:       flash every device already loaded with --dev / --sys
+static void load_dispatch_step(void *ptr) {
+	const char *arg = cmdline_load_arg(this->dispatch_arg);
+	bool wfr = this->dispatch_wfr;
+	bool uv = this->dispatch_uv;
+	bool block = this->dispatch_block;
+
+	if (path_is_uvsys(arg)) {
+		uint8_t prev = dev.system.dev_count;
+		if (!system_set_file(&dev.system, arg)) {
+			printf(PRINT_BOLDRED "ERROR: failed to load system package '%s'.\n"
+					PRINT_RESET, arg);
+		}
+		else {
+			flash_devices(prev, dev.system.dev_count, wfr, uv, block);
+		}
+	}
+	else if (path_is_uvdev(arg)) {
+		uint8_t prev = dev.system.dev_count;
+		// use the node id forced with --nodeid when given (0 -> the package's own)
+		if (!system_add_device(&dev.system, arg, db_get_nodeid(&dev.db))) {
+			printf(PRINT_BOLDRED "ERROR: failed to add device package '%s'.\n"
+					PRINT_RESET, arg);
+		}
+		else {
+			flash_devices(prev, dev.system.dev_count, wfr, uv, block);
+		}
+	}
+	else if (arg != NULL) {
+		// raw firmware binary: flash to the node from --nodeid / --db (legacy)
+		printf("Firmware %s selected\n", arg);
+		flash_bin_sync(arg, db_get_nodeid(&dev.db), wfr, uv, block);
+	}
+	else if (dev.system.dev_count != 0) {
+		// no file given: flash the devices already loaded with --dev / --sys
+		flash_devices(0, dev.system.dev_count, wfr, uv, block);
+	}
+	else {
+		printf(PRINT_BOLDRED "ERROR: no firmware given. Provide a firmware binary, "
+				"a .uvdev / .uvsys package, or load devices with --dev / --sys "
+				"first.\n" PRINT_RESET);
+	}
+}
+
+
+// Common entry for the loadbin command variants: captures the dispatch parameters
+// and registers the dispatch task.
+static bool load_dispatch(const char *arg, bool wfr, bool uv, bool block_transfer) {
+	strncpy(this->dispatch_arg, (arg != NULL) ? arg : "",
+			sizeof(this->dispatch_arg) - 1);
+	this->dispatch_arg[sizeof(this->dispatch_arg) - 1] = '\0';
+	this->dispatch_wfr = wfr;
+	this->dispatch_uv = uv;
+	this->dispatch_block = block_transfer;
+	add_task(load_dispatch_step);
+	uv_can_set_up(false);
+	return true;
+}
+
+
 bool cmd_load(const char *arg) {
-	return load_firmware(arg, false, false, true);
+	return load_dispatch(arg, false, false, true);
 }
 
 
 bool cmd_loadwfr(const char *arg) {
-	return load_firmware(arg, true, false, true);
+	return load_dispatch(arg, true, false, true);
 }
 
 
 bool cmd_segload(const char *arg) {
-	return load_firmware(arg, false, false, false);
+	return load_dispatch(arg, false, false, false);
 }
 
 
 bool cmd_segloadwfr(const char *arg) {
-	return load_firmware(arg, true, false, false);
+	return load_dispatch(arg, true, false, false);
 }
 
 
 bool cmd_uvload(const char *arg) {
-	return load_firmware(arg, false, true, true);
+	return load_dispatch(arg, false, true, true);
 }
 
 
 bool cmd_uvloadwfr(const char *arg) {
-	return load_firmware(arg, true, true, true);
+	return load_dispatch(arg, true, true, true);
 }
 
 
@@ -243,6 +387,7 @@ static void can_callb(void * ptr, uv_can_msg_st *msg) {
 
 void load_step(void *ptr) {
 	this->finished = false;
+	this->success = false;
 	this->progress = 0;
 
 	FILE *fptr = fopen(this->firmware, "rb");
@@ -466,6 +611,7 @@ void load_step(void *ptr) {
 			printf("Binary file closed.\n");
 			fflush(stdout);
 		}
+		this->success = success;
 	}
 
 	this->finished = true;

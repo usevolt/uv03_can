@@ -123,50 +123,63 @@ commands_st commands[] = {
 				.cmd_long = "loadbin",
 				.cmd_short = 'L',
 				.str = "Loads firmware to UV device with a CANopen 302 compatible bootloader. "
-						"The device node id should be selected with 'node' option prior to this command.",
-				.args = ARG_REQUIRE,
+						"The argument may be a raw firmware binary (the device node id is then "
+						"selected with the 'node' option), a .uvdev package (its FIRMWARE binary is "
+						"flashed), or a .uvsys package (every device inside is flashed). If the "
+						"argument is omitted, the devices loaded earlier with --dev / --sys are flashed.",
+				.args = ARG_OPTIONAL,
 				.callback = &cmd_load
 		},
 		{
 				.cmd_long = "loadbinwfr",
 				.str = "Loads firmware to UV device with a CANopen 302 compatible bootloader"
-						" by waiting for NMT boot up message."
+						" by waiting for NMT boot up message. "
+						"Accepts a raw binary, a .uvdev or .uvsys package, or no argument to flash "
+						"the devices loaded earlier with --dev / --sys. "
 						"The device node id should be selected with 'node' option prior to this command.",
-				.args = ARG_REQUIRE,
+				.args = ARG_OPTIONAL,
 				.callback = &cmd_loadwfr
 		},
 		{
 				.cmd_long = "segloadbin",
 				.str = "Loads firmware to UV device with a CANopen 302 compatible bootloader. "
+						"Accepts a raw binary, a .uvdev or .uvsys package, or no argument to flash "
+						"the devices loaded earlier with --dev / --sys. "
 						"The device node id should be selected with 'node' option prior to this command. "
 						"Uses the SDO segmented transfer to load the binary. Note that this is more "
 						"unsafe method compared to \"loadbin\".",
-				.args = ARG_REQUIRE,
+				.args = ARG_OPTIONAL,
 				.callback = &cmd_segload
 		},
 		{
 				.cmd_long = "segloadbinwfr",
 				.str = "Loads firmware to UV device with a CANopen 302 compatible bootloader"
-						" by waiting for NMT boot up message."
+						" by waiting for NMT boot up message. "
+						"Accepts a raw binary, a .uvdev or .uvsys package, or no argument to flash "
+						"the devices loaded earlier with --dev / --sys. "
 						"The device node id should be selected with 'node' option prior to this command. "
 						"Uses the SDO segmented transfer to load the binary. Note that this is more "
 						"unsafe method compared to \"loadbinwfr\".",
-				.args = ARG_REQUIRE,
+				.args = ARG_OPTIONAL,
 				.callback = &cmd_segloadwfr
 		},
 		{
 				.cmd_long = "uvloadbin",
 				.str = "Loads firmware to UV device with an UV compatible bootloader. "
+						"Accepts a raw binary, a .uvdev or .uvsys package, or no argument to flash "
+						"the devices loaded earlier with --dev / --sys. "
 						"The device node id should be selected with 'node' option prior to this command.",
-				.args = ARG_REQUIRE,
+				.args = ARG_OPTIONAL,
 				.callback = &cmd_uvload
 		},
 		{
 				.cmd_long = "uvloadbinwfr",
 				.str = "Loads firmware to UV device with an UV compatible bootloader "
-						"by waiting for NMT boot up message."
+						"by waiting for NMT boot up message. "
+						"Accepts a raw binary, a .uvdev or .uvsys package, or no argument to flash "
+						"the devices loaded earlier with --dev / --sys. "
 						"The device node id should be selected with 'node' option prior to this command.",
-				.args = ARG_REQUIRE,
+				.args = ARG_OPTIONAL,
 				.callback = &cmd_uvloadwfr
 		},
 		{
@@ -242,10 +255,13 @@ commands_st commands[] = {
 		},
 		{
 				.cmd_long = "loadmedia",
-				.str = "Loads a media file with UV media download protocol. The media file is given as an\n"
-						"argument to this command. If a directory is given, all recognized media files will\n"
-						"be loaded from that directory. Recursive loading from subdirectories is not supported.",
-				.args = ARG_REQUIRE,
+				.str = "Loads media with the UV media download protocol. The argument may be a media\n"
+						"file, a directory of media files (all recognized files in it are loaded;\n"
+						"subdirectories are not), a .uvdev package (its bundled media is loaded), or a\n"
+						".uvsys package (each device's bundled media is loaded). If the argument is\n"
+						"omitted, the bundled media of the devices loaded earlier with --dev / --sys is\n"
+						"loaded. Devices whose package bundles no media are reported with a warning.",
+				.args = ARG_OPTIONAL,
 				.callback = &cmd_loadmedia
 		},
 		{
@@ -298,8 +314,12 @@ commands_st commands[] = {
 		},
 		{
 				.cmd_long = "loadparam",
-				.str = "Writes parameters to a UVCan device from the given file.",
-				.args = ARG_REQUIRE,
+				.str = "Writes parameters to UVCan device(s). The argument may be a parameter file, or\n"
+						"a .uvsys package (each device's bundled parameters are written to it). If the\n"
+						"argument is omitted, the bundled parameters of the devices loaded earlier with\n"
+						"--sys / --dev are written. .uvdev packages are not accepted (they carry no\n"
+						"parameters).",
+				.args = ARG_OPTIONAL,
 				.callback = &cmd_loadparam
 		},
 		{

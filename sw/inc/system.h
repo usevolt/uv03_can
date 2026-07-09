@@ -225,4 +225,31 @@ bool cmd_system(const char *arg);
 bool cmd_device(const char *arg);
 
 
+/// @brief: Returns true when *path* ends (case-insensitively) with *suffix*.
+/// Both NULL-safe (returns false when either is NULL).
+bool path_ends_with(const char *path, const char *suffix);
+
+/// @brief: True when *path* names a .uvdev device package.
+static inline bool path_is_uvdev(const char *path) {
+	return path_ends_with(path, ".uvdev");
+}
+
+/// @brief: True when *path* names a .uvsys system package.
+static inline bool path_is_uvsys(const char *path) {
+	return path_ends_with(path, ".uvsys");
+}
+
+/// @brief: Resolves the effective file argument for the optional-argument load
+/// commands (--loadbin / --loadmedia / --loadparam). *stored* is the argument
+/// attached to the option (an empty string when the option was given no =value).
+/// When *stored* is empty this falls back to the first non-option token on the
+/// command line, so the historical space-separated form (e.g. "--loadbin fw.bin")
+/// keeps working. Returns NULL when no file was given at all, meaning the command
+/// should operate on the devices already loaded with --dev / --sys.
+///
+/// Must be called once the scheduler is running (i.e. from a task), since the
+/// non-option arguments are only known after the option parsing loop finishes.
+const char *cmdline_load_arg(const char *stored);
+
+
 #endif /* SYSTEM_H_ */

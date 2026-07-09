@@ -45,6 +45,12 @@ typedef struct {
 	char files[64][256];
 	unsigned int current_file;
 
+	// The --loadparam option's attached argument (empty when none was given).
+	// Captured by cmd_loadparam; the dispatch task resolves it (against the
+	// non-option arguments and the loaded system) into a .uvsys / prior-system
+	// parameter load or a raw parameter-file load.
+	char dispatch_arg[1024];
+
 	query_st queries_buffer[QUERY_COUNT];
 	uv_vector_st queries;
 
