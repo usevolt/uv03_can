@@ -22,6 +22,8 @@
 #include <errno.h>
 #include <string.h>
 #include <stdbool.h>
+// Windows shim: provides pipe() (via mingw's _pipe); no-op on Linux.
+#include "uv_win_compat.h"
 
 
 // Write end of the stdin pipe when uv_stdin_use_pipe() is active, else -1.

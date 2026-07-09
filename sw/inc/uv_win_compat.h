@@ -39,6 +39,16 @@ char *uv_win_dirname(char *path);
 #define realpath(path, resolved)	_fullpath((resolved), (path), PATH_MAX)
 
 
+/* --- pipe() ------------------------------------------------------------
+ * mingw exposes the POSIX pipe as _pipe(fds, size, textmode). Wrap it so
+ * uvstdin's GUI input-feed pipe builds; binary mode keeps the byte stream
+ * untranslated. read()/write()/close()/dup2()/STDIN_FILENO already come from
+ * mingw's <io.h>/<unistd.h>. */
+#include <io.h>
+#include <fcntl.h>
+#define pipe(fds)	_pipe((fds), 4096, _O_BINARY)
+
+
 /* --- GNU readline ------------------------------------------------------
  * Prints prompt, reads one line from stdin into a malloc'd, newline-stripped
  * buffer (caller frees). Returns NULL on EOF. Tab-completion is unsupported. */
