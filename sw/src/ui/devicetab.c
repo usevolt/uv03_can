@@ -36,6 +36,8 @@
 #include "uvui.h"
 #include "simrun.h"
 #include "terminaltab.h"
+#include "credentials.h"
+#include "ui/uv_uitextedit.h"
 
 
 // Color for the revision-mismatch warning and the mismatched revision numbers.
@@ -298,6 +300,14 @@ static struct {
 	char sim_node_strs[SYSTEM_DEV_MAX_COUNT][16];
 	uv_uibutton_st sim_log_btns[SYSTEM_DEV_MAX_COUNT];
 	uv_uibutton_st sim_kill_btns[SYSTEM_DEV_MAX_COUNT];
+
+	// "Account" panel on the system tab: a username and a password field whose
+	// values are stored on this computer and shared by every uvcan install (see
+	// credentials.c). Edits are saved back in devicetab_step().
+	uv_uiframewindow_st account_frame;
+	uv_uiobject_st *account_frame_buf[4];
+	uv_uitextedit_st account_user;
+	uv_uitextedit_st account_pass;
 } content;
 
 
@@ -314,6 +324,15 @@ static device_st *current_device;
 // True while the system overview tab is the one currently shown. Used by
 // devicetab_step() to poll the right file picker.
 static bool showing_system;
+
+// Text buffers backing the "Account" panel's username / password fields. They must
+// outlive the frequent tab rebuilds (the textedits read/write them in place), so
+// they are file-scope rather than part of *content*. Seeded once from the stored
+// credentials the first time the system tab is built; edits are saved back to the
+// shared file in devicetab_step().
+static char account_user_buf[CREDENTIALS_MAX];
+static char account_pass_buf[CREDENTIALS_MAX];
+static bool account_seeded;
 
 // The two sub-tabs of a device tab.
 typedef enum {
@@ -479,18 +498,24 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	current_device = NULL;
 	showing_system = true;
 
-	// The system tab is laid out as framed panels. On Linux it splits into a
-	// "System configuration" panel on top and a "Simulator" panel below; on other
-	// targets the simulators are unavailable, so the configuration panel fills the
-	// whole tab.
+	// The system tab is laid out as framed panels stacked top to bottom: a "System
+	// configuration" panel on top, a "Simulator" panel in the middle (Linux only -
+	// simulators are unavailable on other targets) and an "Account" panel pinned to
+	// the bottom on every target.
 	int16_t frame_x = MARGIN;
 	int16_t frame_w = cbb.w - 2 * MARGIN;
+	// the Account panel: its title bar plus one row of field + field-title below
+	int16_t account_frame_h = 2 * BUTTON_H + MARGIN + TITLE_H;
+	int16_t account_frame_y = cbb.h - MARGIN - account_frame_h;
 #if !CONFIG_TARGET_WIN
 	// the configuration panel needs room for the double-height source row plus the
-	// save/load row; the simulator panel takes whatever is left below it
+	// save/load row; the simulator panel takes whatever is left between it and the
+	// account panel
 	int16_t sys_frame_h = 4 * BUTTON_H + 2 * MARGIN;
 #else
-	int16_t sys_frame_h = cbb.h - 2 * MARGIN;
+	// no simulator panel on Windows: the configuration panel fills everything above
+	// the account panel
+	int16_t sys_frame_h = account_frame_y - 2 * MARGIN;
 #endif
 
 	// --- "System configuration" panel: load / search / save / load-to-devices ---
@@ -581,7 +606,8 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 #if !CONFIG_TARGET_WIN
 	// --- "Simulator" panel (Linux only): run-simulator button + running list ---
 	int16_t sim_frame_y = MARGIN + sys_frame_h + MARGIN;
-	int16_t sim_frame_h = cbb.h - sim_frame_y - MARGIN;
+	// leave room for the account panel below (and a margin between the two)
+	int16_t sim_frame_h = account_frame_y - MARGIN - sim_frame_y;
 	uv_uiframewindow_init(&content.sim_frame, content.sim_frame_buf, style);
 	uv_uiframewindow_set_title(&content.sim_frame, "Simulator");
 	uv_uitabwindow_addxy(tabwin, &content.sim_frame, frame_x, sim_frame_y,
@@ -685,6 +711,44 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 		}
 	}
 #endif
+
+	// --- "Account" panel (all targets): username + password stored on this
+	// computer and shared by every uvcan install. Seed the fields once from the
+	// stored values (later rebuilds keep whatever is in the buffers, including
+	// unsaved edits); edits are saved back to the shared file in devicetab_step().
+	if (!account_seeded) {
+		strncpy(account_user_buf, credentials_get_username(),
+				sizeof(account_user_buf) - 1);
+		account_user_buf[sizeof(account_user_buf) - 1] = '\0';
+		strncpy(account_pass_buf, credentials_get_password(),
+				sizeof(account_pass_buf) - 1);
+		account_pass_buf[sizeof(account_pass_buf) - 1] = '\0';
+		account_seeded = true;
+	}
+
+	uv_uiframewindow_init(&content.account_frame, content.account_frame_buf, style);
+	uv_uiframewindow_set_title(&content.account_frame, "Account");
+	uv_uitabwindow_addxy(tabwin, &content.account_frame, frame_x, account_frame_y,
+			frame_w, account_frame_h);
+	uv_bounding_box_st ac = uv_uiframewindow_get_content_bb(&content.account_frame);
+
+	// two fields side by side, each drawing its title ("Username" / "Password")
+	// below the field
+	int16_t acc_gap = MARGIN;
+	int16_t acc_field_w = (ac.w - acc_gap) / 2;
+	uv_uitextedit_init(&content.account_user, account_user_buf,
+			sizeof(account_user_buf), UITEXTEDIT_FLAG_ONELINE, style);
+	uv_uitextedit_set_title(&content.account_user, "Username");
+	uv_uitextedit_set_align(&content.account_user, ALIGN_CENTER_LEFT);
+	uv_uiframewindow_addxy(&content.account_frame, &content.account_user,
+			0, 0, acc_field_w, ac.h);
+
+	uv_uitextedit_init(&content.account_pass, account_pass_buf,
+			sizeof(account_pass_buf), UITEXTEDIT_FLAG_ONELINE, style);
+	uv_uitextedit_set_title(&content.account_pass, "Password");
+	uv_uitextedit_set_align(&content.account_pass, ALIGN_CENTER_LEFT);
+	uv_uiframewindow_addxy(&content.account_frame, &content.account_pass,
+			acc_field_w + acc_gap, 0, acc_field_w, ac.h);
 }
 
 
@@ -1099,6 +1163,22 @@ bool devicetab_step(void) {
 	// so their processes are cleaned up and the running list stays accurate
 	simrun_step();
 	bool sims_changed = simrun_poll_changed();
+
+	// persist the Account fields whenever the user commits an edit (Enter or click
+	// away). Polled here - before the busy early-return - so it works on every tab
+	// state; the fields exist only while the system tab is built. Editing them is
+	// equivalent to running with --user / --pwd.
+	if (showing_system) {
+		if (uv_uitextedit_value_changed(&content.account_user)) {
+			credentials_set_username(
+					uv_uitextedit_get_text(&content.account_user));
+		}
+		if (uv_uitextedit_value_changed(&content.account_pass)) {
+			credentials_set_password(
+					uv_uitextedit_get_text(&content.account_pass));
+		}
+	}
+
 	if (busy) {
 		// while an async operation runs all input is ignored and the frames stay
 		// disabled; rebuild once it finishes

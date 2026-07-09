@@ -33,6 +33,7 @@
 #include "sdo.h"
 #include "system.h"
 #include "simrun.h"
+#include "credentials.h"
 #include "ui/uvui.h"
 #include <uv_ui.h>
 #include <uv_rtos.h>
@@ -48,6 +49,8 @@ bool cmd_incdest(const char *arg);
 bool cmd_silent(const char *arg);
 bool cmd_ui(const char *arg);
 bool cmd_sim(const char *arg);
+bool cmd_user(const char *arg);
+bool cmd_pwd(const char *arg);
 
 commands_st commands[] = {
 		{
@@ -336,6 +339,24 @@ commands_st commands[] = {
 				.callback = &cmd_saveparamall
 		},
 		{
+				.cmd_long = "user",
+				.str = "Sets the account username stored on this computer and shared by every "
+						"uvcan install (the same value shown in the UI's Account panel). It is "
+						"saved in plain text and reused by later runs when --user is not given. "
+						"Equivalent to typing the username in the UI Account panel.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_user
+		},
+		{
+				.cmd_long = "pwd",
+				.str = "Sets the account password stored on this computer and shared by every "
+						"uvcan install (the same value shown in the UI's Account panel). It is "
+						"saved in plain text and reused by later runs when --pwd is not given. "
+						"Equivalent to typing the password in the UI Account panel.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_pwd
+		},
+		{
 				.cmd_long = "silent",
 				.cmd_short = 's',
 				.str = "Excecutes uvcan silent, without logging process information",
@@ -414,6 +435,23 @@ bool cmd_incdest(const char *arg) {
 bool silent = true;
 bool cmd_silent(const char *arg) {
 	silent = false;
+
+	return true;
+}
+
+bool cmd_user(const char *arg) {
+	// store (and persist) the shared account username, exactly as editing the
+	// Username field in the UI Account panel does
+	credentials_set_username(arg);
+	PRINT("Account username set to '%s'\n", arg);
+
+	return true;
+}
+
+bool cmd_pwd(const char *arg) {
+	// store (and persist) the shared account password. Do not echo it back
+	credentials_set_password(arg);
+	PRINT("Account password set\n");
 
 	return true;
 }

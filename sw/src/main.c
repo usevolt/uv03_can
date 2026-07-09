@@ -18,6 +18,7 @@
 #include "main.h"
 #include "help.h"
 #include "commands.h"
+#include "credentials.h"
 #include "simrun.h"
 
 
@@ -152,6 +153,10 @@ int main(int argc, char *argv[]) {
 
 	// kill any device simulators we launch (and remove their temp dirs) on exit
 	simrun_init();
+
+	// load the stored account credentials before parsing options, so --user / --pwd
+	// (and the UI's Account panel) start from the current values and override them
+	credentials_init();
 
 	struct option opts[50] = {};
 	char optstr[512] = "";
