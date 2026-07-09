@@ -38,6 +38,7 @@
 // and updated (and persisted) by credentials_set_*().
 static char cred_username[CREDENTIALS_MAX];
 static char cred_password[CREDENTIALS_MAX];
+static char cred_url[CREDENTIALS_MAX];
 
 
 // Creates *path* and any missing parent directories (best effort, like mkdir -p).
@@ -107,6 +108,7 @@ static bool cred_write_file(void) {
 		if (f != NULL) {
 			fprintf(f, "username=%s\n", cred_username);
 			fprintf(f, "password=%s\n", cred_password);
+			fprintf(f, "url=%s\n", cred_url);
 			fclose(f);
 			ret = true;
 		}
@@ -138,6 +140,7 @@ static void cred_parse_value(const char *line, char *out, size_t out_len) {
 void credentials_init(void) {
 	cred_username[0] = '\0';
 	cred_password[0] = '\0';
+	cred_url[0] = '\0';
 	char path[1024];
 	if (cred_path(path, sizeof(path))) {
 		FILE *f = fopen(path, "r");
@@ -149,6 +152,9 @@ void credentials_init(void) {
 				}
 				else if (strncmp(line, "password=", 9) == 0) {
 					cred_parse_value(line, cred_password, sizeof(cred_password));
+				}
+				else if (strncmp(line, "url=", 4) == 0) {
+					cred_parse_value(line, cred_url, sizeof(cred_url));
 				}
 				else {
 					// unknown key: ignore
@@ -182,5 +188,17 @@ void credentials_set_password(const char *password) {
 	strncpy(cred_password, (password != NULL) ? password : "",
 			sizeof(cred_password) - 1);
 	cred_password[sizeof(cred_password) - 1] = '\0';
+	cred_write_file();
+}
+
+
+const char *credentials_get_url(void) {
+	return cred_url;
+}
+
+
+void credentials_set_url(const char *url) {
+	strncpy(cred_url, (url != NULL) ? url : "", sizeof(cred_url) - 1);
+	cred_url[sizeof(cred_url) - 1] = '\0';
 	cred_write_file();
 }

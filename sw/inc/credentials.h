@@ -45,16 +45,21 @@
 void credentials_init(void);
 
 
-/// @brief: The current in-memory username / password. Never NULL; "" when unset.
+/// @brief: The current in-memory username / password / server URL. Never NULL;
+/// "" when unset. The URL is the base address of the Usevolt file server the UI's
+/// "Server files" browser connects to (e.g. "https://files.usevolt.fi").
 const char *credentials_get_username(void);
 const char *credentials_get_password(void);
+const char *credentials_get_url(void);
 
 
-/// @brief: Sets the username / password and persists it to the shared file. Used by
-/// both the UI "Account" panel and the --user / --pwd command-line options, so the
-/// two are equivalent. A NULL argument is treated as an empty string.
+/// @brief: Sets the username / password / server URL and persists it to the shared
+/// file. Used by both the UI (the system tab's Account panel and URL field) and the
+/// --user / --pwd command-line options, so the two are equivalent. A NULL argument
+/// is treated as an empty string.
 void credentials_set_username(const char *username);
 void credentials_set_password(const char *password);
+void credentials_set_url(const char *url);
 
 
 #endif /* CREDENTIALS_H_ */

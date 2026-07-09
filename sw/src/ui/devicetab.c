@@ -38,6 +38,7 @@
 #include "terminaltab.h"
 #include "credentials.h"
 #include "ui/uv_uitextedit.h"
+#include "ui/serverfiles_win.h"
 
 
 // Color for the revision-mismatch warning and the mismatched revision numbers.
@@ -220,6 +221,10 @@ static struct {
 	// device-file picker, shown only on a device tab
 	uv_uifileedit_st fileedit;
 	char fileedit_path[1024];
+	// "Server files" button, to the right of the device-file picker: opens the
+	// Usevolt file-server browser (needs the account credentials + URL set on the
+	// system tab)
+	uv_uibutton_st serverfiles_btn;
 
 	// right-panel software version and revision read from the configuration file
 	uv_uilabel_st conf_sw;
@@ -305,7 +310,8 @@ static struct {
 	// values are stored on this computer and shared by every uvcan install (see
 	// credentials.c). Edits are saved back in devicetab_step().
 	uv_uiframewindow_st account_frame;
-	uv_uiobject_st *account_frame_buf[4];
+	uv_uiobject_st *account_frame_buf[6];
+	uv_uitextedit_st account_url;
 	uv_uitextedit_st account_user;
 	uv_uitextedit_st account_pass;
 } content;
@@ -330,6 +336,7 @@ static bool showing_system;
 // they are file-scope rather than part of *content*. Seeded once from the stored
 // credentials the first time the system tab is built; edits are saved back to the
 // shared file in devicetab_step().
+static char account_url_buf[CREDENTIALS_MAX];
 static char account_user_buf[CREDENTIALS_MAX];
 static char account_pass_buf[CREDENTIALS_MAX];
 static bool account_seeded;
@@ -504,8 +511,9 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	// the bottom on every target.
 	int16_t frame_x = MARGIN;
 	int16_t frame_w = cbb.w - 2 * MARGIN;
-	// the Account panel: its title bar plus one row of field + field-title below
-	int16_t account_frame_h = 2 * BUTTON_H + MARGIN + TITLE_H;
+	// the Account panel: its title bar plus two rows (URL; then Username/Password),
+	// each row a field with its title below it
+	int16_t account_frame_h = 4 * BUTTON_H + 2 * MARGIN + TITLE_H;
 	int16_t account_frame_y = cbb.h - MARGIN - account_frame_h;
 #if !CONFIG_TARGET_WIN
 	// the configuration panel needs room for the double-height source row plus the
@@ -712,11 +720,14 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	}
 #endif
 
-	// --- "Account" panel (all targets): username + password stored on this
-	// computer and shared by every uvcan install. Seed the fields once from the
+	// --- "Account" panel (all targets): server URL + username + password stored on
+	// this computer and shared by every uvcan install. Seed the fields once from the
 	// stored values (later rebuilds keep whatever is in the buffers, including
 	// unsaved edits); edits are saved back to the shared file in devicetab_step().
 	if (!account_seeded) {
+		strncpy(account_url_buf, credentials_get_url(),
+				sizeof(account_url_buf) - 1);
+		account_url_buf[sizeof(account_url_buf) - 1] = '\0';
 		strncpy(account_user_buf, credentials_get_username(),
 				sizeof(account_user_buf) - 1);
 		account_user_buf[sizeof(account_user_buf) - 1] = '\0';
@@ -732,16 +743,26 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 			frame_w, account_frame_h);
 	uv_bounding_box_st ac = uv_uiframewindow_get_content_bb(&content.account_frame);
 
-	// two fields side by side, each drawing its title ("Username" / "Password")
-	// below the field
+	// two rows: the server URL fills the top row; Username and Password share the
+	// bottom row. Each field draws its title below itself.
 	int16_t acc_gap = MARGIN;
+	int16_t acc_row_h = (ac.h - MARGIN) / 2;
 	int16_t acc_field_w = (ac.w - acc_gap) / 2;
+
+	uv_uitextedit_init(&content.account_url, account_url_buf,
+			sizeof(account_url_buf), UITEXTEDIT_FLAG_ONELINE, style);
+	uv_uitextedit_set_title(&content.account_url, "URL");
+	uv_uitextedit_set_align(&content.account_url, ALIGN_CENTER_LEFT);
+	uv_uiframewindow_addxy(&content.account_frame, &content.account_url,
+			0, 0, ac.w, acc_row_h);
+
+	int16_t acc_row2_y = acc_row_h + MARGIN;
 	uv_uitextedit_init(&content.account_user, account_user_buf,
 			sizeof(account_user_buf), UITEXTEDIT_FLAG_ONELINE, style);
 	uv_uitextedit_set_title(&content.account_user, "Username");
 	uv_uitextedit_set_align(&content.account_user, ALIGN_CENTER_LEFT);
 	uv_uiframewindow_addxy(&content.account_frame, &content.account_user,
-			0, 0, acc_field_w, ac.h);
+			0, acc_row2_y, acc_field_w, acc_row_h);
 
 	uv_uitextedit_init(&content.account_pass, account_pass_buf,
 			sizeof(account_pass_buf),
@@ -749,7 +770,7 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	uv_uitextedit_set_title(&content.account_pass, "Password");
 	uv_uitextedit_set_align(&content.account_pass, ALIGN_CENTER_LEFT);
 	uv_uiframewindow_addxy(&content.account_frame, &content.account_pass,
-			acc_field_w + acc_gap, 0, acc_field_w, ac.h);
+			acc_field_w + acc_gap, acc_row2_y, acc_field_w, acc_row_h);
 }
 
 
@@ -954,8 +975,15 @@ static void build_device_view(uv_uitabwindow_st *tabwin, device_st *device) {
 		uv_uifileedit_set_title(&content.fileedit, "Device configuration file");
 		uv_uifileedit_set_filters(&content.fileedit, DEVICE_FILE_FILTERS,
 				sizeof(DEVICE_FILE_FILTERS) / sizeof(DEVICE_FILE_FILTERS[0]));
+		// the file picker takes 3/4 of the width; the "Server files" button takes
+		// the remaining 1/4 on the right
+		int16_t sf_btn_w = rc.w / 4;
+		int16_t fe_w = rc.w - sf_btn_w - MARGIN;
 		uv_uiframewindow_addxy(&content.right_frame, &content.fileedit,
-				0, ry, rc.w, FILEEDIT_H);
+				0, ry, fe_w, FILEEDIT_H);
+		uv_uibutton_init(&content.serverfiles_btn, "Server files", style);
+		uv_uiframewindow_addxy(&content.right_frame, &content.serverfiles_btn,
+				fe_w + MARGIN, ry, sf_btn_w, FILEEDIT_H);
 		// the per-device picker stays enabled even when the system was loaded from
 		// a .uvsys file: picking a new .uvdev simply overrides the file for this
 		// device (handled in devicetab_step()).
@@ -1170,6 +1198,9 @@ bool devicetab_step(void) {
 	// state; the fields exist only while the system tab is built. Editing them is
 	// equivalent to running with --user / --pwd.
 	if (showing_system) {
+		if (uv_uitextedit_value_changed(&content.account_url)) {
+			credentials_set_url(uv_uitextedit_get_text(&content.account_url));
+		}
 		if (uv_uitextedit_value_changed(&content.account_user)) {
 			credentials_set_username(
 					uv_uitextedit_get_text(&content.account_user));
@@ -1514,10 +1545,27 @@ bool devicetab_step(void) {
 #endif
 	}
 	else if (current_device != NULL) {
+		// "Server files": open the Usevolt file-server browser. Needs the account
+		// username, password and server URL set in the Account panel on the system
+		// tab; if any is missing, tell the user to set them there.
+		if (uv_uibutton_clicked(&content.serverfiles_btn)) {
+			if ((strlen(credentials_get_username()) == 0) ||
+					(strlen(credentials_get_password()) == 0) ||
+					(strlen(credentials_get_url()) == 0)) {
+				uv_uiacceptdialog_st dialog = { };
+				uv_uiacceptdialog_exec(&dialog,
+						"Set the server URL, username and password in the Account "
+						"panel on the System tab first.", "OK", "OK",
+						&uv_uistyles[0]);
+			}
+			else {
+				serverfiles_win_exec(&uv_uistyles[0]);
+			}
+		}
 		// "Flash firmware": confirm, then flash the package's firmware to the
 		// device. The flash runs asynchronously; the frames are disabled until it
 		// finishes (handled above and in devicetab_show_device).
-		if (uv_uibutton_clicked(&content.flash_btn)) {
+		else if (uv_uibutton_clicked(&content.flash_btn)) {
 			// A device with no configuration package flashes a .uvdev the user
 			// picks here (that package is then kept as the device's config file); a
 			// configured device flashes its own package. An offline device is
