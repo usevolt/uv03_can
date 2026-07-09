@@ -744,7 +744,8 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 			0, 0, acc_field_w, ac.h);
 
 	uv_uitextedit_init(&content.account_pass, account_pass_buf,
-			sizeof(account_pass_buf), UITEXTEDIT_FLAG_ONELINE, style);
+			sizeof(account_pass_buf),
+			UITEXTEDIT_FLAG_ONELINE | UITEXTEDIT_FLAG_PASSWORD, style);
 	uv_uitextedit_set_title(&content.account_pass, "Password");
 	uv_uitextedit_set_align(&content.account_pass, ALIGN_CENTER_LEFT);
 	uv_uiframewindow_addxy(&content.account_frame, &content.account_pass,
