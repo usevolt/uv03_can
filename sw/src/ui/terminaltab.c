@@ -30,6 +30,7 @@
 #include "ui/uv_uilabel.h"
 #include "ui/uv_uitextedit.h"
 #include "main.h"
+#include "system.h"
 #include "find.h"
 
 
@@ -73,10 +74,33 @@ static bool responded = true;
 static bool inited;
 
 
+// --- per-device receive sessions -------------------------------------------
+
+// One received-text history per device (keyed by node id), so switching between
+// device terminals keeps each device's own output instead of sharing a single
+// buffer. Slots are allocated on first use.
+typedef struct {
+	// Node id this session belongs to; only meaningful while *used* is set.
+	uint8_t nodeid;
+	bool used;
+	// Accumulated received text shown in the scrollable window.
+	char rx_text[RX_TEXT_MAX];
+	// True while the view follows the newest text (the live tail). Cleared when
+	// the user scrolls back with the mouse wheel and re-set once they scroll to
+	// the bottom again, so incoming text does not yank the view away from
+	// history. Kept per device so each terminal remembers its own scroll spot.
+	bool pinned_bottom;
+} term_session_st;
+
+// One session per possible device in the system.
+static term_session_st sessions[SYSTEM_DEV_MAX_COUNT];
+// The session of the device whose terminal is currently built/shown. NULL until
+// the first build.
+static term_session_st *cur_session;
+
+
 // --- receive view widgets (persist across rebuilds; re-added on each build)
 
-// Accumulated received text shown in the scrollable window.
-static char rx_text[RX_TEXT_MAX];
 static uv_uiwindow_st term_win;
 static uv_uiobject_st *term_win_buf[2];
 static uv_uilabel_st term_label;
@@ -84,12 +108,35 @@ static uv_uitextedit_st input;
 static char input_buf[INPUT_BUF_LEN];
 // True while the widgets are built into a parent window.
 static bool built;
-// True while the view follows the newest text (the live tail). Cleared when the
-// user scrolls back with the mouse wheel and re-set once they scroll to the
-// bottom again, so incoming text does not yank the view away from history.
-static bool pinned_bottom = true;
 // Receive-history lines advanced per mouse-wheel notch.
 #define SCROLL_LINES_PER_NOTCH	3
+
+
+/// @brief: Returns the receive session for *nodeid*, allocating (and clearing) a
+/// free slot the first time a device's terminal is opened.
+static term_session_st *session_for(uint8_t nodeid) {
+	term_session_st *ret = NULL;
+	term_session_st *free_slot = NULL;
+	for (uint8_t i = 0; i < SYSTEM_DEV_MAX_COUNT; i++) {
+		if (sessions[i].used && (sessions[i].nodeid == nodeid)) {
+			ret = &sessions[i];
+			break;
+		}
+		if (!sessions[i].used && (free_slot == NULL)) {
+			free_slot = &sessions[i];
+		}
+	}
+	if (ret == NULL) {
+		// no existing session: claim a free slot (or reuse the first if the
+		// system somehow holds more devices than slots)
+		ret = (free_slot != NULL) ? free_slot : &sessions[0];
+		ret->used = true;
+		ret->nodeid = nodeid;
+		ret->rx_text[0] = '\0';
+		ret->pinned_bottom = true;
+	}
+	return ret;
+}
 
 
 // --- receive path ----------------------------------------------------------
@@ -122,9 +169,10 @@ static void can_sniff(void *ptr, uv_can_message_st *msg) {
 /// oldest chunk when the buffer is full. Carriage returns are dropped so the text
 /// wraps on '\n' only.
 static void rx_text_append(char c) {
-	if (c == '\r') {
+	if ((cur_session == NULL) || (c == '\r')) {
 		return;
 	}
+	char *rx_text = cur_session->rx_text;
 	size_t len = strlen(rx_text);
 	if (len + 2 > RX_TEXT_MAX) {
 		memmove(rx_text, rx_text + RX_TEXT_DROP, len - RX_TEXT_DROP + 1);
@@ -139,14 +187,14 @@ static void rx_text_append(char c) {
 /// scrolls to the newest line, so the window shows a live tail with a scroll bar
 /// for the history.
 static void rx_relayout(void) {
-	if (!built) {
+	if (!built || (cur_session == NULL)) {
 		return;
 	}
 	uv_font_st *font = &UI_MONO_FONT;
 	int16_t win_w = uv_uibb(&term_win)->w;
 	int16_t win_h = uv_uibb(&term_win)->h;
 	int16_t inner_w = win_w - CONFIG_UI_WINDOW_SCROLLBAR_WIDTH;
-	int16_t text_h = uv_ui_get_string_height(rx_text, font);
+	int16_t text_h = uv_ui_get_string_height(cur_session->rx_text, font);
 	int16_t content_h = (text_h > win_h) ? text_h : win_h;
 
 	uv_uibb(&term_label)->w = inner_w;
@@ -157,7 +205,7 @@ static void rx_relayout(void) {
 	if (maxy < 0) {
 		maxy = 0;
 	}
-	if (pinned_bottom) {
+	if (cur_session->pinned_bottom) {
 		// follow the newest text
 		uv_uiwindow_content_move_to(&term_win, 0, maxy);
 	}
@@ -181,7 +229,7 @@ static void rx_relayout(void) {
 /// wheel up = back towards older text) and updates the pinned-to-bottom state so
 /// the live tail resumes only once the user scrolls all the way down again.
 static void rx_wheel_scroll(int16_t notches) {
-	if (!built || (notches == 0)) {
+	if (!built || (cur_session == NULL) || (notches == 0)) {
 		return;
 	}
 	int16_t line_h = uv_ui_get_string_height("A", &UI_MONO_FONT);
@@ -193,7 +241,7 @@ static void rx_wheel_scroll(int16_t notches) {
 		maxy = 0;
 	}
 	// re-pin to the live tail only when scrolled back down to the bottom
-	pinned_bottom = (-cbb.y >= maxy);
+	cur_session->pinned_bottom = (-cbb.y >= maxy);
 	uv_ui_refresh(&term_win);
 }
 
@@ -298,7 +346,6 @@ static void terminaltab_init(void) {
 	uv_ring_buffer_init(&tx_rb, tx_ringbuf,
 			sizeof(tx_ringbuf) / sizeof(tx_ringbuf[0]), sizeof(tx_ringbuf[0]));
 	responded = true;
-	rx_text[0] = '\0';
 
 	// a left-aligned, application-focused command line, monospace to match the
 	// terminal output above it
@@ -319,7 +366,20 @@ void terminaltab_build(void *parent, uint8_t nodeid) {
 	const uv_uistyle_st *style = &uv_uistyles[0];
 	terminaltab_init();
 
+	// flush any characters still queued from the previously shown device into
+	// its own history before switching the active session, so late replies do
+	// not bleed into the newly selected device's buffer
+	if (cur_session != NULL) {
+		uv_mutex_lock(&mutex);
+		char c;
+		while (uv_ring_buffer_pop(&rx_rb, &c) == ERR_NONE) {
+			rx_text_append(c);
+		}
+		uv_mutex_unlock(&mutex);
+	}
+
 	term_nodeid = nodeid;
+	cur_session = session_for(nodeid);
 
 	uv_bounding_box_st cbb = uv_uitabwindow_get_contentbb(parent);
 	int16_t win_h = cbb.h - INPUT_H - 3 * MARGIN;
@@ -333,10 +393,10 @@ void terminaltab_build(void *parent, uint8_t nodeid) {
 	uv_uitabwindow_addxy(parent, &term_win,
 			MARGIN, MARGIN, cbb.w - 2 * MARGIN, win_h);
 
-	// receive text label, re-bound to the persistent history buffer; monospace so
-	// device output (tables, hex, aligned columns) lines up
+	// receive text label, re-bound to this device's persistent history buffer;
+	// monospace so device output (tables, hex, aligned columns) lines up
 	uv_uilabel_init(&term_label, &UI_MONO_FONT, ALIGN_TOP_LEFT,
-			style->text_color, rx_text);
+			style->text_color, cur_session->rx_text);
 	uv_uiwindow_addxy(&term_win, &term_label,
 			0, 0, cbb.w - 2 * MARGIN - CONFIG_UI_WINDOW_SCROLLBAR_WIDTH, win_h);
 
@@ -345,8 +405,8 @@ void terminaltab_build(void *parent, uint8_t nodeid) {
 			MARGIN, MARGIN + win_h + MARGIN, cbb.w - 2 * MARGIN, INPUT_H);
 
 	built = true;
-	// a freshly opened terminal shows the live tail
-	pinned_bottom = true;
+	// the session keeps its own live-tail / scrolled-back state across rebuilds
+	// (a newly created one starts pinned to the tail, see session_for)
 	rx_relayout();
 }
 
