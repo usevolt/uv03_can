@@ -6,3 +6,4 @@ sw/install
 sw/src/ui/gresources.c
 sw/src/ui/gresources.h
 sw/*.zip
+prod/

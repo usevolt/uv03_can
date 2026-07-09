@@ -141,11 +141,17 @@ fi
 if [ "$DO_DEPS" -eq 1 ]; then
 	if command -v apt-get >/dev/null; then
 		say "Installing system dependencies (sudo apt-get)"
+		# libncurses-dev/pkg-config: build. zenity/zip/unzip/shared-mime-info/
+		# desktop-file-utils: installer + .uvsys handling. libglfw3/libglew2.2/
+		# libfreetype6/libreadline8: runtime shared libs the binary links against
+		# for the OpenGL UI and the interactive terminal (not pulled in otherwise).
 		sudo apt-get install -y libncurses-dev pkg-config zenity \
-			zip unzip shared-mime-info desktop-file-utils
+			zip unzip shared-mime-info desktop-file-utils \
+			libglfw3 libglew2.2 libfreetype6 libreadline8
 	else
 		warn "apt-get not found; skipping dependency install. Ensure libncurses,"
-		warn "pkg-config, zenity, zip/unzip and shared-mime-info are present."
+		warn "pkg-config, zenity, zip/unzip, shared-mime-info and the runtime libs"
+		warn "libglfw3, libglew2.2, libfreetype6 and libreadline8 are present."
 	fi
 fi
 

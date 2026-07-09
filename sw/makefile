@@ -11,6 +11,7 @@
 #   make win        # Windows cross-compile (x86_64 mingw-w64), produces ./uvcan.exe
 #   make windows    # alias for 'make win'
 #   make win-package # build win + zip a double-clickable package under release/
+#   make publish    # build linux tarball + windows zip into ../prod
 #   make clean      # remove build artifacts of both targets
 #
 ##############################################
@@ -152,7 +153,13 @@ DEPS := $(OBJECTS:.o=.d)
 PKGNAME := $(FULL_NAME)-win
 PKGDIR  := $(BUILDDIR)/$(PKGNAME)
 
-.PHONY: linux win windows win-package win-package-stage image post-build clean install uninstall
+# Production output directory (sibling of sw/, at the repo root) collecting the
+# shippable artifacts built by 'make publish': the Linux install tarball (binary
+# + install.sh + packaging/) and the double-clickable Windows package (.zip).
+PRODDIR     := ../prod
+PUBLISH_TAR := $(PRODDIR)/$(FULL_NAME)-linux.tar.gz
+
+.PHONY: linux win windows win-package win-package-stage image post-build clean install uninstall publish
 
 # Bare 'make' builds the Linux target.
 linux:
@@ -193,6 +200,29 @@ win-package-stage:
 	cp packaging/README.txt "$(PKGDIR)/"
 	cd "$(BUILDDIR)" && zip -r -q "$(PKGNAME).zip" "$(PKGNAME)"
 	@echo "Created $(PKGDIR).zip"
+
+# Builds both shippable artifacts and drops them in $(PRODDIR):
+#   * Windows package: the double-clickable .zip produced by win-package
+#   * Linux install tarball: uvcan + install.sh + packaging/ (unpack on the
+#     target Ubuntu box and run ./install.sh — see install.sh --help)
+# The linux and win builds share $(BUILDDIR) for their object files, so the two
+# OS targets cannot coexist there — we 'clean' between them (and stash the win
+# zip in prod before the second clean removes it). PKGNAME/PKGDIR/FULL_NAME are
+# OS-independent, so the paths resolve the same in either sub-make.
+publish:
+	@mkdir -p "$(PRODDIR)"
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory OS=win win-package
+	@cp "$(PKGDIR).zip" "$(PRODDIR)/"
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory OS=linux image
+	@echo ""
+	@echo "Publishing to $(PRODDIR)"
+	@rm -f "$(PUBLISH_TAR)"
+	tar czf "$(PUBLISH_TAR)" uvcan install.sh packaging
+	@echo "Created:"
+	@echo "    $(PUBLISH_TAR)"
+	@echo "    $(PRODDIR)/$(PKGNAME).zip"
 
 # Internal target that performs the actual build for the selected OS.
 image: $(BINARY)
