@@ -595,33 +595,23 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	int16_t right_x = left_w + MARGIN;
 	int16_t right_w = mc.w - left_w - MARGIN;
 
-	// whether any device that has a configuration package is live on the bus
-	// (which blocks running the simulators, as a simulator would clash with the
-	// real hardware)
-	bool any_conf_online = false;
-	for (uint8_t i = 0; i < system_get_dev_count(system); i++) {
-		device_st *d = system_get_dev(system, i);
-		if ((strlen(d->filepath) != 0) && (d->state != DEV_STATE_OFFLINE)) {
-			any_conf_online = true;
-		}
-	}
-
 	// "Run simulator": launches the Linux simulator of every configured device.
-	// Disabled when no system file is loaded, when any configured device is live
-	// on the bus, or while simulators are already running. When real devices block
-	// it, a second line explains why. Fills the left column.
+	// While the simulators are starting up / loading parameters (OP_SIMPARAM) the
+	// same button turns into a "Force stop simulator" that kills them all (handled
+	// in the busy branch of devicetab_step). Otherwise it is disabled only when no
+	// system file is loaded, when the simulators are already running, or while
+	// another system operation is busy. Devices already online no longer block it:
+	// pressing it restores those devices to defaults and loads the system
+	// parameters onto them instead of simulating them (see the click handler).
+	// Fills the left column.
 	bool sims_running = simrun_any_running();
-	if (any_conf_online && !sims_running) {
-		strcpy(content.run_sim_str,
-				"Run simulator\nDisconnect online devices to enable");
-	}
-	else {
-		strcpy(content.run_sim_str, "Run simulator");
-	}
+	bool simparam_busy = busy && (busy_op == OP_SIMPARAM);
+	strcpy(content.run_sim_str,
+			simparam_busy ? "Force stop simulator" : "Run simulator");
 	uv_uibutton_init(&content.run_sim_btn, content.run_sim_str, style);
 	uv_uiframewindow_addxy(&content.sim_frame, &content.run_sim_btn,
 			0, 0, left_w, mc.h);
-	if (!system->loaded || any_conf_online || sims_running || sys_busy) {
+	if (!simparam_busy && (!system->loaded || sims_running || sys_busy)) {
 		uv_uiobject_disable(&content.run_sim_btn);
 	}
 
@@ -1133,9 +1123,23 @@ bool devicetab_step(void) {
 			}
 		}
 		// during a simulator parameter load the system tab stays visible; rebuild
-		// it as the simulators move through Started -> Loading params -> Running
-		if ((busy_op == OP_SIMPARAM) && showing_system && sims_changed) {
-			ret = true;
+		// it as the simulators move through Started -> Loading params -> Running.
+		// The "Run simulator" button is live in this state as "Force stop
+		// simulator": clicking it kills every simulator and cancels the in-progress
+		// parameter load (simrun_kill_all sets the load's cancel flag).
+		if ((busy_op == OP_SIMPARAM) && showing_system) {
+			if (uv_uibutton_clicked(&content.run_sim_btn)) {
+				printf("Force-stopping the simulators...\n");
+				fflush(stdout);
+				simrun_kill_all();
+				ret = true;
+			}
+			else if (sims_changed) {
+				ret = true;
+			}
+			else {
+				// no state change and no click: nothing to rebuild
+			}
 		}
 		if (busy_finished()) {
 			// the single-device save/load set the log title themselves; restore it
@@ -1324,12 +1328,57 @@ bool devicetab_step(void) {
 			// sets it there, not in dev.can_channel) so the simulators connect to
 			// the same bus uvcan is monitoring
 			const char *chn = uv_can_get_dev();
+
+			// refresh the device states so we know which configured devices are
+			// actually present on the bus right now: those are not simulated (a
+			// simulator would clash with the real hardware). Instead they are
+			// restored to defaults and have the system parameters loaded onto them.
+			find_update_device_states(&dev.system);
+			uint8_t online_nodeids[SYSTEM_DEV_MAX_COUNT];
+			uint8_t online_count = 0;
+			char online_list[512];
+			int oo = 0;
+			for (uint8_t i = 0; i < system_get_dev_count(&dev.system); i++) {
+				device_st *d = system_get_dev(&dev.system, i);
+				if ((strlen(d->filepath) != 0) &&
+						(d->state != DEV_STATE_OFFLINE) &&
+						(online_count < SYSTEM_DEV_MAX_COUNT)) {
+					online_nodeids[online_count] = d->nodeid;
+					online_count++;
+					const char *dname = (strlen(d->devname) > 0) ?
+							d->devname : d->name;
+					if (oo < (int) sizeof(online_list)) {
+						oo += snprintf(online_list + oo, sizeof(online_list) - oo,
+								"    %s (node 0x%x)\n", dname,
+								(unsigned int) d->nodeid);
+					}
+				}
+			}
+
+			bool proceed = true;
+			// Some configured devices are already online: warn that they will not
+			// be simulated but restored + reloaded instead, and let the user back
+			// out.
+			if (online_count > 0) {
+				char msg[1024];
+				snprintf(msg, sizeof(msg),
+						"These configured devices are already online:\n\n%s\n"
+						"The simulator will NOT be started for them. Instead each "
+						"is restored to its system defaults and the parameters from "
+						"the system configuration file are loaded onto it. The "
+						"remaining (offline) devices are simulated as usual.\n\n"
+						"Continue?", online_list);
+				uv_uiacceptdialog_st dialog = { };
+				proceed = (uv_uiacceptdialog_exec(&dialog, msg, "Yes", "No",
+						&uv_uistyles[0]) == UIACCEPTDIALOG_RET_YES);
+			}
+
 			// On a real CAN device the simulators' frames need another node on the
 			// bus to acknowledge them; with no real device present they never reach
-			// uvcan, so the devices never come online and no parameters load. Warn
-			// (and let the user back out) before running on a non-virtual device.
-			bool proceed = true;
-			if (!simrun_can_is_virtual(chn)) {
+			// uvcan, so the devices never come online and no parameters load. When
+			// some configured device is already online it provides that
+			// acknowledgement, so this warning is only shown otherwise.
+			if (proceed && (online_count == 0) && !simrun_can_is_virtual(chn)) {
 				char msg[512];
 				snprintf(msg, sizeof(msg),
 						"The simulators will run on the real CAN device '%s'.\n\n"
@@ -1342,9 +1391,12 @@ bool devicetab_step(void) {
 				proceed = (uv_uiacceptdialog_exec(&dialog, msg, "Yes", "No",
 						&uv_uistyles[0]) == UIACCEPTDIALOG_RET_YES);
 			}
+
 			if (proceed) {
+				// starts a simulator only for the offline configured devices (online
+				// ones are skipped inside simrun_start_system)
 				uint8_t started = simrun_start_system(&dev.system, chn);
-				if (started == 0) {
+				if ((started == 0) && (online_count == 0)) {
 					uv_uiacceptdialog_st dialog = { };
 					uv_uiacceptdialog_exec(&dialog,
 							"No device simulators could be started. The devices need "
@@ -1352,11 +1404,12 @@ bool devicetab_step(void) {
 							"simulator.", "OK", "OK", &uv_uistyles[0]);
 				}
 				else {
-					// once started, load the system's bundled parameters onto the
-					// simulators (wait for them online, then suppress EMCY / write /
-					// store / reset). The UI goes busy so it does not touch the SDO
-					// client while the load task owns it.
-					simrun_load_params_async(&dev.system);
+					// load the system's bundled parameters: the simulators (once
+					// online) and, for the online real devices, after restoring them
+					// to defaults and resetting them. The UI goes busy so it does not
+					// touch the SDO client while the load task owns it.
+					simrun_load_params_async(&dev.system,
+							online_nodeids, online_count);
 					start_busy(OP_SIMPARAM);
 				}
 				ret = true;

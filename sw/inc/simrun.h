@@ -70,6 +70,12 @@ void simrun_init(void);
 /// to *can_channel* with the device's node id (passed as the simulator's -c and
 /// -n arguments). Any already-running simulators are killed first. Returns the
 /// number of simulators started.
+///
+/// Devices that are already online (present on the bus as real hardware) are NOT
+/// simulated - a simulator would clash with the real device on its node id - so
+/// they are skipped. The caller must refresh the device states with
+/// find_update_device_states() first, and handle the online devices itself (see
+/// simrun_load_params_async()'s restore list).
 uint8_t simrun_start_system(system_st *sys, const char *can_channel);
 
 
@@ -124,12 +130,21 @@ bool simrun_any_running(void);
 
 
 /// @brief: Starts the post-launch parameter load on its own task: waits until the
-/// simulated devices are operational on the bus, then loads each device's bundled
+/// managed devices are operational on the bus, then loads each device's bundled
 /// parameters (the EMCY-suppress / write / store / reset sequence), moving each
 /// simulator through PARAM and finally to RUNNING. Devices without a param file
 /// just transition from STARTED to RUNNING once online. Call after
 /// simrun_start_system(). Poll simrun_load_params_is_finished().
-void simrun_load_params_async(system_st *sys);
+///
+/// *restore_nodeids* (of length *restore_count*) lists the online real devices
+/// that were not simulated (they were skipped by simrun_start_system() because
+/// they are present on the bus): each is first restored to its defaults and reset,
+/// then has the system parameters loaded onto it alongside the simulated devices.
+/// Pass NULL / 0 when every device is simulated.
+///
+/// simrun_kill_all() cancels an in-progress load (used by the Force-stop button).
+void simrun_load_params_async(system_st *sys,
+		const uint8_t *restore_nodeids, uint8_t restore_count);
 
 
 /// @brief: Returns true when no post-launch parameter load is running (i.e. the
@@ -150,7 +165,10 @@ void simrun_open_log(uint8_t index);
 void simrun_kill(uint8_t index);
 
 
-/// @brief: Kills every running simulator and removes all temp dirs.
+/// @brief: Kills every running simulator and removes all temp dirs. Also cancels
+/// an in-progress post-launch parameter load (see simrun_load_params_async()), so
+/// this doubles as the Force-stop action while the simulators are starting up or
+/// loading parameters.
 void simrun_kill_all(void);
 
 

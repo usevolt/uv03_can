@@ -485,8 +485,10 @@ static void sim_task(void *ptr) {
 				(unsigned int) started, dev.can_channel);
 		// once started, load the system's bundled parameters onto the simulators
 		// (waits for them to come online, then suppresses EMCY / writes / stores /
-		// resets); the simulators move Started -> Loading params -> Running
-		simrun_load_params_async(&dev.system);
+		// resets); the simulators move Started -> Loading params -> Running. The
+		// --sim command simulates every device (it does not manage already-online
+		// real devices the way the UI does), so no restore list is passed.
+		simrun_load_params_async(&dev.system, NULL, 0);
 		// keep monitoring until every simulator has stopped (exited or been
 		// killed); reaping updates each one's state as it goes
 		while (simrun_any_running()) {

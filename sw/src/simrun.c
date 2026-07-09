@@ -36,6 +36,7 @@
 #include <sys/stat.h>
 #include <sys/prctl.h>
 #include <uv_rtos.h>
+#include <uv_canopen.h>
 #include "find.h"
 #include "loadparam.h"
 
@@ -64,6 +65,11 @@ static bool atexit_registered;
 // set whenever any simulator's state changes, so the UI can refresh only when
 // needed; read and cleared by simrun_poll_changed()
 static volatile bool state_changed;
+
+// set by simrun_kill_all() (the Force-stop button) so a running post-launch load
+// stops waiting for / loading devices that are about to be killed. Cleared when a
+// new load is started with simrun_load_params_async().
+static volatile bool pp_cancel;
 
 
 // True while the simulator is alive (running, just started, or loading params).
@@ -246,6 +252,17 @@ uint8_t simrun_start_system(system_st *sys, const char *can_channel) {
 		device_st *d = system_get_dev(sys, i);
 		// only devices that carry a configuration package can be simulated
 		if ((d == NULL) || (strlen(d->filepath) == 0)) {
+			continue;
+		}
+		// a device that is present on the bus (real hardware) is not simulated: a
+		// simulator would clash with it on the same node id. The caller handles
+		// those devices separately (restores their defaults and loads the system
+		// parameters onto them). The caller refreshes the device states with
+		// find_update_device_states() before calling, so this reflects the bus.
+		if (d->state != DEV_STATE_OFFLINE) {
+			PRINT("Device '%s' (node 0x%x) is already online; not simulating it.\n",
+					(strlen(d->devname) > 0) ? d->devname : d->name,
+					(unsigned int) d->nodeid);
 			continue;
 		}
 
@@ -462,6 +479,9 @@ void simrun_kill(uint8_t index) {
 
 
 void simrun_kill_all(void) {
+	// cancel any in-progress post-launch parameter load so it stops waiting for
+	// (or loading) the devices that are about to be killed
+	pp_cancel = true;
 	clear_all();
 }
 
@@ -473,10 +493,29 @@ void simrun_kill_all(void) {
 
 static system_st *pp_sys;
 static volatile bool pp_finished = true;
+// node ids of the online real devices that this load manages instead of
+// simulating: each is restored to its defaults and reset, then has the system
+// parameters loaded onto it alongside the simulated devices
+static uint8_t pp_restore[SIMRUN_MAX];
+static uint8_t pp_restore_count;
 
 
 bool simrun_load_params_is_finished(void) {
 	return pp_finished;
+}
+
+
+// True when *nodeid* is one of the online real devices managed (not simulated)
+// by the current post-launch load.
+static bool is_restore_node(uint8_t nodeid) {
+	bool ret = false;
+	for (uint8_t i = 0; i < pp_restore_count; i++) {
+		if (pp_restore[i] == nodeid) {
+			ret = true;
+			break;
+		}
+	}
+	return ret;
 }
 
 
@@ -503,24 +542,48 @@ static void set_sim_state_by_nodeid(uint8_t nodeid, simrun_state_e st) {
 }
 
 
-/// @brief: Task body for simrun_load_params_async(). Waits for the simulated
-/// devices to come operational, loads each device's bundled parameters and moves
-/// the simulators STARTED -> PARAM -> RUNNING.
+/// @brief: Task body for simrun_load_params_async(). Restores the online real
+/// devices to defaults, waits for every managed device (simulated or restored) to
+/// come operational, loads each device's bundled parameters and moves the
+/// simulators STARTED -> PARAM -> RUNNING. Aborts early if the load is cancelled
+/// with simrun_kill_all() (the Force-stop button).
 static void postparam_task(void *ptr) {
 	system_st *sys = pp_sys;
 
 	// make sure heartbeats are tracked so the operational state can be detected
 	find_start_monitor();
 
-	// 1. wait until every simulated device reports OPERATIONAL (or time out)
+	// 0. the online real devices are not simulated; bring each back to the same
+	// known state a freshly started simulator would be in: restore its defaults
+	// and reset it, so only the parameters loaded below deviate from the defaults.
+	if (pp_restore_count > 0) {
+		for (uint8_t i = 0; (i < pp_restore_count) && !pp_cancel; i++) {
+			PRINT("Restoring online device (node 0x%x) to system defaults...\n",
+					(unsigned int) pp_restore[i]);
+			uv_canopen_sdo_restore_params(pp_restore[i], MEMORY_ALL_PARAMS);
+			uv_canopen_nmt_master_send_cmd(pp_restore[i],
+					CANOPEN_NMT_CMD_RESET_NODE);
+		}
+		// let the reset devices drop off the bus before waiting for them to come
+		// back, so the loop below does not see their pre-reset operational state
+		// and proceed while they are still resetting
+		uv_rtos_task_delay(1500);
+	}
+
+	// 1. wait until every managed device (a simulated device or a restored real
+	// device) reports OPERATIONAL (or time out). Tell the user we are waiting,
+	// since it takes a few seconds while the devices boot.
+	PRINT("Waiting for all devices to come online before loading parameters...\n");
+	fflush(stdout);
 	uint32_t waited = 0;
 	bool all_op = false;
-	while (!all_op && (waited < SIMRUN_OP_WAIT_MS)) {
+	while (!all_op && (waited < SIMRUN_OP_WAIT_MS) && !pp_cancel) {
 		find_update_device_states(sys);
 		all_op = true;
 		for (uint8_t i = 0; i < system_get_dev_count(sys); i++) {
 			device_st *d = system_get_dev(sys, i);
-			if (has_alive_sim(d->nodeid) && (d->state != DEV_STATE_OP)) {
+			bool managed = has_alive_sim(d->nodeid) || is_restore_node(d->nodeid);
+			if (managed && (d->state != DEV_STATE_OP)) {
 				all_op = false;
 				break;
 			}
@@ -531,26 +594,35 @@ static void postparam_task(void *ptr) {
 		}
 	}
 
-	// 2. collect operational devices that have a saved parameter file and an alive
-	// simulator, marking each simulator as loading parameters
-	device_st *targets[SIMRUN_MAX];
-	uint8_t n = 0;
-	for (uint8_t i = 0; i < system_get_dev_count(sys); i++) {
-		device_st *d = system_get_dev(sys, i);
-		if ((strlen(d->param_file) != 0) && (d->state == DEV_STATE_OP) &&
-				has_alive_sim(d->nodeid) && (n < SIMRUN_MAX)) {
-			set_sim_state_by_nodeid(d->nodeid, SIMRUN_PARAM);
-			targets[n] = d;
-			n++;
-		}
-	}
+	if (!pp_cancel) {
+		PRINT(all_op ? "All devices are online. Loading parameters...\n" :
+				"Timed out waiting for devices to come online; loading "
+				"parameters to those that are ready...\n");
+		fflush(stdout);
 
-	// 3. load the parameters: suppress EMCY on all, write each device, re-enable
-	// EMCY, store and reset all (handled by loadparam_load_system_async)
-	if (n > 0) {
-		loadparam_load_system_async(targets, n);
-		while (!loadparam_load_system_is_finished()) {
-			uv_rtos_task_delay(200);
+		// 2. collect operational devices that have a saved parameter file and are
+		// managed (an alive simulator or a restored real device), marking each
+		// simulator as loading parameters
+		device_st *targets[SIMRUN_MAX];
+		uint8_t n = 0;
+		for (uint8_t i = 0; i < system_get_dev_count(sys); i++) {
+			device_st *d = system_get_dev(sys, i);
+			bool managed = has_alive_sim(d->nodeid) || is_restore_node(d->nodeid);
+			if ((strlen(d->param_file) != 0) && (d->state == DEV_STATE_OP) &&
+					managed && (n < SIMRUN_MAX)) {
+				set_sim_state_by_nodeid(d->nodeid, SIMRUN_PARAM);
+				targets[n] = d;
+				n++;
+			}
+		}
+
+		// 3. load the parameters: suppress EMCY on all, write each device, re-enable
+		// EMCY, store and reset all (handled by loadparam_load_system_async)
+		if (n > 0) {
+			loadparam_load_system_async(targets, n);
+			while (!loadparam_load_system_is_finished()) {
+				uv_rtos_task_delay(200);
+			}
 		}
 	}
 
@@ -567,8 +639,17 @@ static void postparam_task(void *ptr) {
 }
 
 
-void simrun_load_params_async(system_st *sys) {
+void simrun_load_params_async(system_st *sys,
+		const uint8_t *restore_nodeids, uint8_t restore_count) {
 	pp_sys = sys;
+	pp_cancel = false;
+	if (restore_count > SIMRUN_MAX) {
+		restore_count = SIMRUN_MAX;
+	}
+	pp_restore_count = restore_count;
+	for (uint8_t i = 0; i < restore_count; i++) {
+		pp_restore[i] = restore_nodeids[i];
+	}
 	pp_finished = false;
 	uv_rtos_task_create(&postparam_task, "simparam",
 			UV_RTOS_MIN_STACK_SIZE * 5, NULL, UV_RTOS_IDLE_PRIORITY + 1, NULL);
@@ -633,8 +714,11 @@ bool simrun_any_running(void) {
 	return false;
 }
 
-void simrun_load_params_async(system_st *sys) {
+void simrun_load_params_async(system_st *sys,
+		const uint8_t *restore_nodeids, uint8_t restore_count) {
 	(void) sys;
+	(void) restore_nodeids;
+	(void) restore_count;
 }
 
 bool simrun_load_params_is_finished(void) {
