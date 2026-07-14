@@ -31,12 +31,15 @@
 
 
 static void loadmedia_step(void *dev);
-static void load(char *filename, uint32_t count, uint32_t index);
+static void load(char *filename, const char *devname, uint32_t count, uint32_t index);
 static bool is_known_mediafile(char *filename);
+static const char *media_devname(const char *fullpath, const char *strip_prefix);
 static uint32_t count_media_path(const char *path);
-static void load_media_path(const char *path, uint32_t count, uint32_t *index);
-static void run_media_path(const char *path);
-static void run_media_paths(const char *const *paths, uint32_t n);
+static void load_media_path(const char *path, const char *strip_prefix,
+		uint32_t count, uint32_t *index);
+static void run_media_path(const char *path, const char *strip_prefix);
+static void run_media_paths(const char *const *paths, uint32_t n,
+		const char *strip_prefix);
 static bool loadmedia_uvdev(const char *uvdev_path, uint8_t nodeid);
 static void loadmedia_devices(uint8_t start, uint8_t end);
 static void loadmedia_dispatch_step(void *ptr);
@@ -92,7 +95,43 @@ static bool is_known_mediafile(char *filename) {
 }
 
 
-static void load(char *filename, uint32_t count, uint32_t index) {
+// Loads a single media file onto the device. *filename* is the local path used
+// to open and read the file; *devname* is the name stored on the device (kept
+// relative to the package root, e.g. "media/test.png", so no host-side
+// /tmp/... extraction path leaks onto the device).
+// Derives the device-facing media filename from local path *fullpath* by
+// removing *strip_prefix* (the package's temporary extraction directory) from
+// its front, so a file extracted to "/tmp/xxx/media/test.png" from a package
+// rooted at "/tmp/xxx" is stored on the device as "media/test.png". When
+// *strip_prefix* is NULL/empty or is not a prefix of *fullpath*, the full path
+// is used unchanged (legacy raw-file behavior).
+static const char *media_devname(const char *fullpath, const char *strip_prefix) {
+	const char *ret = fullpath;
+	if (strip_prefix != NULL) {
+		size_t len = strlen(strip_prefix);
+		if ((len != 0) && (strncmp(fullpath, strip_prefix, len) == 0)) {
+			ret = fullpath + len;
+			// drop any path separators left between the prefix and the name
+			while (*ret == '/') {
+				ret++;
+			}
+		}
+		else {
+			// prefix does not apply; keep the full path
+		}
+	}
+	else {
+		// no prefix given; keep the full path
+	}
+	return ret;
+}
+
+
+// Loads a single media file onto the device. *filename* is the local path used
+// to open and read the file; *devname* is the name stored on the device (kept
+// relative to the package root, e.g. "media/test.png", so no host-side
+// /tmp/... extraction path leaks onto the device).
+static void load(char *filename, const char *devname, uint32_t count, uint32_t index) {
 	FILE *fptr = fopen(filename, "rb");
 
 	if (fptr == NULL) {
@@ -124,9 +163,9 @@ static void load(char *filename, uint32_t count, uint32_t index) {
 				success = false;
 			}
 			else {
-				// filename
+				// filename (package-relative, not the host extraction path)
 				uv_errors_e e = uv_canopen_sdo_write(db_get_nodeid(&dev.db), CONFIG_CANOPEN_EXMEM_FILENAME_INDEX,
-						0, strlen(filename) + 1, filename);
+						0, strlen(devname) + 1, (void *) devname);
 
 				// filesize
 				e |= uv_canopen_sdo_write(db_get_nodeid(&dev.db), CONFIG_CANOPEN_EXMEM_FILESIZE_INDEX,
@@ -203,7 +242,8 @@ static void load(char *filename, uint32_t count, uint32_t index) {
 
 
 static void loadmedia_step(void *ptr) {
-	run_media_path(this->file);
+	// raw file/directory load: store the path as given (no package to relativize)
+	run_media_path(this->file, NULL);
 }
 
 
@@ -243,9 +283,12 @@ static uint32_t count_media_path(const char *path) {
 
 // Loads every recognized media file reachable from *path* (a single file or a
 // directory of files) onto the device at the node id currently set in dev.db.
+// *strip_prefix* is removed from each local path to form the package-relative
+// name stored on the device (see media_devname); NULL for legacy raw loads.
 // *count* is the batch total shown in the progress line and *index points at the
 // running file number, advanced past each file loaded here.
-static void load_media_path(const char *path, uint32_t count, uint32_t *index) {
+static void load_media_path(const char *path, const char *strip_prefix,
+		uint32_t count, uint32_t *index) {
 	const char *str = path;
 	struct stat path_stat;
 	if (stat(str, &path_stat) != 0) {
@@ -263,7 +306,7 @@ static void load_media_path(const char *path, uint32_t count, uint32_t *index) {
 						strcat(s, "/");
 					}
 					strcat(s, d->d_name);
-					load(s, count, *index);
+					load(s, media_devname(s, strip_prefix), count, *index);
 					(*index)++;
 				}
 			}
@@ -277,7 +320,7 @@ static void load_media_path(const char *path, uint32_t count, uint32_t *index) {
 		char s[1024];
 		strncpy(s, str, sizeof(s) - 1);
 		s[sizeof(s) - 1] = '\0';
-		load(s, count, *index);
+		load(s, media_devname(s, strip_prefix), count, *index);
 		(*index)++;
 	}
 	else {
@@ -288,23 +331,26 @@ static void load_media_path(const char *path, uint32_t count, uint32_t *index) {
 
 // Loads every recognized media file under *path* (a single file or a directory
 // of files) onto the device at the node id currently set in dev.db.
-static void run_media_path(const char *path) {
+// *strip_prefix* is removed from each local path to form the package-relative
+// name stored on the device (NULL for legacy raw loads).
+static void run_media_path(const char *path, const char *strip_prefix) {
 	uint32_t index = 0;
-	load_media_path(path, count_media_path(path), &index);
+	load_media_path(path, strip_prefix, count_media_path(path), &index);
 }
 
 
 // Loads media from each of *n* paths (files and/or directories) as one logical
 // batch, so the per-file progress counter runs across all of them. Used when the
 // shell expands a glob (e.g. "*_hd.png") into several file arguments.
-static void run_media_paths(const char *const *paths, uint32_t n) {
+static void run_media_paths(const char *const *paths, uint32_t n,
+		const char *strip_prefix) {
 	uint32_t count = 0;
 	for (uint32_t i = 0; i < n; i++) {
 		count += count_media_path(paths[i]);
 	}
 	uint32_t index = 0;
 	for (uint32_t i = 0; i < n; i++) {
-		load_media_path(paths[i], count, &index);
+		load_media_path(paths[i], strip_prefix, count, &index);
 	}
 }
 
@@ -343,7 +389,10 @@ static bool loadmedia_uvdev(const char *uvdev_path, uint8_t nodeid) {
 			db_set_nodeid_force(&dev.db, nodeid);
 			char mediadir[2048];
 			snprintf(mediadir, sizeof(mediadir), "%s/%s", pkg.dir, pkg.media);
-			run_media_path(mediadir);
+			// strip the package's extraction dir so the device stores the media
+			// under its package-relative name (e.g. "media/test.png"), not the
+			// host-side /tmp/... path
+			run_media_path(mediadir, pkg.dir);
 			ret = true;
 		}
 		uvdev_close(&pkg);
@@ -422,7 +471,8 @@ static void loadmedia_dispatch_step(void *ptr) {
 		for (unsigned int i = start; i < dev.argv_count; i++) {
 			paths[n++] = dev.nonopt_argv[i];
 		}
-		run_media_paths(paths, n);
+		// legacy raw load: store paths as given (no package to relativize)
+		run_media_paths(paths, n, NULL);
 	}
 	else if (dev.system.dev_count != 0) {
 		// no file given: push bundled media for the loaded --dev / --sys devices
