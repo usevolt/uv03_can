@@ -230,11 +230,12 @@ image: $(BINARY)
 
 
 # Turn a PNG into a C header holding its bytes as a byte array (minus_hd_png /
-# minus_hd_png_len). The array name is forced with -n so it is independent of
-# the source path.
+# minus_hd_png_len). xxd derives the array name from its input; running it from
+# the media/ dir with the bare filename yields exactly "minus_hd_png", which
+# also keeps this working on older xxd versions that lack the -n flag.
 $(GENERATEDDIR)/media_minus_hd.h: media/minus_hd.png
 	@mkdir -p $(@D)
-	xxd -i -n minus_hd_png $< > $@
+	cd $(<D) && xxd -i $(<F) > $(abspath $@)
 
 # Every object is built only after the embedded media headers exist (order-only:
 # regenerating the image doesn't force a full rebuild, only a missing header does).
