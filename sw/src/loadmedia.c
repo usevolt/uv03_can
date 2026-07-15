@@ -403,7 +403,16 @@ static bool loadmedia_uvdev(const char *uvdev_path, uint8_t nodeid) {
 
 // Task body: loads a single device's bundled media off the UI thread.
 static void loadmedia_device_task(void *ptr) {
-	loadmedia_uvdev(async_media_filepath, async_media_nodeid);
+	// the device reads its media at boot, so the freshly loaded files only take
+	// effect after a reset. Skipped when nothing was loaded (no media in the
+	// package, or the package was unreadable).
+	if (loadmedia_uvdev(async_media_filepath, async_media_nodeid)) {
+		printf("Resetting node 0x%x (NMT reset node) to apply the new media...\n",
+				(unsigned int) async_media_nodeid);
+		fflush(stdout);
+		uv_canopen_nmt_master_send_cmd(async_media_nodeid,
+				CANOPEN_NMT_CMD_RESET_NODE);
+	}
 	async_media_finished = true;
 	uv_rtos_task_delete(NULL);
 }

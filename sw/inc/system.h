@@ -197,6 +197,12 @@ bool system_remove_device(system_st *this, device_st *device);
 /// STUB: the file contents are not parsed yet, see system_set_file().
 void system_set_device_file(device_st *device, const char *filepath);
 
+/// @brief: Reads the default node id defined in the DATABASE of the configuration
+/// package at *filepath*, without assigning the file to any device. Lets the UI
+/// tell the user which node id a device will boot with before the package is
+/// flashed onto it. Returns 0 when the file cannot be read or defines no node id.
+uint8_t system_read_file_nodeid(const char *filepath);
+
 /// @brief: Returns true once a system configuration (.uvsys) file has been
 /// loaded. While true, individual device files must not be added, because the
 /// system file already contains the system's devices.

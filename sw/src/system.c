@@ -511,6 +511,18 @@ void system_set_device_file(device_st *device, const char *filepath) {
 }
 
 
+uint8_t system_read_file_nodeid(const char *filepath) {
+	uint8_t ret = 0;
+	if ((filepath != NULL) && (strlen(filepath) != 0) &&
+			load_uvdev_database(filepath, NULL, 0, NULL)) {
+		ret = db_get_nodeid(&dev.db);
+		// unload so the rest of the program still sees "no database loaded"
+		db_deinit();
+	}
+	return ret;
+}
+
+
 bool path_ends_with(const char *path, const char *suffix) {
 	bool ret = false;
 	if ((path != NULL) && (suffix != NULL)) {

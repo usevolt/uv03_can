@@ -1573,6 +1573,7 @@ bool devicetab_step(void) {
 			// the device is powered on, then downloads.
 			bool configless = (strlen(current_device->filepath) == 0);
 			bool offline = (current_device->state == DEV_STATE_OFFLINE);
+			bool bootup = (current_device->state == DEV_STATE_BOOTUP);
 			char picked[1024] = "";
 			bool proceed = true;
 			if (configless) {
@@ -1587,14 +1588,41 @@ bool devicetab_step(void) {
 				}
 			}
 
+			// A device stuck in BOOTUP sits in its bootloader with no running
+			// firmware, so it answers at whatever node id the bootloader uses. Once
+			// the flash finishes it boots the new firmware, which takes its node id
+			// from the package's DATABASE default. Follow that node id here so the
+			// tab keeps addressing the device after it comes back up.
+			uint8_t boot_nodeid = 0;
+			if (proceed && bootup) {
+				boot_nodeid = configless ? system_read_file_nodeid(picked) :
+						current_device->default_nodeid;
+				if (boot_nodeid == current_device->nodeid) {
+					// it boots at the node id the tab already uses: nothing to change
+					// and nothing worth telling the user about
+					boot_nodeid = 0;
+				}
+			}
+
 			if (proceed) {
 				uv_uiacceptdialog_st dialog = { };
-				char msgbuf[1600];
+				char msgbuf[2048];
 				// note explaining the wait-for-boot-up behaviour for an offline
 				// device (it also tells the user how to cancel)
 				const char *offline_note = offline ?
 						" The device is offline: flashing will begin once it is "
 						"powered on. Click the button again to cancel." : "";
+				// note about the node id change a bootloader-state device makes when
+				// it boots the flashed firmware
+				char boot_note[256] = "";
+				if (boot_nodeid != 0) {
+					snprintf(boot_note, sizeof(boot_note),
+							"\n\nThe device is in its bootloader: after flashing it "
+							"boots the new firmware at the package's default node id "
+							"0x%x. This device tab switches to node 0x%x once the "
+							"flash finishes.",
+							(unsigned int) boot_nodeid, (unsigned int) boot_nodeid);
+				}
 				if (configless) {
 					// show the node id and chosen package, and make clear uvcan
 					// cannot vouch for the package matching this device
@@ -1606,16 +1634,17 @@ bool devicetab_step(void) {
 							"uvcan cannot verify that this package is suitable for "
 							"this device \342\200\224 you are responsible for "
 							"choosing the correct firmware. The device will be reset "
-							"and must not be powered off during flashing.%s",
+							"and must not be powered off during flashing.%s%s",
 							base, (unsigned int) current_device->nodeid,
-							offline_note);
+							offline_note, boot_note);
 				}
 				else {
 					snprintf(msgbuf, sizeof(msgbuf),
 							"Flash the firmware to the device at node 0x%x? The "
 							"device will be reset and must not be powered off during "
-							"flashing.%s",
-							(unsigned int) current_device->nodeid, offline_note);
+							"flashing.%s%s",
+							(unsigned int) current_device->nodeid, offline_note,
+							boot_note);
 				}
 				if (uv_uiacceptdialog_exec(&dialog, msgbuf, "Yes", "No",
 						&uv_uistyles[0]) == UIACCEPTDIALOG_RET_YES) {
@@ -1640,6 +1669,13 @@ bool devicetab_step(void) {
 							system_set_device_file(current_device, picked);
 							current_device->nodeid = flashed_nodeid;
 						}
+						// the device was flashed in its bootloader: it boots the new
+						// firmware at the package's default node id, so address it
+						// there from now on. Takes visual effect when the flash
+						// finishes and the tab rebuilds.
+						if (boot_nodeid != 0) {
+							current_device->nodeid = boot_nodeid;
+						}
 						start_busy(OP_FLASH);
 					}
 				}
@@ -1654,7 +1690,9 @@ bool devicetab_step(void) {
 			uv_uiacceptdialog_st dialog = { };
 			if (uv_uiacceptdialog_exec(&dialog,
 					"Load the media files bundled in the configuration package "
-					"onto this device?",
+					"onto this device?\n\n"
+					"The device is reset once the loading finishes, so that it "
+					"starts using the new media.",
 					"Yes", "No", &uv_uistyles[0]) == UIACCEPTDIALOG_RET_YES) {
 				loadmedia_load_device_async(current_device->filepath,
 						current_device->nodeid);
