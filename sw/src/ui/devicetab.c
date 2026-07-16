@@ -511,9 +511,9 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	// the bottom on every target.
 	int16_t frame_x = MARGIN;
 	int16_t frame_w = cbb.w - 2 * MARGIN;
-	// the Account panel: its title bar plus two rows (URL; then Username/Password),
-	// each row a field with its title below it
-	int16_t account_frame_h = 4 * BUTTON_H + 2 * MARGIN + TITLE_H;
+	// the Account panel: its title bar plus a single row (URL, Username and
+	// Password side by side), the row being a field with its title below it
+	int16_t account_frame_h = 2 * BUTTON_H + MARGIN + TITLE_H;
 	int16_t account_frame_y = cbb.h - MARGIN - account_frame_h;
 #if !CONFIG_TARGET_WIN
 	// the configuration panel needs room for the double-height source row plus the
@@ -743,26 +743,29 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 			frame_w, account_frame_h);
 	uv_bounding_box_st ac = uv_uiframewindow_get_content_bb(&content.account_frame);
 
-	// two rows: the server URL fills the top row; Username and Password share the
-	// bottom row. Each field draws its title below itself.
+	// one row holding all three fields: the URL takes half the width (it is by far
+	// the longest value), Username and Password a quarter each. Each field draws
+	// its title below itself.
 	int16_t acc_gap = MARGIN;
-	int16_t acc_row_h = (ac.h - MARGIN) / 2;
-	int16_t acc_field_w = (ac.w - acc_gap) / 2;
+	int16_t acc_url_w = (ac.w - 2 * acc_gap) / 2;
+	int16_t acc_field_w = (ac.w - 2 * acc_gap - acc_url_w) / 2;
+	int16_t acc_x = 0;
 
 	uv_uitextedit_init(&content.account_url, account_url_buf,
 			sizeof(account_url_buf), UITEXTEDIT_FLAG_ONELINE, style);
 	uv_uitextedit_set_title(&content.account_url, "URL");
 	uv_uitextedit_set_align(&content.account_url, ALIGN_CENTER_LEFT);
 	uv_uiframewindow_addxy(&content.account_frame, &content.account_url,
-			0, 0, ac.w, acc_row_h);
+			acc_x, 0, acc_url_w, ac.h);
+	acc_x += acc_url_w + acc_gap;
 
-	int16_t acc_row2_y = acc_row_h + MARGIN;
 	uv_uitextedit_init(&content.account_user, account_user_buf,
 			sizeof(account_user_buf), UITEXTEDIT_FLAG_ONELINE, style);
 	uv_uitextedit_set_title(&content.account_user, "Username");
 	uv_uitextedit_set_align(&content.account_user, ALIGN_CENTER_LEFT);
 	uv_uiframewindow_addxy(&content.account_frame, &content.account_user,
-			0, acc_row2_y, acc_field_w, acc_row_h);
+			acc_x, 0, acc_field_w, ac.h);
+	acc_x += acc_field_w + acc_gap;
 
 	uv_uitextedit_init(&content.account_pass, account_pass_buf,
 			sizeof(account_pass_buf),
@@ -770,7 +773,7 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	uv_uitextedit_set_title(&content.account_pass, "Password");
 	uv_uitextedit_set_align(&content.account_pass, ALIGN_CENTER_LEFT);
 	uv_uiframewindow_addxy(&content.account_frame, &content.account_pass,
-			acc_field_w + acc_gap, acc_row2_y, acc_field_w, acc_row_h);
+			acc_x, 0, acc_field_w, ac.h);
 }
 
 
