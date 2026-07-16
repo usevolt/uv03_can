@@ -60,6 +60,13 @@ bool devicetab_is_busy(void);
 /// for it the way it does for the other operations.
 bool devicetab_busy_is_search(void);
 
+/// @brief: Returns true once after the user removed the currently-shown device
+/// via its "Remove" button (the flag is cleared by the read). Lets the caller
+/// move the tab selection to the tab just before the removed one instead of
+/// keeping the same index, which would otherwise land on whichever device
+/// shifted into the freed slot.
+bool devicetab_poll_device_removed(void);
+
 
 #endif
 

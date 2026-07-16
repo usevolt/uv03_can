@@ -592,10 +592,19 @@ static uv_uiobject_ret_e tabwindow_step(void *me, const uint16_t step_ms) {
 	else if (devicetab_step()) {
 		// the user picked a new device file or removed a device: refresh tab
 		// names and content
+		bool removed = devicetab_poll_device_removed();
 		rebuild_tabs();
+		if (removed) {
+			// the removed device was the active tab; move the selection to the
+			// tab just before it (another device, or the system tab when the
+			// removed device was the first / only one) rather than letting the
+			// device that shifted into the freed slot take over the selection
+			int16_t tab = uv_uitabwindow_get_tab(&this->tabwindow);
+			uv_uitabwindow_set_tab(&this->tabwindow, (tab > 0) ? tab - 1 : 0);
+		}
 		// a removal can shrink the tab list below the active index; keep the
 		// selection in range before re-showing
-		if (uv_uitabwindow_get_tab(&this->tabwindow) >= this->tab_count) {
+		else if (uv_uitabwindow_get_tab(&this->tabwindow) >= this->tab_count) {
 			uv_uitabwindow_set_tab(&this->tabwindow, this->tab_count - 1);
 		}
 		show_active_tab();

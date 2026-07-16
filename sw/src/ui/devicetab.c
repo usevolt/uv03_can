@@ -327,6 +327,13 @@ static bool remove_media_loaded;
 // system overview. Polled by devicetab_step().
 static device_st *current_device;
 
+// Set true when the user removes the currently-shown device via its "Remove"
+// button, cleared when the caller reads it back through
+// devicetab_poll_device_removed(). Lets the caller move the tab selection to the
+// tab just before the removed one, rather than keeping the same index (which
+// would land on the device that shifted into the freed slot).
+static bool device_removed;
+
 // True while the system overview tab is the one currently shown. Used by
 // devicetab_step() to poll the right file picker.
 static bool showing_system;
@@ -391,6 +398,13 @@ bool devicetab_is_busy(void) {
 
 bool devicetab_busy_is_search(void) {
 	return busy && (busy_op == OP_SEARCH);
+}
+
+
+bool devicetab_poll_device_removed(void) {
+	bool ret = device_removed;
+	device_removed = false;
+	return ret;
 }
 
 
@@ -1709,6 +1723,7 @@ bool devicetab_step(void) {
 			// the device the user just removed (a manual search clears the list)
 			find_blacklist_node(current_device->nodeid);
 			system_remove_device(&dev.system, current_device);
+			device_removed = true;
 			ret = true;
 		}
 		// "Revert to defaults": CANopen restore-default-parameters request

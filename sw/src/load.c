@@ -150,11 +150,20 @@ bool load_flash_uvdev_to_node(const char *uvdev_path, uint8_t nodeid, bool wfr) 
 			}
 			else {
 				// copy the firmware out of the (soon to be removed) package temp
-				// dir to a stable path the async flash task can read
+				// dir to a stable path the async flash task can read. Name the
+				// copy after the package's firmware binary (e.g.
+				// /tmp/uvcan_flash_uv1f_hhc_LPC1549.bin) so the flash log's
+				// "Opened file ..." line hints which device is being flashed,
+				// instead of always showing a generic temp name.
+				const char *fw_base = strrchr(pkg.firmware, '/');
+				fw_base = (fw_base != NULL) ? (fw_base + 1) : pkg.firmware;
 				char src[2048];
-				static char dst[] = "/tmp/uvcan_flash.bin";
+				char dst[256];
 				char cmd[4200];
 				snprintf(src, sizeof(src), "%s/%s", pkg.dir, pkg.firmware);
+				// bound the name portion so the path fits both dst and the
+				// load state's firmware[256] field it is copied into
+				snprintf(dst, sizeof(dst), "/tmp/uvcan_flash_%.200s", fw_base);
 				snprintf(cmd, sizeof(cmd), "cp '%s' '%s'", src, dst);
 				if (system(cmd) == 0) {
 					printf("Flashing firmware '%s' to node 0x%x%s\n",
@@ -556,6 +565,15 @@ void load_step(void *ptr) {
 						fflush(stdout);
 					}
 					else {
+						// prime the SDO client's progress counters for this transfer before
+						// starting the monitor task. The monitor runs at a higher priority
+						// than this task, so otherwise it can poll the counters before the
+						// sdo write below initializes them and read the previous transfer's
+						// finished state (e.g. a 4-byte parameter write left data_index ==
+						// data_count == 4), print a bogus "downloaded 4 / 4 bytes (100%)"
+						// and exit before any real download progress is shown.
+						_canopen.sdo.client.data_index = 0;
+						_canopen.sdo.client.data_count = size;
 						// create task which will update the screen with the loading process
 						uv_rtos_task_create(&update, "segload update", UV_RTOS_MIN_STACK_SIZE,
 								NULL, UV_RTOS_IDLE_PRIORITY + 100, NULL);
@@ -584,6 +602,15 @@ void load_step(void *ptr) {
 						fflush(stdout);
 					}
 					else {
+						// prime the SDO client's progress counters for this transfer before
+						// starting the monitor task. The monitor runs at a higher priority
+						// than this task, so otherwise it can poll the counters before the
+						// sdo write below initializes them and read the previous transfer's
+						// finished state (e.g. a 4-byte parameter write left data_index ==
+						// data_count == 4), print a bogus "downloaded 4 / 4 bytes (100%)"
+						// and exit before any real download progress is shown.
+						_canopen.sdo.client.data_index = 0;
+						_canopen.sdo.client.data_count = size;
 						// create task which will update the screen with the loading process
 						uv_rtos_task_create(&update, "segload update", UV_RTOS_MIN_STACK_SIZE,
 								NULL, UV_RTOS_IDLE_PRIORITY + 100, NULL);
