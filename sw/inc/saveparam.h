@@ -60,6 +60,13 @@ bool cmd_saveparam(const char *arg);
 bool cmd_saveparamall(const char *arg);
 
 
+/// @brief: Reads the parameters of every online, configured Usevolt device
+/// currently in the system (loaded with --sys / --dev, or discovered with --find)
+/// and writes them all into a single .dev parameter file. Mirrors the UI's
+/// "Save system configuration", but as one flat file instead of a .uvsys package.
+bool cmd_savesys(const char *arg);
+
+
 /// @brief: Reads all parameters of *device* from the bus (using the object
 /// dictionary in its .uvdev package and its node id) and writes them to *file*,
 /// like the --saveparam command but for a single device chosen in the UI.

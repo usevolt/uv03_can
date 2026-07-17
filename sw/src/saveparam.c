@@ -635,6 +635,146 @@ void saveparam_save_device_async(device_st *device, const char *file) {
 }
 
 
+// destination path for the --savesys single-file system parameter save. A .dev
+// extension is forced on in cmd_savesys().
+static char savesys_file[512];
+
+
+/// @brief: Task body for the --savesys command. Reads the parameters of every
+/// online, configured Usevolt device currently in dev.system and writes them all
+/// into a single .dev parameter file (a DEVS array), mirroring the UI's "Save
+/// system configuration" but as one flat file instead of a .uvsys package.
+static void savesys_step(void *ptr) {
+	system_st *sys = &dev.system;
+	this->finished = false;
+	this->progress = 0;
+	uv_can_set_up(false);
+
+	// build the whole document in memory first; only write the output file once
+	// every parameter of every device was read without a CANopen error. Large
+	// enough to hold all devices of a system in one document.
+	static char json_buffer[65536 * 16] = {};
+	uv_json_st json;
+	uv_errors_e e = ERR_NONE;
+	e |= uv_jsonwriter_init(&json, json_buffer, sizeof(json_buffer));
+	e |= uv_jsonwriter_begin_array(&json, "DEVS");
+
+	// count the Usevolt, online, configured devices up front so the progress can
+	// be shown as "device i/N". A system parameter file holds only such devices:
+	// third-party devices have no readable object dictionary, offline devices
+	// cannot be read, and an unconfigured device has no .uvdev to read with.
+	uint8_t total = 0;
+	for (uint8_t i = 0; i < system_get_dev_count(sys); i++) {
+		device_st *d = system_get_dev(sys, i);
+		if ((d->nodeid != 0) && !d->thirdparty &&
+				(d->state != DEV_STATE_OFFLINE) && (strlen(d->filepath) != 0)) {
+			total++;
+		}
+	}
+
+	uint8_t index = 0;
+	// Usevolt devices that were offline, so their parameters could not be saved
+	uint8_t offline_count = 0;
+	for (uint8_t i = 0; (i < system_get_dev_count(sys)) && (e == ERR_NONE); i++) {
+		device_st *d = system_get_dev(sys, i);
+		if (d->nodeid == 0) {
+			continue;
+		}
+		if (d->thirdparty) {
+			continue;
+		}
+		if (d->state == DEV_STATE_OFFLINE) {
+			offline_count++;
+			continue;
+		}
+		if (strlen(d->filepath) == 0) {
+			continue;
+		}
+
+		index++;
+		const char *dname = (strlen(d->devname) > 0) ? d->devname : d->name;
+		printf("Saving parameters from device %u/%u (node 0x%x, %s)\n",
+				(unsigned int) index, (unsigned int) total,
+				(unsigned int) d->nodeid, dname);
+		fflush(stdout);
+		e |= save_device_from_uvdev(&json, d->filepath, d->nodeid);
+	}
+
+	e |= uv_jsonwriter_end_array(&json);
+	e |= uv_jsonwriter_end(&json, NULL);
+	LOG_END();
+
+	// warn about Usevolt devices that were offline and therefore left out
+	if (offline_count > 0) {
+		WARNING("WARNING: %u device(s) were offline; their parameters were not\n"
+				"included in the system parameter file.\n",
+				(unsigned int) offline_count);
+		fflush(stdout);
+	}
+
+	if (e != ERR_NONE) {
+		// a CANopen read failed (after retries). Stop without writing a partial
+		// file so it is not mistaken for a complete backup.
+		ERRORSTR("ERROR: Parameter saving stopped: a CANopen read failed.\n"
+				"No output file was written.\n\n");
+		fflush(stdout);
+	}
+	else if (index == 0) {
+		ERRORSTR("ERROR: No online, configured Usevolt devices to save. Load a\n"
+				"system with --sys, add devices with --dev, or scan the CAN bus\n"
+				"with --find before --savesys.\n");
+		fflush(stdout);
+	}
+	else {
+		FILE *dest = fopen(savesys_file, "wb");
+		if (dest == NULL) {
+			ERROR("Failed creating the output file '%s'\n", savesys_file);
+			fflush(stdout);
+		}
+		else {
+			fwrite(json_buffer, 1, strlen(json_buffer), dest);
+			fclose(dest);
+			prettify_json_file(savesys_file);
+			printf("System parameters from %u device(s) saved to '%s'\n",
+					(unsigned int) index, savesys_file);
+			fflush(stdout);
+		}
+	}
+	this->finished = true;
+}
+
+
+bool cmd_savesys(const char *arg) {
+	if (!arg) {
+		ERRORSTR("ERROR: Give the filepath for the system parameter (.dev) file.\n");
+	}
+	else if (system_get_dev_count(&dev.system) == 0) {
+		ERRORSTR("ERROR: No devices loaded. Load a system with --sys, add devices\n"
+				"with --dev, or scan the CAN bus with --find before --savesys.\n");
+	}
+	else {
+		// like the UI's system save, store every device's nonvolatile parameters
+		// (not the CANopen 301 fields, which --saveparamall adds)
+		this->all = false;
+
+		// force a .dev extension on the output path
+		strncpy(savesys_file, arg, sizeof(savesys_file) - 1);
+		savesys_file[sizeof(savesys_file) - 1] = '\0';
+		size_t len = strlen(savesys_file);
+		if ((len < 4) || (strcmp(savesys_file + len - 4, ".dev") != 0)) {
+			strncat(savesys_file, ".dev",
+					sizeof(savesys_file) - strlen(savesys_file) - 1);
+		}
+
+		printf("System parameter file '%s' selected\n", savesys_file);
+		add_task(savesys_step);
+		uv_can_set_up(false);
+	}
+
+	return true;
+}
+
+
 void saveparam_step(void *ptr) {
 	this->finished = false;
 	this->progress = 0;

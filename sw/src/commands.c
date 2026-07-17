@@ -339,6 +339,16 @@ commands_st commands[] = {
 				.callback = &cmd_saveparamall
 		},
 		{
+				.cmd_long = "savesys",
+				.str = "Saves the whole system's parameters into a single .dev file, like the UI's\n"
+						"\"Save system configuration\". Reads parameters from every online, configured\n"
+						"Usevolt device currently loaded (with --sys / --dev) or discovered (with\n"
+						"--find); offline and third-party devices are skipped. A .dev extension is\n"
+						"appended if missing.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_savesys
+		},
+		{
 				.cmd_long = "user",
 				.str = "Sets the account username stored on this computer and shared by every "
 						"uvcan install (the same value shown in the UI's Account panel). It is "
