@@ -693,7 +693,7 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 		// whatever is left
 		int16_t kill_w = 80;
 		int16_t log_w = 80;
-		int16_t node_w = 70;
+		int16_t node_w = 140;
 		int16_t kill_x = right_w - kill_w;
 		int16_t log_x = kill_x - gap - log_w;
 		int16_t node_x = log_x - gap - node_w;
