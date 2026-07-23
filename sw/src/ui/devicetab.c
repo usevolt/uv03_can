@@ -39,6 +39,7 @@
 #include "credentials.h"
 #include "ui/uv_uitextedit.h"
 #include "ui/serverfiles_win.h"
+#include "ui/devsel_win.h"
 
 
 // Color for the revision-mismatch warning and the mismatched revision numbers.
@@ -1192,6 +1193,28 @@ void devicetab_show_device(uv_uitabwindow_st *tabwin, device_st *device) {
 
 
 
+/// @brief: Eligibility callback of the "Load system configuration to devices"
+/// selection window: returns NULL when the system's bundled parameters can be
+/// written onto *device*, or the reason they cannot. A device needs a parameter
+/// file bundled in the .uvsys package and must be operational on the bus.
+static const char *sysload_reason(device_st *device) {
+	const char *ret = NULL;
+	if (strlen(device->param_file) == 0) {
+		ret = "No saved parameters";
+	}
+	else if (device->state == DEV_STATE_OFFLINE) {
+		ret = "Offline";
+	}
+	else if (device->state != DEV_STATE_OP) {
+		ret = "Not operational";
+	}
+	else {
+		// the device can be loaded
+	}
+	return ret;
+}
+
+
 /// @brief: Rewrites the system-tab search button label to a live countdown of
 /// the remaining listen time ("Searching Xs...") while a scan is running.
 static void refresh_search_btn_text(void) {
@@ -1378,34 +1401,40 @@ bool devicetab_step(void) {
 			}
 		}
 		// "Load system configuration": write the loaded system's bundled
-		// parameters onto every online device. First read the CAN interface
-		// version from each device and compare it against the version stored in
+		// parameters onto the online devices the user picks. First a selection
+		// window lists every device of the system configuration so the user can
+		// deselect the ones to leave out. Then the CAN interface version is read
+		// from each selected device and compared against the version stored in
 		// its param file; if any differ, warn (the saved parameters may not load
 		// correctly). Once confirmed, the load runs on its own task with the
 		// EMCY/store/reset sequencing handled by loadparam.
 		else if (uv_uibutton_clicked(&content.sys_loadparams_btn)) {
-			// collect online devices that carry a saved parameter file
-			device_st *targets[SYSTEM_DEV_MAX_COUNT];
-			uint8_t tcount = 0;
+			// count the devices that could be loaded at all: a device needs both a
+			// parameter file bundled in the system package and to be operational
+			uint8_t eligible = 0;
 			for (uint8_t i = 0; i < system_get_dev_count(&dev.system); i++) {
-				device_st *d = system_get_dev(&dev.system, i);
-				if ((strlen(d->param_file) != 0) &&
-						(d->state == DEV_STATE_OP) &&
-						(tcount < SYSTEM_DEV_MAX_COUNT)) {
-					targets[tcount] = d;
-					tcount++;
+				if (sysload_reason(system_get_dev(&dev.system, i)) == NULL) {
+					eligible++;
 				}
 			}
 
-			if (tcount == 0) {
+			if (eligible == 0) {
 				uv_uiacceptdialog_st dialog = { };
 				uv_uiacceptdialog_exec(&dialog,
 						"None of the online devices have saved parameters in this "
 						"system configuration.", "OK", "OK", &uv_uistyles[0]);
 			}
 			else {
-				// compare each device's CAN interface version against the one
-				// stored in its param file, listing any that differ
+				// let the user pick which of the system's devices to load onto;
+				// every loadable device starts selected
+				device_st *targets[SYSTEM_DEV_MAX_COUNT];
+				uint8_t tcount = devsel_win_exec(&dev.system,
+						"Load system configuration to devices", "Load",
+						&sysload_reason, targets, SYSTEM_DEV_MAX_COUNT,
+						&uv_uistyles[0]);
+
+				// compare each selected device's CAN interface version against the
+				// one stored in its param file, listing any that differ
 				char msg[1024];
 				int off = snprintf(msg, sizeof(msg),
 						"The CAN interface version of these devices differs from "
@@ -1430,8 +1459,10 @@ bool devicetab_step(void) {
 					}
 				}
 
-				bool proceed = true;
-				if (mismatches > 0) {
+				// the user cancelled the selection window, or deselected every
+				// device: nothing to load
+				bool proceed = (tcount != 0);
+				if (proceed && (mismatches > 0)) {
 					if (off < (int) sizeof(msg)) {
 						snprintf(msg + off, sizeof(msg) - off,
 								"\nLoad the parameters anyway?");
