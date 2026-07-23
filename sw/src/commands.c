@@ -44,6 +44,7 @@
 bool cmd_can(const char *arg);
 bool cmd_baud(const char *arg);
 bool cmd_node(const char *arg);
+bool cmd_forcenode(const char *arg);
 bool cmd_srcdest(const char *arg);
 bool cmd_incdest(const char *arg);
 bool cmd_silent(const char *arg);
@@ -118,9 +119,22 @@ commands_st commands[] = {
 				.cmd_long = "nodeid",
 				.cmd_short = 'n',
 				.str = "Selecs the CANopen Node via Node ID. This should be called prior to commands which "
-						"Operate on CANopen nodes, such as *loadbin*.",
+						"Operate on CANopen nodes, such as *loadbin*. Never changes the node id of the "
+						"device; *loadparam* loads the parameters to this node id and, for parameter files "
+						"which contain more than one device, ignores this option altogether.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_node
+		},
+		{
+				.cmd_long = "forcenodeid",
+				.str = "Selects the CANopen Node via Node ID like *nodeid*, but in addition permits "
+						"*loadparam* to assign the node id found from the parameter file to the selected "
+						"device. The node id is written to the device only after the user has confirmed it "
+						"with an empty line, and it applies only after the device's settings have been "
+						"saved and the device rebooted. Ignored for parameter files which contain more "
+						"than one device.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_forcenode
 		},
 		{
 				.cmd_long = "loadbin",
@@ -414,6 +428,29 @@ bool cmd_node(const char *arg) {
 		uint8_t nodeid = strtol(arg, NULL, 0);
 		PRINT("Selected Node ID 0x%x\n", nodeid);
 		db_set_nodeid_force(&dev.db, nodeid);
+		dev.loadparam.forced_nodeid_set = true;
+		dev.loadparam.forced_nodeid = nodeid;
+		// *nodeid* selects the device only, it never assigns a new node id
+		dev.loadparam.forcenodeid = false;
+	}
+
+	return ret;
+}
+
+bool cmd_forcenode(const char *arg) {
+	bool ret = true;
+	if (!arg) {
+		PRINT("Give Node ID.\n");
+		ret = false;
+	}
+	else {
+		uint8_t nodeid = strtol(arg, NULL, 0);
+		PRINT("Selected Node ID 0x%x. The node id from the parameter file will "
+				"be assigned to this device.\n", nodeid);
+		db_set_nodeid_force(&dev.db, nodeid);
+		dev.loadparam.forced_nodeid_set = true;
+		dev.loadparam.forced_nodeid = nodeid;
+		dev.loadparam.forcenodeid = true;
 	}
 
 	return ret;

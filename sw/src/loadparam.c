@@ -316,6 +316,11 @@ static bool load_device_db(device_st *device) {
 			}
 			if (ret && (device->nodeid != 0)) {
 				db_set_nodeid_force(&dev.db, device->nodeid);
+				// the device's own node id is the target; the node id stored in
+				// the parameter file never reprograms the device (see parse_dev)
+				this->forced_nodeid_set = true;
+				this->forced_nodeid = device->nodeid;
+				this->forcenodeid = false;
 			}
 		}
 		uvdev_close(&pkg);
@@ -785,6 +790,13 @@ static uv_errors_e load_param(char *json_obj,
 
 
 
+/// @brief: Returns true if *str* holds nothing but an empty line, i.e. the user
+/// only pressed enter.
+static bool is_empty_line(const char *str) {
+	return str[strspn(str, " \t\r\n")] == '\0';
+}
+
+
 static uv_errors_e parse_dev(char *json) {
 	uv_errors_e ret = ERR_NONE;
 	char *obj = uv_jsonreader_find_child(json, "NODEID");
@@ -794,19 +806,86 @@ static uv_errors_e parse_dev(char *json) {
 		uint8_t nodeid = 0;
 		nodeid = query_get(obj, NULL, 0, NULL);
 		printf("The NODEID set to 0x%x from the param file\n", nodeid);
-		db_set_nodeid(&dev.db, nodeid);
-		if (db_get_nodeid(&dev.db) != nodeid) {
-			// setting nodeid failed, means that it was force set manually.
-			// write new nodeid to device
-			printf("Writing new NODEID 0x%x to device 0x%x\n",
-					nodeid,
-					db_get_nodeid(&dev.db));
-			loadparam_sdo_write(db_get_nodeid(&dev.db),
-					CONFIG_CANOPEN_NODEID_INDEX,
-					0,
-					1,
-					&nodeid);
+		fflush(stdout);
+
+		// The device is addressed with the node id from the parameter file,
+		// unless a node id was selected outside the file for this single device.
+		// For files holding more than one device such a node id cannot refer to
+		// any single device of the file, so it is ignored altogether: otherwise
+		// every device of the file would be written to that one node id and, with
+		// the node id write below, one device's node id would be programmed into
+		// another device, which then collides on the bus with the real owner of
+		// that node id.
+		uint8_t target_nodeid = nodeid;
+		if (this->forced_nodeid_set &&
+				(this->file_dev_count == 1) &&
+				(this->forced_nodeid != nodeid)) {
+			target_nodeid = this->forced_nodeid;
+
+			if (!this->forcenodeid) {
+				// the node id merely selects the device to talk to, the device is
+				// never reprogrammed
+				WARNING("The selected node id (0x%x) differs from the node id in "
+						"the parameter file (0x%x).\n"
+						"Loading the parameters to device 0x%x without changing its "
+						"node id.\n"
+						"Use the 'forcenodeid' command to assign the node id from "
+						"the parameter file to the device.\n",
+						(unsigned int) target_nodeid,
+						(unsigned int) nodeid,
+						(unsigned int) target_nodeid);
+				fflush(stdout);
+			}
+			else {
+				// *forcenodeid* command: the user explicitly asked the device's
+				// node id to be reprogrammed to the one found from the parameter
+				// file. Confirm before doing so, since after the reset the device
+				// no longer answers with the old node id, and any other device
+				// already using the new node id starts to change its own node id
+				// because of the collision.
+				PROMPT("\n\n "
+						"The node id of the device 0x%x will be changed to 0x%x.\n"
+						"The change applies only after the settings have been saved "
+						"and the device rebooted.\n"
+						"Make sure that no other device on the bus uses the node id "
+						"0x%x.\n\n"
+						"Press ENTER (empty line) to continue loading the parameters,\n"
+						"or type anything else to skip this device.\n\n",
+						(unsigned int) target_nodeid,
+						(unsigned int) nodeid,
+						(unsigned int) nodeid);
+				char str[128] = {};
+				uv_stdin_getline(str, sizeof(str) - 1);
+				if (!is_empty_line(str)) {
+					printf("User selected: skip device 0x%x\n",
+							(unsigned int) target_nodeid);
+					fflush(stdout);
+					return ERR_SKIPPED;
+				}
+				printf("User selected: continue (change the node id 0x%x to 0x%x)\n",
+						(unsigned int) target_nodeid,
+						(unsigned int) nodeid);
+				printf("Writing new NODEID 0x%x to device 0x%x\n",
+						(unsigned int) nodeid,
+						(unsigned int) target_nodeid);
+				fflush(stdout);
+				// note: The device keeps answering with the old node id until it is
+				// reset, thus the parameters are still loaded to *target_nodeid*.
+				if (loadparam_sdo_write(target_nodeid,
+						CONFIG_CANOPEN_NODEID_INDEX,
+						0,
+						1,
+						&nodeid) != ERR_NONE) {
+					ERROR("Writing the new NODEID 0x%x failed.\n",
+							(unsigned int) nodeid);
+					LOG_SDO_ERROR();
+					ret = ERR_ABORTED;
+				}
+			}
 		}
+		// force set so that this device's node id is used also when a node id was
+		// selected outside the file for some other device
+		db_set_nodeid_force(&dev.db, target_nodeid);
 	}
 	else {
 		// NODEID not found, try to find queries
@@ -1323,6 +1402,18 @@ void loadparam_step(void *ptr) {
 				if (obj != NULL &&
 						uv_jsonreader_get_type(obj) == JSON_ARRAY) {
 					// new protocol where each device's settings are stored in a DEVS-array
+					this->file_dev_count = uv_jsonreader_array_get_size(obj);
+					if ((this->file_dev_count > 1) &&
+							this->forced_nodeid_set) {
+						// a single node id cannot refer to any one device of a
+						// multi-device file, see parse_dev
+						WARNING("The parameter file contains %u devices.\n"
+								"The selected node id 0x%x is ignored, each device is "
+								"addressed with the node id from the parameter file.\n",
+								(unsigned int) this->file_dev_count,
+								(unsigned int) this->forced_nodeid);
+						fflush(stdout);
+					}
 					for (uint16_t i = 0; i < uv_jsonreader_array_get_size(obj); i++) {
 						char *dev = uv_jsonreader_array_at(obj, i);
 						if (dev != NULL) {
@@ -1340,6 +1431,7 @@ void loadparam_step(void *ptr) {
 				else {
 					// deprecated database protocol, where only one device was
 					// supported
+					this->file_dev_count = 1;
 					e = parse_dev(json);
 				}
 

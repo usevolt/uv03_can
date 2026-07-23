@@ -57,6 +57,19 @@ typedef struct {
 	uint8_t modified_dev_nodeids[64];
 	uint8_t dev_count;
 
+	// true when the target node id was selected outside the parameter file:
+	// with the *nodeid* or *forcenodeid* command, or by the device package of
+	// the device being loaded (see load_device_db)
+	bool forced_nodeid_set;
+	// the node id which was selected outside the parameter file
+	uint8_t forced_nodeid;
+	// true when the node id was selected with the *forcenodeid* command, i.e.
+	// the user explicitly requested the node id found from the parameter file
+	// to be assigned to the device
+	bool forcenodeid;
+	// count of the devices in the parameter file which is currently parsed
+	uint8_t file_dev_count;
+
 	// When true, loadparam_step only writes the parameters to the target device:
 	// it does not suppress/clear EMCY messages, store the parameters or reset the
 	// device. Used by the system load (loadparam_load_system_async), which

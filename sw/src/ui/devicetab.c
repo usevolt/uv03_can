@@ -1859,7 +1859,22 @@ bool devicetab_step(void) {
 				uv_uidigitedit_value_changed(&content.nodeid_edit)) {
 			// the user adjusted the node id; store it back on the device. No
 			// rebuild is needed, the editor already shows the new value.
+			uint8_t old_nodeid = current_device->nodeid;
 			current_device->nodeid = uv_uidigitedit_get_value(&content.nodeid_edit);
+			// The node id here is the one uvcan addresses the device with. The
+			// device itself keeps its own node id until the new one is written to
+			// it, stored to its non-volatile memory and the device rebooted, so
+			// say so instead of letting the user assume the device followed.
+			printf(PRINT_BOLDYELLOW
+					"Node ID of the device changed from 0x%x to 0x%x.\n"
+					"NOTE: the device keeps its old node id until the new one is "
+					"written to it. The change applies only after the device's "
+					"settings have been saved (\"Save settings\") and the device "
+					"has been rebooted (\"Reset device\").\n"
+					PRINT_RESET,
+					(unsigned int) old_nodeid,
+					(unsigned int) current_device->nodeid);
+			fflush(stdout);
 		}
 		else {
 			// nothing changed this cycle
