@@ -23,7 +23,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <ctype.h>
-#include <uv_json.h>
+#include "parser.h"
 #include "loadparam.h"
 #include "main.h"
 #include "db.h"
@@ -446,16 +446,16 @@ bool loadparam_load_device(device_st *device, const char *file) {
 
 
 /// @brief: Resolve the readable answer-keyed query form: return the child of
-/// *qref* whose key matches the query's chosen answer text, or NULL (with a
-/// warning) if no such key exists.
+/// *qref* whose key matches the query's chosen answer text, or an invalid node
+/// (with a warning) if no such key exists.
 ///
-/// The returned pointer is a named member, so it is usable with all the generic
-/// uv_jsonreader accessors (get_type/get_int/get_string/find_child) and with
+/// The returned node is a named member, so it is usable with all the generic
+/// parser accessors (get_type/get_int/get_string/find_child) and with
 /// array_get_size/array_at, unlike a bare array element from array_at.
-static char *query_keyed_select(char *qref, query_st *q) {
+static parser_node_st query_keyed_select(parser_node_st qref, query_st *q) {
 	char *answer = q->answers[q->correct_answer];
-	char *sel = uv_jsonreader_find_child(qref, answer);
-	if (sel == NULL) {
+	parser_node_st sel = parser_find_child(qref, answer);
+	if (!parser_node_is_valid(sel)) {
 		WARNING("Query '%s': chosen answer \"%s\" is not a key in its value "
 				"object. Skipping this value.\n", q->name, answer);
 	}
@@ -466,59 +466,60 @@ static char *query_keyed_select(char *qref, query_st *q) {
 /// @brief: Gets and returns the query value. Integer values are returned,
 /// string values are copied to *dest_str*.
 ///
-/// @param dest_str: If *type* is JSON_STRING, the resulting string is copied to this
-/// @param array_obj: If *type* is JSON_ARRAY, the resulting array object is copied to this
-static int query_get(char *json_obj, char *dest_str, int dest_len, char **array_obj) {
+/// @param dest_str: If *type* is PARSER_STRING, the resulting string is copied to this
+/// @param array_obj: If *type* is PARSER_ARRAY, the resulting array node is copied to this
+static int query_get(parser_node_st obj, char *dest_str, int dest_len,
+		parser_node_st *array_obj) {
 	int ret = 0;
-	switch (uv_jsonreader_get_type(json_obj)) {
-	case JSON_OBJECT:
+	switch (parser_get_type(obj)) {
+	case PARSER_OBJECT:
 	{
 		char name[32];
-		uv_jsonreader_get_obj_name(json_obj, name, sizeof(name));
+		parser_get_obj_name(obj, name, sizeof(name));
 		// query object
 		// For object types, search all object's children and if any child's
 		// name matches with query name, fetch that value
 		for (uint8_t i = 0; i < uv_vector_size(&this->queries); i++) {
 			query_st *q = uv_vector_at(&this->queries, i);
-			char *qref = uv_jsonreader_find_child(json_obj, q->name);
-			if (qref != NULL) {
+			parser_node_st qref = parser_find_child(obj, q->name);
+			if (parser_node_is_valid(qref)) {
 				printf("Query %s answered: (%u) %s\n",
 						q->name,
 						q->correct_answer + 1,
 						q->answers[q->correct_answer]);
-				if (uv_jsonreader_get_type(qref) == JSON_OBJECT) {
+				if (parser_get_type(qref) == PARSER_OBJECT) {
 					// readable answer-keyed form: { "<answer>": <value>, ... }.
 					// Resolve the chosen answer's value and parse it recursively;
 					// the generic query_get handles int/string/array/nested query.
-					char *sel = query_keyed_select(qref, q);
-					if (sel != NULL) {
+					parser_node_st sel = query_keyed_select(qref, q);
+					if (parser_node_is_valid(sel)) {
 						ret = query_get(sel, dest_str, dest_len, array_obj);
 					}
 				}
 				else {
 					// legacy positional-array form: indexed by the answer number
-					switch(uv_jsonreader_array_get_type(qref, q->correct_answer)) {
-					case JSON_OBJECT:
+					switch(parser_array_get_type(qref, q->correct_answer)) {
+					case PARSER_OBJECT:
 					{
-						char *newquery = uv_jsonreader_array_at(
+						parser_node_st newquery = parser_array_at(
 								qref, q->correct_answer);
 						// found new query inside query, parse it recursively
 						ret = query_get(newquery, dest_str, dest_len, array_obj);
 						break;
 					}
-					case JSON_INT:
-						ret = uv_jsonreader_array_get_int(qref, q->correct_answer);
+					case PARSER_INT:
+						ret = parser_array_get_int(qref, q->correct_answer);
 						break;
-					case JSON_STRING:
-						if (uv_jsonreader_array_get_size(qref) > q->correct_answer) {
-							uv_jsonreader_array_get_string(qref,
+					case PARSER_STRING:
+						if (parser_array_get_size(qref) > q->correct_answer) {
+							parser_array_get_string(qref,
 									q->correct_answer,
 									dest_str,
 									dest_len);
 						}
 						break;
-					case JSON_ARRAY:
-						*array_obj = uv_jsonreader_array_at(qref, q->correct_answer);
+					case PARSER_ARRAY:
+						*array_obj = parser_array_at(qref, q->correct_answer);
 						break;
 					default:
 						break;
@@ -529,15 +530,15 @@ static int query_get(char *json_obj, char *dest_str, int dest_len, char **array_
 		}
 		break;
 	}
-	case JSON_ARRAY:
-		*array_obj = json_obj;
+	case PARSER_ARRAY:
+		*array_obj = obj;
 		break;
-	case JSON_INT:
-		ret = uv_jsonreader_get_int(json_obj);
+	case PARSER_INT:
+		ret = parser_get_int(obj);
 		break;
-	case JSON_STRING:
+	case PARSER_STRING:
 		if (dest_str && dest_len) {
-			uv_jsonreader_get_string(json_obj, dest_str, dest_len);
+			parser_get_string(obj, dest_str, dest_len);
 		}
 		break;
 	default:
@@ -547,7 +548,7 @@ static int query_get(char *json_obj, char *dest_str, int dest_len, char **array_
 }
 
 
-static uv_errors_e load_param(char *json_obj,
+static uv_errors_e load_param(parser_node_st param_obj,
 							  uint16_t mindex,
 							  canopen_object_type_e objtype,
 							  const char *parent_info) {
@@ -555,60 +556,60 @@ static uv_errors_e load_param(char *json_obj,
 	uint8_t sindex = 0;
 	uint8_t sindex_offset = 0;
 
-	char *val = uv_jsonreader_find_child(json_obj, "INFO");
+	parser_node_st val = parser_find_child(param_obj, "INFO");
 	char info[128] = {};
 	if (parent_info != NULL) {
 		snprintf(info, sizeof(info), "%s: ", parent_info);
 	}
-	if (val != NULL) {
+	if (parser_node_is_valid(val)) {
 		size_t len = strlen(info);
-		uv_jsonreader_get_string(val, info + len, sizeof(info) - len);
+		parser_get_string(val, info + len, sizeof(info) - len);
 	}
 
 
-	val = uv_jsonreader_find_child(json_obj, "MAININDEX");
-	if (val) {
+	val = parser_find_child(param_obj, "MAININDEX");
+	if (parser_node_is_valid(val)) {
 		mindex = query_get(val, NULL, 0, NULL);
 	}
 
 
-	val = uv_jsonreader_find_child(json_obj, "TYPE");
-	if (val) {
+	val = parser_find_child(param_obj, "TYPE");
+	if (parser_node_is_valid(val)) {
 		char typestr[64];
 		query_get(val, typestr, sizeof(typestr), NULL);
 		objtype = db_str_to_type(typestr);
 	}
 
-	val = uv_jsonreader_find_child(json_obj, "SUBINDEX");
-	if (val != NULL) {
+	val = parser_find_child(param_obj, "SUBINDEX");
+	if (parser_node_is_valid(val)) {
 		sindex = query_get(val, NULL, 0, NULL);
 	}
 	// SUBINDEX_OFFSET is used for array objects to not start writing the data
 	// to the first element in array.
-	val = uv_jsonreader_find_child(json_obj, "SUBINDEX_OFFSET");
-	if (val != NULL) {
+	val = parser_find_child(param_obj, "SUBINDEX_OFFSET");
+	if (parser_node_is_valid(val)) {
 		sindex_offset = query_get(val, NULL, 0, NULL);
 	}
 
-	char *data = uv_jsonreader_find_child(json_obj, "DATA");
+	parser_node_st data = parser_find_child(param_obj, "DATA");
 
-	char *query_array = NULL;
+	parser_node_st query_array = parser_node_invalid();
 	query_st *query = NULL;
 	bool skip = false;
-	if (data == NULL) {
+	if (!parser_node_is_valid(data)) {
 		// DATA object not found. Check if any queries are defined
 		for (uint16_t i = 0; i < uv_vector_size(&this->queries); i++) {
 			query = uv_vector_at(&this->queries, i);
-			char *obj = uv_jsonreader_find_child(json_obj, query->name);
-			if (obj != NULL) {
+			parser_node_st obj = parser_find_child(param_obj, query->name);
+			if (parser_node_is_valid(obj)) {
 				// matching query found
 				query_array = obj;
 				break;
 			}
 		}
-		if (query_array == NULL) {
+		if (!parser_node_is_valid(query_array)) {
 			char name[64] = {};
-			uv_jsonreader_get_obj_name(json_obj, name, sizeof(name));
+			parser_get_obj_name(param_obj, name, sizeof(name));
 			ERROR("no \"DATA\" or queries found in object '%s'\n",
 				  name);
 			ret = ERR_ABORTED;
@@ -619,11 +620,11 @@ static uv_errors_e load_param(char *json_obj,
 	// chosen answer's value into *data* so the regular DATA code paths below
 	// handle it uniformly (the resolved pointer is a named member). A missing
 	// answer key warns and skips writing this parameter.
-	if (query_array != NULL &&
-			uv_jsonreader_get_type(query_array) == JSON_OBJECT) {
+	if (parser_node_is_valid(query_array) &&
+			parser_get_type(query_array) == PARSER_OBJECT) {
 		data = query_keyed_select(query_array, query);
-		query_array = NULL;
-		if (data == NULL) {
+		query_array = parser_node_invalid();
+		if (!parser_node_is_valid(data)) {
 			skip = true;
 		}
 	}
@@ -631,17 +632,17 @@ static uv_errors_e load_param(char *json_obj,
 	// at this point either *data* or *query_array* should contain
 	// object to load
 
-	uv_json_types_e type = JSON_UNSUPPORTED;
-	if (data) {
-		type = uv_jsonreader_get_type(data);
+	parser_types_e type = PARSER_UNSUPPORTED;
+	if (parser_node_is_valid(data)) {
+		type = parser_get_type(data);
 	}
 	else if (!skip) {
-		type = uv_jsonreader_array_get_type(
+		type = parser_array_get_type(
 				query_array, query->correct_answer);
-		if (type == JSON_OBJECT) {
+		if (type == PARSER_OBJECT) {
 			// set data to point to selected object. *load_param* is
 			// then called for this object recursively.
-			data = uv_jsonreader_array_at(query_array, query->correct_answer);
+			data = parser_array_at(query_array, query->correct_answer);
 		}
 		else {
 
@@ -653,22 +654,22 @@ static uv_errors_e load_param(char *json_obj,
 
 
 	if (ret == ERR_NONE && !skip) {
-		if (type == JSON_ARRAY) {
-			char *array = NULL;
-			if (data != NULL) {
+		if (type == PARSER_ARRAY) {
+			parser_node_st array = parser_node_invalid();
+			if (parser_node_is_valid(data)) {
 				query_get(data, NULL, 0, &array);
 			}
-			else if (query_array != NULL) {
-				array = uv_jsonreader_array_at(query_array, query->correct_answer);
+			else if (parser_node_is_valid(query_array)) {
+				array = parser_array_at(query_array, query->correct_answer);
 			}
 			else {
 
 			}
-			// *array* holds pointer to JSON array object
-			for (uint32_t i = 0; i < uv_jsonreader_array_get_size(array); i++) {
-				switch (uv_jsonreader_array_get_type(array, i)) {
-					case JSON_INT:
-						uint32_t d = uv_jsonreader_array_get_int(array, i);
+			// *array* refers to the array node
+			for (uint32_t i = 0; i < parser_array_get_size(array); i++) {
+				switch (parser_array_get_type(array, i)) {
+					case PARSER_INT:
+						uint32_t d = parser_array_get_int(array, i);
 						LOG("Writing '%s' (0x%x) [%u] = 0x%x",
 								info, mindex, i + 1 + sindex_offset, d);
 						ret |= loadparam_sdo_write(db_get_nodeid(&dev.db),
@@ -680,8 +681,8 @@ static uv_errors_e load_param(char *json_obj,
 							LOG_OK();
 						}
 						break;
-						case JSON_OBJECT: {
-							char *obj = uv_jsonreader_array_at(array, i);
+						case PARSER_OBJECT: {
+							parser_node_st obj = parser_array_at(array, i);
 							// child objects are loaded recursively (they log and
 							// confirm their own transfers)
 							ret |= load_param(
@@ -694,8 +695,8 @@ static uv_errors_e load_param(char *json_obj,
 					default:
 						LOG_END();
 						ERROR("array of object type '%s' not supported\n",
-								uv_json_type_to_str(
-										uv_jsonreader_array_get_type(array, i)));
+								parser_type_to_str(
+										parser_array_get_type(array, i)));
 						fflush(stdout);
 						break;
 				}
@@ -709,19 +710,19 @@ static uv_errors_e load_param(char *json_obj,
 				}
 			}
 		}
-		else if (type == JSON_OBJECT) {
+		else if (type == PARSER_OBJECT) {
 			// DATA was OBJECT type, which means it need to be parsed
 			// recursively
 			ret |= load_param(data, mindex, objtype, info);
 		}
-		else if (type == JSON_STRING) {
+		else if (type == PARSER_STRING) {
 			char str[1024] = {};
-			if (data != NULL) {
+			if (parser_node_is_valid(data)) {
 				query_get(data, str, sizeof(str), NULL);
 			}
-			else if (query_array != NULL) {
+			else if (parser_node_is_valid(query_array)) {
 				char s[128] = {};
-				uv_jsonreader_array_get_string(query_array,
+				parser_array_get_string(query_array,
 						query->correct_answer, s, sizeof(s));
 				strcpy(str, s);
 			}
@@ -745,11 +746,11 @@ static uv_errors_e load_param(char *json_obj,
 		else {
 			// data is integer data
 			uint32_t d;
-			if (data != NULL) {
+			if (parser_node_is_valid(data)) {
 				d = query_get(data, NULL, 0, NULL);
 			}
-			else if (query_array != NULL) {
-				d = uv_jsonreader_array_get_int(query_array, query->correct_answer);
+			else if (parser_node_is_valid(query_array)) {
+				d = parser_array_get_int(query_array, query->correct_answer);
 			}
 			else {
 
@@ -797,12 +798,12 @@ static bool is_empty_line(const char *str) {
 }
 
 
-static uv_errors_e parse_dev(char *json) {
+static uv_errors_e parse_dev(parser_node_st devnode) {
 	uv_errors_e ret = ERR_NONE;
-	char *obj = uv_jsonreader_find_child(json, "NODEID");
-	char *query_array = NULL;
+	parser_node_st obj = parser_find_child(devnode, "NODEID");
+	parser_node_st query_array = parser_node_invalid();
 	query_st *query = NULL;
-	if (obj != NULL) {
+	if (parser_node_is_valid(obj)) {
 		uint8_t nodeid = 0;
 		nodeid = query_get(obj, NULL, 0, NULL);
 		printf("The NODEID set to 0x%x from the param file\n", nodeid);
@@ -892,14 +893,14 @@ static uv_errors_e parse_dev(char *json) {
 		// DATA object not found. Check if any queries are defined
 		for (uint16_t i = 0; i < uv_vector_size(&this->queries); i++) {
 			query = uv_vector_at(&this->queries, i);
-			char *obj = uv_jsonreader_find_child(json, query->name);
-			if (obj != NULL) {
+			parser_node_st q = parser_find_child(devnode, query->name);
+			if (parser_node_is_valid(q)) {
 				// matching query found
-				query_array = obj;
+				query_array = q;
 				break;
 			}
 		}
-		if (query_array == NULL) {
+		if (!parser_node_is_valid(query_array)) {
 			ERRORSTR("no \"DATA\" or queries found in device\n");
 			ret = ERR_ABORTED;
 		}
@@ -912,20 +913,20 @@ static uv_errors_e parse_dev(char *json) {
 	}
 
 	// parse recursively queried object
-	if (query_array != NULL) {
-		if (uv_jsonreader_get_type(query_array) == JSON_OBJECT) {
+	if (parser_node_is_valid(query_array)) {
+		if (parser_get_type(query_array) == PARSER_OBJECT) {
 			// readable answer-keyed form: select the device sub-object by the
 			// chosen answer's text (query_keyed_select warns if the key is missing)
-			json = query_keyed_select(query_array, query);
+			devnode = query_keyed_select(query_array, query);
 		}
 		else {
 			// legacy positional-array form
-			json = uv_jsonreader_array_at(query_array, query->correct_answer);
+			devnode = parser_array_at(query_array, query->correct_answer);
 		}
-		if (json != NULL) {
-			ret = parse_dev(json);
+		if (parser_node_is_valid(devnode)) {
+			ret = parse_dev(devnode);
 		}
-		else if (uv_jsonreader_get_type(query_array) != JSON_OBJECT) {
+		else if (parser_get_type(query_array) != PARSER_OBJECT) {
 			WARNING("Query '%s' didn't contain selected answer index %i,\n"
 					"Skipping this device.\n",
 					query->name,
@@ -936,17 +937,17 @@ static uv_errors_e parse_dev(char *json) {
 		}
 	}
 	else {
-		obj = uv_jsonreader_find_child(json, "CAN IF VERSION");
-		if (obj != NULL) {
+		obj = parser_find_child(devnode, "CAN IF VERSION");
+		if (parser_node_is_valid(obj)) {
 			uint16_t can_if = query_get(obj, NULL, 0, NULL);
 			uint16_t dev_if = 0;
-			char *mindex = uv_jsonreader_find_child(json, "CAN IF MINDEX");
-			char *sindex = uv_jsonreader_find_child(json, "CAN IF SINDEX");
-			if (mindex != NULL &&
-					sindex != NULL) {
+			parser_node_st mindex = parser_find_child(devnode, "CAN IF MINDEX");
+			parser_node_st sindex = parser_find_child(devnode, "CAN IF SINDEX");
+			if (parser_node_is_valid(mindex) &&
+					parser_node_is_valid(sindex)) {
 				LOG("Reading CAN IF from 0x%x", db_get_nodeid(&dev.db));
-				if (loadparam_sdo_read(db_get_nodeid(&dev.db), uv_jsonreader_get_int(mindex),
-						uv_jsonreader_get_int(sindex), CANOPEN_SIZEOF(CANOPEN_UNSIGNED16),
+				if (loadparam_sdo_read(db_get_nodeid(&dev.db), parser_get_int(mindex),
+						parser_get_int(sindex), CANOPEN_SIZEOF(CANOPEN_UNSIGNED16),
 						&dev_if) == ERR_NONE) {
 					// mark the successful CAN-bus read on the same line
 					LOG_OK();
@@ -1019,18 +1020,18 @@ static uv_errors_e parse_dev(char *json) {
 				this->modified_dev_nodeids[this->dev_count++] = db_get_nodeid(&dev.db);
 			}
 
-			obj = uv_jsonreader_find_child(json, "PARAMS");
-			if (obj != NULL && uv_jsonreader_get_type(obj) == JSON_ARRAY) {
-				char *arr = obj;
-				unsigned int count = uv_jsonreader_array_get_size(arr);
+			obj = parser_find_child(devnode, "PARAMS");
+			if (parser_node_is_valid(obj) && parser_get_type(obj) == PARSER_ARRAY) {
+				parser_node_st arr = obj;
+				unsigned int count = parser_array_get_size(arr);
 				if (count != 0) {
 					printf("Found %u params. Downloading them to the target device 0x%x.\n",
-							uv_jsonreader_array_get_size(arr),
+							parser_array_get_size(arr),
 							db_get_nodeid(&dev.db));
 					fflush(stdout);
-					obj = uv_jsonreader_array_at(arr, 0);
-					for (int32_t i = 0; i < uv_jsonreader_array_get_size(arr); i++) {
-						if (uv_jsonreader_get_type(obj) == JSON_OBJECT) {
+					obj = parser_array_at(arr, 0);
+					for (int32_t i = 0; i < (int32_t) parser_array_get_size(arr); i++) {
+						if (parser_get_type(obj) == PARSER_OBJECT) {
 							ret |= load_param(obj, 0, CANOPEN_UNDEFINED, NULL);
 						}
 						else {
@@ -1045,7 +1046,7 @@ static uv_errors_e parse_dev(char *json) {
 							break;
 						}
 
-						uv_jsonreader_get_next_sibling(obj, &obj);
+						parser_get_next_sibling(obj, &obj);
 					}
 					LOG_END();
 				}
@@ -1054,24 +1055,24 @@ static uv_errors_e parse_dev(char *json) {
 				}
 			}
 			else {
-				ERRORSTR("Couldn't find array type object 'PARAMS' from the json file.\n");
+				ERRORSTR("Couldn't find array type object 'PARAMS' from the parameter file.\n");
 				fflush(stdout);
 				ret = ERR_ABORTED;
 			}
 
-			obj = uv_jsonreader_find_child(json, "OPERATORS");
-			char *opdb_mindex_json = uv_jsonreader_find_child(json, "OPDB_MAININDEX");
-			char *current_op_json = uv_jsonreader_find_child(json, "CURRENT_OP");
-			char *opdb_type_json = uv_jsonreader_find_child(json, "OPDB_TYPE");
+			obj = parser_find_child(devnode, "OPERATORS");
+			parser_node_st opdb_mindex_obj = parser_find_child(devnode, "OPDB_MAININDEX");
+			parser_node_st current_op_obj = parser_find_child(devnode, "CURRENT_OP");
+			parser_node_st opdb_type_obj = parser_find_child(devnode, "OPDB_TYPE");
 
-			if (obj != NULL && uv_jsonreader_get_type(obj) == JSON_ARRAY &&
-					opdb_mindex_json != NULL && uv_jsonreader_get_type(opdb_mindex_json) == JSON_INT &&
-					current_op_json != NULL && uv_jsonreader_get_type(current_op_json) == JSON_INT &&
-					opdb_type_json != NULL && uv_jsonreader_get_type(opdb_type_json) == JSON_STRING) {
+			if (parser_node_is_valid(obj) && parser_get_type(obj) == PARSER_ARRAY &&
+					parser_get_type(opdb_mindex_obj) == PARSER_INT &&
+					parser_get_type(current_op_obj) == PARSER_INT &&
+					parser_get_type(opdb_type_obj) == PARSER_STRING) {
 
-				char *operators = obj;
-				uint32_t opdb_mindex = uv_jsonreader_get_int(opdb_mindex_json);
-				canopen_object_type_e opdb_type = db_jsonval_to_type(opdb_type_json);
+				parser_node_st operators = obj;
+				uint32_t opdb_mindex = parser_get_int(opdb_mindex_obj);
+				canopen_object_type_e opdb_type = db_paramval_to_type(opdb_type_obj);
 
 				// check how many ops dev has. Skipped (leaving ret set) when the
 				// PARAMS above already failed, so no further bus traffic is sent.
@@ -1082,7 +1083,7 @@ static uv_errors_e parse_dev(char *json) {
 				}
 
 				// copy as many times as necessary to have all the operators
-				uint8_t op_count = uv_jsonreader_array_get_size(operators);
+				uint8_t op_count = parser_array_get_size(operators);
 				for (uint32_t i = devopcount; (i < op_count) && (ret == ERR_NONE); i++) {
 					printf("Creating new operator by copying operator %u\n", 1);
 					fflush(stdout);
@@ -1107,12 +1108,12 @@ static uv_errors_e parse_dev(char *json) {
 					uv_rtos_task_delay(500);
 					LOG("Loading parameters for operator %u", data);
 
-					char *op = uv_jsonreader_array_at(operators, i);
-					obj = uv_jsonreader_array_at(op, 0);
+					parser_node_st op = parser_array_at(operators, i);
+					obj = parser_array_at(op, 0);
 					// cycle through all this operators parameters
-					for (uint32_t j = 0; (j < uv_jsonreader_array_get_size(op)) &&
+					for (uint32_t j = 0; (j < parser_array_get_size(op)) &&
 							(ret == ERR_NONE); j++) {
-						if (uv_jsonreader_get_type(obj) == JSON_OBJECT) {
+						if (parser_get_type(obj) == PARSER_OBJECT) {
 							ret |= load_param(obj, 0, CANOPEN_UNDEFINED, NULL);
 						}
 						else {
@@ -1122,7 +1123,7 @@ static uv_errors_e parse_dev(char *json) {
 									i + 1, j + 1);
 						}
 
-						uv_jsonreader_get_next_sibling(obj, &obj);
+						parser_get_next_sibling(obj, &obj);
 					}
 					LOG_END();
 					// only store if every parameter of this operator was written
@@ -1147,7 +1148,7 @@ static uv_errors_e parse_dev(char *json) {
 				// restore the current operator only if all operators loaded ok
 				if (ret == ERR_NONE) {
 					// todo: load the current op
-					uint32_t data = uv_jsonreader_get_int(current_op_json) + 1;
+					uint32_t data = parser_get_int(current_op_obj) + 1;
 					printf("Setting the current operator to op %i\n", data);
 					fflush(stdout);
 					ret |= loadparam_sdo_write(db_get_nodeid(&dev.db), opdb_mindex, 1,
@@ -1156,11 +1157,11 @@ static uv_errors_e parse_dev(char *json) {
 				}
 			}
 			else {
-				if (opdb_mindex_json == NULL) {
+				if (!parser_node_is_valid(opdb_mindex_obj)) {
 					ERRORSTR("OPDB_MAININDEX filed not found\n");
 				}
-				if (opdb_type_json)
-				ERRORSTR("OPERATORS array not found from the JSON.\n\n");
+				if (parser_node_is_valid(opdb_type_obj))
+				ERRORSTR("OPERATORS array not found from the parameter file.\n\n");
 				fflush(stdout);
 			}
 		}
@@ -1268,180 +1269,167 @@ void loadparam_step(void *ptr) {
 
 	while (strlen(this->files[this->current_file]) != 0) {
 		char *file = this->files[this->current_file];
-		FILE *fptr = fopen(file, "rb");
+		// the file's format is selected by it's extension
+		parser_formats_e format = parser_format_from_filename(file);
+		char *buffer = NULL;
+		parser_node_st root = parser_read_file(file, &buffer);
 
-		if (fptr == NULL) {
-			// failed to open the file
+		if (!parser_node_is_valid(root)) {
+			// failed to open or to parse the file
 			ERROR("Failed to open parameter file '%s'.\n", file);
 		}
 		else {
-			int32_t size;
-			fseek(fptr, 0, SEEK_END);
-			size = ftell(fptr);
-			rewind(fptr);
-
-			printf("Opened file '%s'. Size: %i bytes.\n", file, size);
+			printf("Opened file '%s'. Size: %u bytes, format: %s.\n",
+					file, (unsigned int) strlen(buffer),
+					parser_format_to_str(format));
 			fflush(stdout);
 
-			char json[size];
-			size_t ret = fread(json, size, 1, fptr);
-			fclose(fptr);
+			// QUERIES array can hold queries that affect the param values.
+			// A query is referenced inside a value by its NAME. Two forms
+			// are supported for selecting the value by the chosen answer:
+			//   legacy positional array, indexed by the answer number:
+			//       "DATA": { "valve": [2000, 3500] }
+			//   readable answer-keyed object, keyed by the answer text:
+			//       "DATA": { "valve": { "Danfoss": 2000, "Sauer": 3500 } }
+			// The keyed form is self-documenting and order-independent. If
+			// the chosen answer's key is missing, that value is skipped with
+			// a warning.
+			parser_node_st obj = parser_find_child(root, "QUERIES");
+			if (parser_node_is_valid(obj) &&
+					parser_get_type(obj) == PARSER_ARRAY) {
+				parser_node_st queries = obj;
+				for (uint16_t i = 0; i < parser_array_get_size(queries); i++) {
+					obj = parser_array_at(queries, i);
+					query_st q;
+					strcpy(q.name, "UNKNOWN");
+					bool valid = true;
+					parser_node_st name = parser_find_child(obj, "NAME");
+					if (parser_node_is_valid(name)) {
+						parser_get_string(name, q.name, sizeof(q.name));
+					}
+					else {
+						valid = false;
+					}
+					parser_node_st question = parser_find_child(obj, "QUESTION");
+					if (parser_node_is_valid(question)) {
+						parser_get_string(question, q.question, sizeof(q.question));
+					}
+					else {
+						valid = false;
+					}
+					parser_node_st answers = parser_find_child(obj, "ANSWERS");
+					if (parser_node_is_valid(answers) &&
+							parser_get_type(answers) == PARSER_ARRAY) {
+						q.answer_count = parser_array_get_size(answers);
+						for (uint16_t i = 0; i < q.answer_count; i++) {
+							parser_array_get_string(answers,
+									i, q.answers[i], sizeof(q.answers[i]));
+						}
 
-			if (!ret) {
-				ERRORSTR("Reading file failed. "
-						"Parameter download cancelled.\n");
-				fflush(stderr);
-			}
-			else {
+					}
+					else {
+						valid = false;
+					}
 
-				uv_jsonreader_init(json, strlen(json));
-
-				// QUERIES array can hold queries that affect the param values.
-				// A query is referenced inside a value by its NAME. Two forms
-				// are supported for selecting the value by the chosen answer:
-				//   legacy positional array, indexed by the answer number:
-				//       "DATA": { "valve": [2000, 3500] }
-				//   readable answer-keyed object, keyed by the answer text:
-				//       "DATA": { "valve": { "Danfoss": 2000, "Sauer": 3500 } }
-				// The keyed form is self-documenting and order-independent. If
-				// the chosen answer's key is missing, that value is skipped with
-				// a warning.
-				char *obj = uv_jsonreader_find_child(json, "QUERIES");
-				if (obj != NULL &&
-						uv_jsonreader_get_type(obj) == JSON_ARRAY) {
-					char *queries = obj;
-					for (uint16_t i = 0; i < uv_jsonreader_array_get_size(queries); i++) {
-						obj = uv_jsonreader_array_at(queries, i);
-						query_st q;
-						strcpy(q.name, "UNKNOWN");
-						bool valid = true;
-						char *name = uv_jsonreader_find_child(obj, "NAME");
-						if (name != NULL) {
-							uv_jsonreader_get_string(name, q.name, sizeof(q.name));
-						}
-						else {
-							valid = false;
-						}
-						char *question = uv_jsonreader_find_child(obj, "QUESTION");
-						if (question != NULL) {
-							uv_jsonreader_get_string(question, q.question, sizeof(q.question));
-						}
-						else {
-							valid = false;
-						}
-						char *answers = uv_jsonreader_find_child(obj, "ANSWERS");
-						if (answers != NULL &&
-								uv_jsonreader_get_type(answers) == JSON_ARRAY) {
-							q.answer_count = uv_jsonreader_array_get_size(answers);
-							for (uint16_t i = 0; i < q.answer_count; i++) {
-								uv_jsonreader_array_get_string(answers,
-										i, q.answers[i], sizeof(q.answers[i]));
+					if (valid == false) {
+						ERROR("ERROR in query '%s'. All values not implemented.\n\n",
+								q.name);
+					}
+					else {
+						bool already_answered = false;
+						// check if query with this name was already asked
+						for (uint32_t i = 0; i < uv_vector_size(&this->queries); i++) {
+							query_st *qu = uv_vector_at(&this->queries, i);
+							if (strcmp(qu->name, q.name) == 0) {
+								already_answered = true;
+								printf("Query '%s' was already answered with an answer no %i.\n",
+										qu->name,
+										qu->correct_answer + 1);
+								break;
 							}
+						}
+						if (already_answered == false) {
+							// uv_stdin_getline() blocks for real user input
+							// without halting the scheduler (so the GUI stays
+							// live and can feed the answer via its log command
+							// line)
+							while (true) {
+								PROMPT("\n\n "
+										"User input requested: \n"
+										"  ** %s **:\n",
+										q.question);
+								for (uint8_t i = 0; i < q.answer_count; i++) {
+									PROMPT("    (%i): %s\n", i + 1, q.answers[i]);
+								}
 
-						}
-						else {
-							valid = false;
-						}
+								char ans_str[128] = {};
+								int32_t ans = 0;
+								uv_stdin_getline(ans_str, sizeof(ans_str) - 1);
+								if (sscanf(ans_str, " %d", &ans) < 1) {
+									ans = 1;
+								}
 
-						if (valid == false) {
-							ERROR("ERROR in query '%s'. All values not implemented.\n\n",
-									q.name);
-						}
-						else {
-							bool already_answered = false;
-							// check if query with this name was already asked
-							for (uint32_t i = 0; i < uv_vector_size(&this->queries); i++) {
-								query_st *qu = uv_vector_at(&this->queries, i);
-								if (strcmp(qu->name, q.name) == 0) {
-									already_answered = true;
-									printf("Query '%s' was already answered with an answer no %i.\n",
-											qu->name,
-											qu->correct_answer + 1);
+								if (ans < 1 || ans > q.answer_count) {
+									PROMPTSTR("Answer out of bounds. Defaulting to 1.\n");
+								}
+								else {
+									printf("Query '%s': selected (%i) %s\n",
+											q.name, ans, q.answers[ans - 1]);
+									q.correct_answer = ans - 1;
 									break;
 								}
 							}
-							if (already_answered == false) {
-								// uv_stdin_getline() blocks for real user input
-								// without halting the scheduler (so the GUI stays
-								// live and can feed the answer via its log command
-								// line)
-								while (true) {
-									PROMPT("\n\n "
-											"User input requested: \n"
-											"  ** %s **:\n",
-											q.question);
-									for (uint8_t i = 0; i < q.answer_count; i++) {
-										PROMPT("    (%i): %s\n", i + 1, q.answers[i]);
-									}
 
-									char ans_str[128] = {};
-									int32_t ans = 0;
-									uv_stdin_getline(ans_str, sizeof(ans_str) - 1);
-									if (sscanf(ans_str, " %d", &ans) < 1) {
-										ans = 1;
-									}
-
-									if (ans < 1 || ans > q.answer_count) {
-										PROMPTSTR("Answer out of bounds. Defaulting to 1.\n");
-									}
-									else {
-										printf("Query '%s': selected (%i) %s\n",
-												q.name, ans, q.answers[ans - 1]);
-										q.correct_answer = ans - 1;
-										break;
-									}
-								}
-
-								uv_vector_push_back(&this->queries, &q);
-							}
+							uv_vector_push_back(&this->queries, &q);
 						}
 					}
-				}
-
-				obj = uv_jsonreader_find_child(json, "DEVS");
-				if (obj != NULL &&
-						uv_jsonreader_get_type(obj) == JSON_ARRAY) {
-					// new protocol where each device's settings are stored in a DEVS-array
-					this->file_dev_count = uv_jsonreader_array_get_size(obj);
-					if ((this->file_dev_count > 1) &&
-							this->forced_nodeid_set) {
-						// a single node id cannot refer to any one device of a
-						// multi-device file, see parse_dev
-						WARNING("The parameter file contains %u devices.\n"
-								"The selected node id 0x%x is ignored, each device is "
-								"addressed with the node id from the parameter file.\n",
-								(unsigned int) this->file_dev_count,
-								(unsigned int) this->forced_nodeid);
-						fflush(stdout);
-					}
-					for (uint16_t i = 0; i < uv_jsonreader_array_get_size(obj); i++) {
-						char *dev = uv_jsonreader_array_at(obj, i);
-						if (dev != NULL) {
-							e |= parse_dev(dev);
-						}
-						else {
-							ERROR("Parsing DEVS array with index %i resulted in NULL pointer\n", i);
-						}
-						if (e != ERR_NONE) {
-							// a transfer to this device failed: stop the load
-							break;
-						}
-					}
-				}
-				else {
-					// deprecated database protocol, where only one device was
-					// supported
-					this->file_dev_count = 1;
-					e = parse_dev(json);
-				}
-
-				if (e != ERR_NONE) {
-					ERRORSTR("Error when fetching operator settings.\n"
-							"Loading the parameters might have failed\n");
-					fflush(stderr);
 				}
 			}
+
+			obj = parser_find_child(root, "DEVS");
+			if (parser_node_is_valid(obj) &&
+					parser_get_type(obj) == PARSER_ARRAY) {
+				// new protocol where each device's settings are stored in a DEVS-array
+				this->file_dev_count = parser_array_get_size(obj);
+				if ((this->file_dev_count > 1) &&
+						this->forced_nodeid_set) {
+					// a single node id cannot refer to any one device of a
+					// multi-device file, see parse_dev
+					WARNING("The parameter file contains %u devices.\n"
+							"The selected node id 0x%x is ignored, each device is "
+							"addressed with the node id from the parameter file.\n",
+							(unsigned int) this->file_dev_count,
+							(unsigned int) this->forced_nodeid);
+					fflush(stdout);
+				}
+				for (uint16_t i = 0; i < parser_array_get_size(obj); i++) {
+					parser_node_st devnode = parser_array_at(obj, i);
+					if (parser_node_is_valid(devnode)) {
+						e |= parse_dev(devnode);
+					}
+					else {
+						ERROR("Parsing DEVS array with index %i resulted in an invalid node\n", i);
+					}
+					if (e != ERR_NONE) {
+						// a transfer to this device failed: stop the load
+						break;
+					}
+				}
+			}
+			else {
+				// deprecated database protocol, where only one device was
+				// supported
+				this->file_dev_count = 1;
+				e = parse_dev(root);
+			}
+
+			if (e != ERR_NONE) {
+				ERRORSTR("Error when fetching operator settings.\n"
+						"Loading the parameters might have failed\n");
+				fflush(stderr);
+			}
 		}
+		free(buffer);
 		this->current_file++;
 		if (e != ERR_NONE) {
 			// a CANopen transfer failed: stop processing further files
@@ -1530,57 +1518,45 @@ bool loadparam_can_if_mismatch(device_st *device,
 	bool file_known = false;
 
 	if ((device != NULL) && (strlen(device->param_file) != 0)) {
-		FILE *fptr = fopen(device->param_file, "rb");
-		if (fptr != NULL) {
-			fseek(fptr, 0, SEEK_END);
-			long size = ftell(fptr);
-			rewind(fptr);
-			// read into a heap buffer (this runs on the UI thread, so avoid a
-			// large variable-length array on the stack)
-			char *json = (size > 0) ? malloc(size + 1) : NULL;
-			if ((json != NULL) && (fread(json, 1, size, fptr) == (size_t) size)) {
-				json[size] = '\0';
-				uv_jsonreader_init(json, strlen(json));
-
-				// the param file stores its CAN IF VERSION inside the DEVS array
-				// (one object per device); fall back to the top level for the
-				// deprecated single-device format
-				char *devobj = NULL;
-				char *devs = uv_jsonreader_find_child(json, "DEVS");
-				if ((devs != NULL) &&
-						(uv_jsonreader_get_type(devs) == JSON_ARRAY)) {
-					int32_t cnt = uv_jsonreader_array_get_size(devs);
-					// prefer the entry matching this device's node id
-					for (int32_t i = 0; (i < cnt) && (devobj == NULL); i++) {
-						char *d = uv_jsonreader_array_at(devs, i);
-						char *nid = uv_jsonreader_find_child(d, "NODEID");
-						if ((nid != NULL) && ((uint8_t) uv_jsonreader_get_int(nid)
-								== device->nodeid)) {
-							devobj = d;
-						}
-					}
-					if ((devobj == NULL) && (cnt > 0)) {
-						devobj = uv_jsonreader_array_at(devs, 0);
+		// read into a heap buffer (this runs on the UI thread, so avoid a
+		// large variable-length array on the stack)
+		char *buffer = NULL;
+		parser_node_st root = parser_read_file(device->param_file, &buffer);
+		if (parser_node_is_valid(root)) {
+			// the param file stores its CAN IF VERSION inside the DEVS array
+			// (one object per device); fall back to the top level for the
+			// deprecated single-device format
+			parser_node_st devobj = parser_node_invalid();
+			parser_node_st devs = parser_find_child(root, "DEVS");
+			if (parser_node_is_valid(devs) &&
+					(parser_get_type(devs) == PARSER_ARRAY)) {
+				int32_t cnt = parser_array_get_size(devs);
+				// prefer the entry matching this device's node id
+				for (int32_t i = 0; (i < cnt) && !parser_node_is_valid(devobj); i++) {
+					parser_node_st d = parser_array_at(devs, i);
+					parser_node_st nid = parser_find_child(d, "NODEID");
+					if (parser_node_is_valid(nid) && ((uint8_t) parser_get_int(nid)
+							== device->nodeid)) {
+						devobj = d;
 					}
 				}
-				else {
-					devobj = json;
-				}
-
-				if (devobj != NULL) {
-					char *cif = uv_jsonreader_find_child(devobj, "CAN IF VERSION");
-					if ((cif != NULL) &&
-							(uv_jsonreader_get_type(cif) == JSON_INT)) {
-						fif = uv_jsonreader_get_int(cif);
-						file_known = true;
-					}
+				if (!parser_node_is_valid(devobj) && (cnt > 0)) {
+					devobj = parser_array_at(devs, 0);
 				}
 			}
-			if (json != NULL) {
-				free(json);
+			else {
+				devobj = root;
 			}
-			fclose(fptr);
+
+			if (parser_node_is_valid(devobj)) {
+				parser_node_st cif = parser_find_child(devobj, "CAN IF VERSION");
+				if (parser_get_type(cif) == PARSER_INT) {
+					fif = parser_get_int(cif);
+					file_known = true;
+				}
+			}
 		}
+		free(buffer);
 	}
 
 	// read the device's current CAN IF version over the bus

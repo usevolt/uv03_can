@@ -39,7 +39,8 @@ The application uses a global `struct _dev_st dev` instance (defined via `CONFIG
 
 | Module | File | Purpose |
 |--------|------|---------|
-| db | `src/db.c` (largest, ~1700 LOC) | CANopen device database parsing from JSON, object dictionary management, up to 512 objects |
+| parser | `src/parser.c` | Common JSON/YAML interface; every file uvcan reads or writes goes through it |
+| db | `src/db.c` (largest, ~1700 LOC) | CANopen device database parsing, object dictionary management, up to 512 objects |
 | loadparam | `src/loadparam.c` | Write parameters to devices via SDO, multi-device support with query/answer flow |
 | saveparam | `src/saveparam.c` | Read parameters from devices and save to files |
 | export | `src/export.c` | Generate C header/source files from device database |
@@ -48,6 +49,32 @@ The application uses a global `struct _dev_st dev` instance (defined via `CONFIG
 | terminal | `src/terminal.c` | Interactive terminal via SDO reply protocol |
 | sdo | `src/sdo.c` | Direct SDO read/write operations |
 | loadmedia | `src/loadmedia.c` | Media file upload via UV media protocol |
+
+### File formats: JSON and YAML
+
+Every file uvcan reads or writes -- device databases (`--db`, including their
+`content` includes), parameter files (`--loadparam` / `--saveparam`) and the
+manifests inside `.uvdev` / `.uvsys` packages -- can be written in either JSON
+or YAML. The format is chosen by the file's extension: `.yaml` and `.yml` are
+parsed and written as YAML, everything else as JSON.
+
+Modules never call `uv_json*` or `uv_yaml*` directly; they use the common
+interface in `inc/parser.h`:
+
+- `parser_read_file(path, &buffer)` reads a file, picks the format from the
+  extension and returns the root `parser_node_st`. The caller `free()`s the buffer.
+- `parser_find_child` / `_get_child` / `_get_type` / `_get_int` / `_get_string` /
+  `_array_at` / `_array_get_size` ... mirror the `uv_jsonreader_*` API. A node is
+  a small by-value struct; check it with `parser_node_is_valid()` instead of `!= NULL`.
+- `parser_writer_*` mirrors `uv_jsonwriter_*`. `parser_write_file()` writes the
+  result and pretty-prints JSON output with `jq`.
+- `parser_find_file(dir, "uvdev", ...)` locates a package manifest written in
+  any of the supported formats.
+
+Notes on the two formats: uvcan's JSON files store hexadecimal values as strings
+(`"MAININDEX": "0x2100"`), which the JSON reader reports as integers. YAML has
+native hex, so there the same value is written unquoted (`MAININDEX: 0x2100`).
+A quoted YAML scalar is always a string, per the YAML spec.
 
 ### Parameter file query value formats
 

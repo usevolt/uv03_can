@@ -26,7 +26,7 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <uv_json.h>
+#include "parser.h"
 
 // Platform null device, used to silence a child command's stdout.
 #if CONFIG_TARGET_WIN
@@ -109,37 +109,38 @@ void system_remove_tmpdirs(void) {
 }
 
 
-// Parses the DEVS array of an already-loaded uvsys.json (*json* is the manifest
-// root) and appends one device per entry, each from its UVDEV package (extracted
-// under *tmpdir*) and initialized with the entry's NODEID. The entry's PARAM file
-// (if any) is recorded on the device. Returns true when a valid DEVS array was
-// found (even if empty).
-static bool system_parse_sysjson(system_st *this, char *json, const char *tmpdir) {
+// Parses the DEVS array of an already-loaded system manifest (*manifest* is the
+// manifest root) and appends one device per entry, each from its UVDEV package
+// (extracted under *tmpdir*) and initialized with the entry's NODEID. The entry's
+// PARAM file (if any) is recorded on the device. Returns true when a valid DEVS
+// array was found (even if empty).
+static bool system_parse_sysfile(system_st *this, parser_node_st manifest,
+		const char *tmpdir) {
 	bool ret = false;
-	char *devs = uv_jsonreader_find_child(json, "DEVS");
-	if ((devs == NULL) || (uv_jsonreader_get_type(devs) != JSON_ARRAY)) {
+	parser_node_st devs = parser_find_child(manifest, "DEVS");
+	if (!parser_node_is_valid(devs) || (parser_get_type(devs) != PARSER_ARRAY)) {
 		PRINT("ERROR: the system file has no DEVS array.\n");
 	}
 	else {
-		unsigned int count = uv_jsonreader_array_get_size(devs);
+		unsigned int count = parser_array_get_size(devs);
 		for (unsigned int i = 0; i < count; i++) {
-			char *obj = uv_jsonreader_array_at(devs, i);
-			if (obj == NULL) {
+			parser_node_st obj = parser_array_at(devs, i);
+			if (!parser_node_is_valid(obj)) {
 				continue;
 			}
 
 			// node id: stored as a hexadecimal string ("0x7"), but also accept a
 			// plain integer. 0 means "read the default from the UVDEV package".
 			uint8_t nodeid = 0;
-			char *nid = uv_jsonreader_find_child(obj, "NODEID");
-			if (nid != NULL) {
-				if (uv_jsonreader_get_type(nid) == JSON_STRING) {
+			parser_node_st nid = parser_find_child(obj, "NODEID");
+			if (parser_node_is_valid(nid)) {
+				if (parser_get_type(nid) == PARSER_STRING) {
 					char buf[16];
-					uv_jsonreader_get_string(nid, buf, sizeof(buf));
+					parser_get_string(nid, buf, sizeof(buf));
 					nodeid = (uint8_t) strtoul(buf, NULL, 0);
 				}
-				else if (uv_jsonreader_get_type(nid) == JSON_INT) {
-					nodeid = (uint8_t) uv_jsonreader_get_int(nid);
+				else if (parser_get_type(nid) == PARSER_INT) {
+					nodeid = (uint8_t) parser_get_int(nid);
 				}
 				else {
 					// unknown form: leave nodeid at 0 (read from the package)
@@ -147,14 +148,14 @@ static bool system_parse_sysjson(system_st *this, char *json, const char *tmpdir
 			}
 
 			// UVDEV package file name, relative to the extracted system package
-			char *ud = uv_jsonreader_find_child(obj, "UVDEV");
-			if ((ud == NULL) || (uv_jsonreader_get_type(ud) != JSON_STRING)) {
+			parser_node_st ud = parser_find_child(obj, "UVDEV");
+			if (!parser_node_is_valid(ud) || (parser_get_type(ud) != PARSER_STRING)) {
 				PRINT("System file device %u has no UVDEV package; skipping it.\n",
 						i);
 				continue;
 			}
 			char uvdev_name[512];
-			uv_jsonreader_get_string(ud, uvdev_name, sizeof(uvdev_name));
+			parser_get_string(ud, uvdev_name, sizeof(uvdev_name));
 			char uvdev_path[1600];
 			snprintf(uvdev_path, sizeof(uvdev_path), "%s/%s", tmpdir, uvdev_name);
 
@@ -164,11 +165,11 @@ static bool system_parse_sysjson(system_st *this, char *json, const char *tmpdir
 				// so the UI can later offer to load it onto the online device
 				device_st *added = &this->devs[this->dev_count - 1];
 				added->param_file[0] = '\0';
-				char *pf = uv_jsonreader_find_child(obj, "PARAM");
-				if ((pf != NULL) &&
-						(uv_jsonreader_get_type(pf) == JSON_STRING)) {
+				parser_node_st pf = parser_find_child(obj, "PARAM");
+				if (parser_node_is_valid(pf) &&
+						(parser_get_type(pf) == PARSER_STRING)) {
 					char param_name[512];
-					uv_jsonreader_get_string(pf, param_name, sizeof(param_name));
+					parser_get_string(pf, param_name, sizeof(param_name));
 					snprintf(added->param_file, sizeof(added->param_file),
 							"%s/%s", tmpdir, param_name);
 				}
@@ -205,37 +206,25 @@ bool system_set_file(system_st *this, const char *filepath) {
 					"the extraction tool (unzip / tar) available?\n", filepath);
 		}
 		else {
-			// read the uvsys.json manifest
+			// read the system manifest. It can be written either in JSON or
+			// in YAML, i.e. as uvsys.json, uvsys.yaml or uvsys.yml
 			char manifest_path[1100];
-			snprintf(manifest_path, sizeof(manifest_path), "%s/uvsys.json",
-					tmpdir);
-			FILE *fptr = fopen(manifest_path, "r");
-			if (fptr == NULL) {
+			if (!parser_find_file(tmpdir, "uvsys",
+					manifest_path, sizeof(manifest_path))) {
 				PRINT("Package '%s' does not contain a uvsys.json manifest.\n",
 						filepath);
 			}
 			else {
-				fseek(fptr, 0, SEEK_END);
-				long size = ftell(fptr);
-				rewind(fptr);
-				char *data = malloc(size + 1);
-				if ((data != NULL) &&
-						(fread(data, 1, size, fptr) == (size_t) size)) {
-					data[size] = '\0';
-					if (uv_jsonreader_init(data, size) == ERR_NONE) {
-						ret = system_parse_sysjson(this, data, tmpdir);
-					}
-					else {
-						PRINT("Failed to parse the uvsys.json manifest of '%s'.\n",
-								filepath);
-					}
+				char *data = NULL;
+				parser_node_st manifest = parser_read_file(manifest_path, &data);
+				if (parser_node_is_valid(manifest)) {
+					ret = system_parse_sysfile(this, manifest, tmpdir);
 				}
 				else {
-					PRINT("Failed to read the uvsys.json manifest of '%s'.\n",
-							filepath);
+					PRINT("Failed to read the manifest '%s' of '%s'.\n",
+							manifest_path, filepath);
 				}
 				free(data);
-				fclose(fptr);
 			}
 		}
 	}

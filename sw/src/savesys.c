@@ -21,7 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
-#include <uv_json.h>
+#include "parser.h"
 #include <uv_rtos.h>
 #include "main.h"
 #include "system.h"
@@ -136,12 +136,15 @@ bool savesys_save(const char *file) {
 		}
 	}
 
-	// build the uvsys.json manifest while copying/saving the per-device files
-	static char json_buffer[65536];
-	uv_json_st json;
+	// build the uvsys manifest while copying/saving the per-device files.
+	// The files inside the package are written in JSON; the reader accepts
+	// them in either format.
+	static char manifest_buffer[65536];
+	parser_writer_st writer;
 	uv_errors_e e = ERR_NONE;
-	e |= uv_jsonwriter_init(&json, json_buffer, sizeof(json_buffer));
-	e |= uv_jsonwriter_begin_array(&json, "DEVS");
+	e |= parser_writer_init(&writer, manifest_buffer, sizeof(manifest_buffer),
+			PARSER_FORMAT_JSON);
+	e |= parser_writer_begin_array(&writer, "DEVS");
 
 	uint8_t param_index = 0;
 	// Usevolt devices that were offline, so their data could not be saved
@@ -169,11 +172,11 @@ bool savesys_save(const char *file) {
 			continue;
 		}
 
-		e |= uv_jsonwriter_begin_object(&json);
+		e |= parser_writer_begin_object(&writer, NULL);
 		char nodeid_str[8];
 		snprintf(nodeid_str, sizeof(nodeid_str), "0x%x",
 				(unsigned int) d->nodeid);
-		e |= uv_jsonwriter_add_string(&json, "NODEID", nodeid_str);
+		e |= parser_writer_add_string(&writer, "NODEID", nodeid_str);
 
 		// copy the device's .uvdev package, renamed <name>_0x<nodeid>.uvdev.
 		// d->name may already end with the _0x<nodeid> suffix when the system was
@@ -197,7 +200,7 @@ bool savesys_save(const char *file) {
 		snprintf(cmd, sizeof(cmd), "cp \"%s\" \"%s/%s\"",
 				d->filepath, stage, uvdev_name);
 		if (system(cmd) == 0) {
-			e |= uv_jsonwriter_add_string(&json, "UVDEV", uvdev_name);
+			e |= parser_writer_add_string(&writer, "UVDEV", uvdev_name);
 		}
 		else {
 			ERROR("ERROR: failed to add the configuration package for "
@@ -222,18 +225,18 @@ bool savesys_save(const char *file) {
 		snprintf(param_path, sizeof(param_path), "%s/%s", stage, param_name);
 
 		if (saveparam_save_device(d, param_path)) {
-			e |= uv_jsonwriter_add_string(&json, "PARAM", param_name);
+			e |= parser_writer_add_string(&writer, "PARAM", param_name);
 		}
 		else {
 			ERROR("ERROR: failed to read parameters from node %s.\n",
 					nodeid_str);
 		}
 
-		e |= uv_jsonwriter_end_object(&json);
+		e |= parser_writer_end_object(&writer);
 	}
 
-	e |= uv_jsonwriter_end_array(&json);
-	e |= uv_jsonwriter_end(&json, NULL);
+	e |= parser_writer_end_array(&writer);
+	e |= parser_writer_end(&writer);
 	LOG_END();
 
 	// warn about Usevolt devices that were offline and therefore left out of the
@@ -257,7 +260,7 @@ bool savesys_save(const char *file) {
 		}
 	}
 	else {
-		fwrite(json_buffer, 1, strlen(json_buffer), mf);
+		fwrite(manifest_buffer, 1, strlen(manifest_buffer), mf);
 		fclose(mf);
 
 		// zip the staging directory into the (absolute) output path. Remove any

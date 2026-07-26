@@ -107,6 +107,8 @@ extern bool silent;
 
 #define CONFIG_JSON									1
 
+#define CONFIG_YAML									1
+
 
 
 #define CONFIG_TERMINAL								0

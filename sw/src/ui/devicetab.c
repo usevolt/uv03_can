@@ -46,11 +46,28 @@
 #define WARNING_COLOR		C(0xFFE02020)
 
 
-// Selectable file types for the parameter save/load dialogs.
+// Selectable file types for the parameter save/load dialogs. Parameter files
+// can be written either in JSON or in YAML; the format follows the extension
+// of the chosen file (see parser_format_from_filename).
 static const uv_uifileedit_filter_st PARAM_FILE_FILTERS[] = {
-	{ "Parameter files", "*.json" },
+	{ "Parameter files", "*.json *.yaml *.yml" },
+	{ "JSON parameter files", "*.json" },
+	{ "YAML parameter files", "*.yaml *.yml" },
 	{ "All files", "*" },
 };
+
+
+// Ensures the save dialog's result has a file type: when the user typed a name
+// without any extension, the parameters are saved in the default format, so
+// name the file accordingly.
+static void param_file_default_ext(char *path, size_t path_len) {
+	const char *base = strrchr(path, '/');
+	base = (base != NULL) ? (base + 1) : path;
+	if ((strchr(base, '.') == NULL) &&
+			(strlen(path) + 5 < path_len)) {
+		strcat(path, ".json");
+	}
+}
 
 
 // Margin in pixels around the tab content.
@@ -1818,6 +1835,7 @@ bool devicetab_step(void) {
 			if (uv_uifiledialog_exec("Save parameters as", PARAM_FILE_FILTERS,
 					sizeof(PARAM_FILE_FILTERS) / sizeof(PARAM_FILE_FILTERS[0]),
 					true, path, sizeof(path))) {
+				param_file_default_ext(path, sizeof(path));
 				char title[160];
 				const char *dname = (strlen(current_device->devname) > 0) ?
 						current_device->devname : current_device->name;

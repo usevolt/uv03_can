@@ -29,7 +29,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <strings.h>
-#include <uv_json.h>
+#include "parser.h"
 
 
 // Session state for the current login. The token is kept in RAM only (never
@@ -241,10 +241,12 @@ bool remotefiles_login(const char *url, const char *username,
 					rf_err(err, err_len, "Empty login response.");
 				}
 				else {
-					uv_jsonreader_init(resp, strlen(resp));
-					char *tok = uv_jsonreader_find_child(resp, "token");
-					if ((tok != NULL) &&
-							uv_jsonreader_get_string(tok, rf_token,
+					// the server always answers in JSON
+					parser_node_st root = parser_read_buffer(resp, strlen(resp),
+							PARSER_FORMAT_JSON);
+					parser_node_st tok = parser_find_child(root, "token");
+					if (parser_node_is_valid(tok) &&
+							parser_get_string(tok, rf_token,
 									sizeof(rf_token)) &&
 							(strlen(rf_token) > 0)) {
 						ret = true;
@@ -264,65 +266,65 @@ bool remotefiles_login(const char *url, const char *username,
 
 
 // Parses one version object from the files response into *v*.
-static void rf_parse_version(char *obj, remotefiles_version_st *v) {
+static void rf_parse_version(parser_node_st obj, remotefiles_version_st *v) {
 	memset(v, 0, sizeof(*v));
-	char *c;
-	if ((c = uv_jsonreader_find_child(obj, "version")) != NULL) {
-		uv_jsonreader_get_string(c, v->version, sizeof(v->version));
+	parser_node_st c;
+	if (parser_node_is_valid(c = parser_find_child(obj, "version"))) {
+		parser_get_string(c, v->version, sizeof(v->version));
 	}
-	if ((c = uv_jsonreader_find_child(obj, "path")) != NULL) {
-		uv_jsonreader_get_string(c, v->path, sizeof(v->path));
+	if (parser_node_is_valid(c = parser_find_child(obj, "path"))) {
+		parser_get_string(c, v->path, sizeof(v->path));
 	}
-	if ((c = uv_jsonreader_find_child(obj, "released")) != NULL) {
-		uv_jsonreader_get_string(c, v->released, sizeof(v->released));
+	if (parser_node_is_valid(c = parser_find_child(obj, "released"))) {
+		parser_get_string(c, v->released, sizeof(v->released));
 	}
-	if ((c = uv_jsonreader_find_child(obj, "notes")) != NULL) {
-		uv_jsonreader_get_string(c, v->notes, sizeof(v->notes));
+	if (parser_node_is_valid(c = parser_find_child(obj, "notes"))) {
+		parser_get_string(c, v->notes, sizeof(v->notes));
 	}
-	if ((c = uv_jsonreader_find_child(obj, "sha256")) != NULL) {
-		uv_jsonreader_get_string(c, v->sha256, sizeof(v->sha256));
+	if (parser_node_is_valid(c = parser_find_child(obj, "sha256"))) {
+		parser_get_string(c, v->sha256, sizeof(v->sha256));
 	}
-	if ((c = uv_jsonreader_find_child(obj, "modified")) != NULL) {
-		uv_jsonreader_get_string(c, v->modified, sizeof(v->modified));
+	if (parser_node_is_valid(c = parser_find_child(obj, "modified"))) {
+		parser_get_string(c, v->modified, sizeof(v->modified));
 	}
-	if ((c = uv_jsonreader_find_child(obj, "size")) != NULL) {
-		int s = uv_jsonreader_get_int(c);
+	if (parser_node_is_valid(c = parser_find_child(obj, "size"))) {
+		int s = parser_get_int(c);
 		v->size = (s > 0) ? (uint64_t) s : 0;
 	}
 }
 
 
 // Parses the whole files response (a {"products":[...]} object) into rf_products.
-static void rf_parse_products(char *json) {
+static void rf_parse_products(parser_node_st root) {
 	rf_product_count = 0;
-	char *products = uv_jsonreader_find_child(json, "products");
-	if ((products != NULL) &&
-			(uv_jsonreader_get_type(products) == JSON_ARRAY)) {
-		unsigned int pn = uv_jsonreader_array_get_size(products);
+	parser_node_st products = parser_find_child(root, "products");
+	if ((parser_node_is_valid(products)) &&
+			(parser_get_type(products) == PARSER_ARRAY)) {
+		unsigned int pn = parser_array_get_size(products);
 		for (unsigned int i = 0;
 				(i < pn) && (rf_product_count < REMOTEFILES_MAX_PRODUCTS); i++) {
-			char *pobj = uv_jsonreader_array_at(products, i);
-			if (pobj == NULL) {
+			parser_node_st pobj = parser_array_at(products, i);
+			if (!parser_node_is_valid(pobj)) {
 				continue;
 			}
 			remotefiles_product_st *p = &rf_products[rf_product_count];
 			memset(p, 0, sizeof(*p));
-			char *c;
-			if ((c = uv_jsonreader_find_child(pobj, "id")) != NULL) {
-				uv_jsonreader_get_string(c, p->id, sizeof(p->id));
+			parser_node_st c;
+			if (parser_node_is_valid(c = parser_find_child(pobj, "id"))) {
+				parser_get_string(c, p->id, sizeof(p->id));
 			}
-			if ((c = uv_jsonreader_find_child(pobj, "name")) != NULL) {
-				uv_jsonreader_get_string(c, p->name, sizeof(p->name));
+			if (parser_node_is_valid(c = parser_find_child(pobj, "name"))) {
+				parser_get_string(c, p->name, sizeof(p->name));
 			}
-			char *versions = uv_jsonreader_find_child(pobj, "versions");
-			if ((versions != NULL) &&
-					(uv_jsonreader_get_type(versions) == JSON_ARRAY)) {
-				unsigned int vn = uv_jsonreader_array_get_size(versions);
+			parser_node_st versions = parser_find_child(pobj, "versions");
+			if ((parser_node_is_valid(versions)) &&
+					(parser_get_type(versions) == PARSER_ARRAY)) {
+				unsigned int vn = parser_array_get_size(versions);
 				for (unsigned int j = 0;
 						(j < vn) && (p->version_count < REMOTEFILES_MAX_VERSIONS);
 						j++) {
-					char *vobj = uv_jsonreader_array_at(versions, j);
-					if (vobj != NULL) {
+					parser_node_st vobj = parser_array_at(versions, j);
+					if (parser_node_is_valid(vobj)) {
 						rf_parse_version(vobj, &p->versions[p->version_count]);
 						p->version_count++;
 					}
@@ -373,8 +375,9 @@ bool remotefiles_list(char *err, unsigned int err_len) {
 				rf_err(err, err_len, "Empty file list response.");
 			}
 			else {
-				uv_jsonreader_init(resp, strlen(resp));
-				rf_parse_products(resp);
+				// the server always answers in JSON
+				rf_parse_products(parser_read_buffer(resp, strlen(resp),
+						PARSER_FORMAT_JSON));
 				free(resp);
 				ret = true;
 			}

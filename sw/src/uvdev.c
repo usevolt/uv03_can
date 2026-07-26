@@ -22,17 +22,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <uv_json.h>
+#include "parser.h"
 
 
 // Reads the string value of *key* from the manifest object into *dest*. Leaves
 // *dest* an empty string when the key is missing or not a string.
-static void manifest_get_str(char *manifest, const char *key,
+static void manifest_get_str(parser_node_st manifest, const char *key,
 		char *dest, size_t dest_len) {
 	dest[0] = '\0';
-	char *child = uv_jsonreader_find_child(manifest, (char*) key);
-	if (child != NULL && uv_jsonreader_get_type(child) == JSON_STRING) {
-		uv_jsonreader_get_string(child, dest, dest_len);
+	parser_node_st child = parser_find_child(manifest, key);
+	if (parser_node_is_valid(child) && parser_get_type(child) == PARSER_STRING) {
+		parser_get_string(child, dest, dest_len);
 	}
 }
 
@@ -53,49 +53,37 @@ bool uvdev_open(uvdev_st *this, const char *uvdev_path) {
 			uvdev_close(this);
 		}
 		else {
-			// read the uvdev.json manifest
+			// read the uvdev manifest. It can be written either in JSON or
+			// in YAML, i.e. as uvdev.json, uvdev.yaml or uvdev.yml
 			char manifest_path[1100];
-			snprintf(manifest_path, sizeof(manifest_path), "%s/uvdev.json",
-					this->dir);
-			FILE *fptr = fopen(manifest_path, "r");
-			if (fptr == NULL) {
+			if (!parser_find_file(this->dir, "uvdev",
+					manifest_path, sizeof(manifest_path))) {
 				PRINT("Package '%s' does not contain a uvdev.json manifest.\n",
 						uvdev_path);
 				uvdev_close(this);
 			}
 			else {
-				fseek(fptr, 0, SEEK_END);
-				long size = ftell(fptr);
-				rewind(fptr);
-				char *data = malloc(size + 1);
-				if (data != NULL && fread(data, 1, size, fptr) == (size_t) size) {
-					data[size] = '\0';
-					if (uv_jsonreader_init(data, size) == ERR_NONE) {
-						manifest_get_str(data, "DATABASE",
-								this->database, sizeof(this->database));
-						manifest_get_str(data, "FIRMWARE",
-								this->firmware, sizeof(this->firmware));
-						manifest_get_str(data, "LINUX_BIN",
-								this->linux_bin, sizeof(this->linux_bin));
-						manifest_get_str(data, "VERSION",
-								this->version, sizeof(this->version));
-						manifest_get_str(data, "MEDIA",
-								this->media, sizeof(this->media));
-						ret = true;
-					}
-					else {
-						PRINT("Failed to parse the uvdev.json manifest of '%s'.\n",
-								uvdev_path);
-						uvdev_close(this);
-					}
+				char *data = NULL;
+				parser_node_st manifest = parser_read_file(manifest_path, &data);
+				if (parser_node_is_valid(manifest)) {
+					manifest_get_str(manifest, "DATABASE",
+							this->database, sizeof(this->database));
+					manifest_get_str(manifest, "FIRMWARE",
+							this->firmware, sizeof(this->firmware));
+					manifest_get_str(manifest, "LINUX_BIN",
+							this->linux_bin, sizeof(this->linux_bin));
+					manifest_get_str(manifest, "VERSION",
+							this->version, sizeof(this->version));
+					manifest_get_str(manifest, "MEDIA",
+							this->media, sizeof(this->media));
+					ret = true;
 				}
 				else {
-					PRINT("Failed to read the uvdev.json manifest of '%s'.\n",
-							uvdev_path);
+					PRINT("Failed to read the manifest '%s' of '%s'.\n",
+							manifest_path, uvdev_path);
 					uvdev_close(this);
 				}
 				free(data);
-				fclose(fptr);
 			}
 		}
 	}

@@ -22,7 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <uv_terminal.h>
-#include <uv_json.h>
+#include "parser.h"
 #include <ctype.h>
 #include "main.h"
 #include "uvstdin.h"
@@ -43,8 +43,8 @@
 #define WARNINGSTR(str) printf(PRINT_BOLDYELLOW str PRINT_RESET)
 
 
-static bool parse_defines(db_st *this, char *obj);
-static void remove_defines(db_st *this, char *obj);
+static bool parse_defines(db_st *this, parser_node_st obj);
+static void remove_defines(db_st *this, parser_node_st obj);
 
 
 
@@ -249,15 +249,15 @@ void dbvalue_set_string(dbvalue_st *this, char *str, uint32_t str_len) {
 	}
 }
 
-void dbvalue_set(dbvalue_st *this, char *jsonobj) {
-	uv_json_types_e type = uv_jsonreader_get_type(jsonobj);
-	if (type == JSON_INT) {
-		dbvalue_set_int(this, uv_jsonreader_get_int(jsonobj));
+void dbvalue_set(dbvalue_st *this, parser_node_st node) {
+	parser_types_e type = parser_get_type(node);
+	if (type == PARSER_INT) {
+		dbvalue_set_int(this, parser_get_int(node));
 	}
-	else if (type == JSON_STRING) {
+	else if (type == PARSER_STRING) {
 		dbvalue_set_string(this,
-				uv_jsonreader_get_string_ptr(jsonobj),
-				uv_jsonreader_get_string_len(jsonobj));
+				parser_get_string_ptr(node),
+				parser_get_string_len(node));
 	}
 	else {
 		dbvalue_init(this);
@@ -444,18 +444,18 @@ canopen_object_type_e db_str_to_type(char *str) {
 	return ret;
 }
 
-canopen_object_type_e db_jsonval_to_type(char *json_child) {
+canopen_object_type_e db_paramval_to_type(parser_node_st node) {
 	char str[128];
 	canopen_object_type_e ret;
-	uv_jsonreader_get_string(json_child, str, sizeof(str));
+	parser_get_string(node, str, sizeof(str));
 	ret = db_str_to_type(str);
 	return ret;
 }
 
-static canopen_permissions_e str_to_permissions(char *json_child) {
+static canopen_permissions_e str_to_permissions(parser_node_st node) {
 	char str[64];
 	canopen_permissions_e ret;
-	uv_jsonreader_get_string(json_child, str, 64);
+	parser_get_string(node, str, 64);
 	if (strcmp(str, "CANOPEN_WO") == 0) {
 		ret = CANOPEN_WO;
 	}
@@ -471,10 +471,10 @@ static canopen_permissions_e str_to_permissions(char *json_child) {
 	return ret;
 }
 
-static canopen_pdo_transmission_types_e str_to_transmission(char *json_child) {
+static canopen_pdo_transmission_types_e str_to_transmission(parser_node_st node) {
 	char str[64];
 	canopen_pdo_transmission_types_e ret;
-	uv_jsonreader_get_string(json_child, str, sizeof(str));
+	parser_get_string(node, str, sizeof(str));
 	if (strcmp(str, "CANOPEN_PDO_TRANSMISSION_ASYNC") == 0) {
 		ret = CANOPEN_PDO_TRANSMISSION_ASYNC;
 	}
@@ -485,11 +485,11 @@ static canopen_pdo_transmission_types_e str_to_transmission(char *json_child) {
 }
 
 
-static db_obj_type_e str_to_objtype(char *json_child) {
+static db_obj_type_e str_to_objtype(parser_node_st node) {
 	char str[64];
 	db_obj_type_e ret = DB_OBJ_TYPE_UNDEFINED;
-	if (json_child != NULL) {
-		uv_jsonreader_get_string(json_child, str, sizeof(str));
+	if (parser_node_is_valid(node)) {
+		parser_get_string(node, str, sizeof(str));
 		if (strcmp(str, "NONVOL_PARAM") == 0 ||
 				strcmp(str, "NONVOL PARAM") == 0) {
 			ret = DB_OBJ_TYPE_NONVOL_PARAM;
@@ -530,9 +530,9 @@ static db_obj_type_e str_to_objtype(char *json_child) {
 
 // Checks the object dict object for mandatory fields. If a variable named
 // check_obj_disable is set to true, skips the check
-static bool check_obj(char *object, char *objname, char *parametername, bool echo) {
+static bool check_obj(parser_node_st object, char *objname, char *parametername, bool echo) {
 	bool ret = true;
-	if (object == NULL) {
+	if (!parser_node_is_valid(object)) {
 		if (echo) {
 			ERROR("\"%s\" field not found in parameter \"%s\"\n",
 					objname, parametername);
@@ -543,7 +543,7 @@ static bool check_obj(char *object, char *objname, char *parametername, bool ech
 }
 
 #define CHECK_EMCY(object, objname, index) { \
-		if (object == NULL) { \
+		if (!parser_node_is_valid(object)) { \
 			ERROR("\"%s\" field not found in emcy %u\n", \
 					objname, index); \
 			return false; \
@@ -551,7 +551,7 @@ static bool check_obj(char *object, char *objname, char *parametername, bool ech
 	}
 
 #define CHECK_RXPDO(object, objname, pdoindex) { \
-		if (object == NULL) { \
+		if (!parser_node_is_valid(object)) { \
 			ERROR("\"%s\" field not found in rxpdo at index \"%u\"\n", \
 					objname, pdoindex); \
 			return false; \
@@ -559,40 +559,40 @@ static bool check_obj(char *object, char *objname, char *parametername, bool ech
 	}
 
 #define CHECK_TXPDO(object, objname, pdoindex) { \
-		if (object == NULL) { \
+		if (!parser_node_is_valid(object)) { \
 			ERROR("\"%s\" field not found in txpdo at index \"%u\"\n", \
 					objname, pdoindex); \
 			return false; \
 		} \
 	}
 
-static bool pdo_parse_mappings(char *mappingsjson, canopen_pdo_mapping_parameter_st *mappings) {
+static bool pdo_parse_mappings(parser_node_st mappingsnode, canopen_pdo_mapping_parameter_st *mappings) {
 	bool ret = true;
 	memset(mappings, 0, sizeof(*mappings));
 
-	if (uv_jsonreader_get_type(mappingsjson) != JSON_ARRAY) {
+	if (parser_get_type(mappingsnode) != PARSER_ARRAY) {
 		ERRORSTR("PDO \"mappings\" object should be an array\n");
 		ret = false;
 	}
 	else {
 		int32_t index = 0;
-		char *mapping;
-		while ((mapping = uv_jsonreader_array_at(mappingsjson, index)) != NULL) {
-			if (uv_jsonreader_get_type(mapping) != JSON_OBJECT) {
+		parser_node_st mapping;
+		while (parser_node_is_valid(mapping = parser_array_at(mappingsnode, index))) {
+			if (parser_get_type(mapping) != PARSER_OBJECT) {
 				ERRORSTR("PDO \"mappings\" has to be an array of JSON objects\n");
 				ret = false;
 				break;
 			}
-			char *data = uv_jsonreader_find_child(mapping, "param");
-			if (data == NULL) {
+			parser_node_st data = parser_find_child(mapping, "param");
+			if (!parser_node_is_valid(data)) {
 				ERRORSTR("PDO mapping parameter doesnt have \"param\" field\n");
 				ret = false;
 			}
 			else {
 				char name[128] = {};
-				uv_jsonreader_get_string(data, name, sizeof(name));
+				parser_get_string(data, name, sizeof(name));
 				str_to_upper_nonspace(name);
-				char *len = uv_jsonreader_find_child(mapping, "length");
+				parser_node_st len = parser_find_child(mapping, "length");
 				bool match = false;
 				for (int32_t i = 0; i < db_get_object_count(&dev.db); i++) {
 					db_obj_st *obj = db_get_obj(&dev.db, i);
@@ -601,11 +601,11 @@ static bool pdo_parse_mappings(char *mappingsjson, canopen_pdo_mapping_parameter
 						mappings->mappings[index].length = CANOPEN_TYPE_LEN(obj->obj.type);
 
 						if (CANOPEN_IS_ARRAY(obj->obj.type)) {
-							data = uv_jsonreader_find_child(mapping, "subindex");
+							data = parser_find_child(mapping, "subindex");
 							CHECK_RXPDO(data, "subindex", i);
-							uv_json_types_e type = uv_jsonreader_get_type(data);
-							if (type == JSON_STRING) {
-								uv_jsonreader_get_string(data, name, sizeof(name));
+							parser_types_e type = parser_get_type(data);
+							if (type == PARSER_STRING) {
+								parser_get_string(data, name, sizeof(name));
 								db_array_child_st *child = obj->child_ptr;
 								bool match = false;
 								int32_t childindex = 1;
@@ -624,8 +624,8 @@ static bool pdo_parse_mappings(char *mappingsjson, canopen_pdo_mapping_parameter
 									return ret;
 								}
 							}
-							else if (type == JSON_INT) {
-								mappings->mappings[index].sub_index = uv_jsonreader_get_int(data);
+							else if (type == PARSER_INT) {
+								mappings->mappings[index].sub_index = parser_get_int(data);
 							}
 							else {
 								ERRORSTR("PDO mapping subindex has to be integer or a string.\n");
@@ -642,14 +642,14 @@ static bool pdo_parse_mappings(char *mappingsjson, canopen_pdo_mapping_parameter
 				}
 				if (!match) {
 					if (strlen(name) == 0 &&
-							len != NULL) {
+							parser_node_is_valid(len)) {
 						// exception: If name was empty string but length was given,
 						// write this child as an empty space
 						mappings->mappings[index] =
 								(canopen_pdo_mapping_st) {
 							.main_index = 0,
 							.sub_index = 0,
-							.length = uv_jsonreader_get_int(len)
+							.length = parser_get_int(len)
 						};
 					}
 					else {
@@ -667,24 +667,24 @@ static bool pdo_parse_mappings(char *mappingsjson, canopen_pdo_mapping_parameter
 }
 
 
-static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
+static bool parse_obj_dict_obj(db_st *this, parser_node_st child, char *path) {
 	bool ret = true;
 
 	// start parsing data from child, e.g. object dictionary entry
 	// CONTAINER types are objects that contain child "content" either as array
 	// defining objects or string defining file name where to search for objects.
 	// CONTAINERS can be recursive
-	char *content = uv_jsonreader_find_child(child, "content");
-	if (content != NULL) {
-		if (uv_jsonreader_get_type(content) == JSON_ARRAY) {
+	parser_node_st content = parser_find_child(child, "content");
+	if (parser_node_is_valid(content)) {
+		if (parser_get_type(content) == PARSER_ARRAY) {
 			// 'content' defined, CONTAINER type object
 			// 'require' array can define mandatory defines
-			char *require = uv_jsonreader_find_child(child, "require");
-			if (require != NULL &&
-					uv_jsonreader_get_type(require) == JSON_ARRAY) {
-				for (uint16_t i = 0; i < uv_jsonreader_array_get_size(require); i++) {
+			parser_node_st require = parser_find_child(child, "require");
+			if (parser_node_is_valid(require) &&
+					parser_get_type(require) == PARSER_ARRAY) {
+				for (uint16_t i = 0; i < parser_array_get_size(require); i++) {
 					char str[1024] = {};
-					uv_jsonreader_array_get_string(require, i, str, sizeof(str) - 1);
+					parser_array_get_string(require, i, str, sizeof(str) - 1);
 					db_define_st *def = db_define_find(this, str);
 					if (def == NULL) {
 						ERROR("CONTAINER requires define '%s' to be defined\n",
@@ -695,10 +695,10 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 				}
 			}
 
-			for (uint16_t i = 0; i < uv_jsonreader_array_get_size(content); i++) {
-				char *child = uv_jsonreader_array_at(content, i);
+			for (uint16_t i = 0; i < parser_array_get_size(content); i++) {
+				parser_node_st child = parser_array_at(content, i);
 				// recursively parse each child found in 'content' array
-				if (uv_jsonreader_get_type(child) == JSON_OBJECT) {
+				if (parser_get_type(child) == PARSER_OBJECT) {
 					ret = parse_obj_dict_obj(this, child, path);
 				}
 				else {
@@ -711,49 +711,41 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 				}
 			}
 		}
-		else if (uv_jsonreader_get_type(content) == JSON_STRING) {
+		else if (parser_get_type(content) == PARSER_STRING) {
 			// check for *defines* array for local definitions
-			char *defines = uv_jsonreader_find_child(child, "defines");
-			if (defines != NULL) {
+			parser_node_st defines = parser_find_child(child, "defines");
+			if (parser_node_is_valid(defines)) {
 				ret = parse_defines(this, defines);
 			}
 			char name[128] = {};
 			strcpy(name, path);
-			uv_jsonreader_get_string(content, name + strlen(name),
+			parser_get_string(content, name + strlen(name),
 					sizeof(name) - strlen(name));
 			if (ret) {
 				printf("reading content file '%s'\n", name);
-				FILE *fptr = fopen(name, "r");
+				char *data = NULL;
+				parser_node_st content_root = parser_read_file(name, &data);
 
-				if (fptr == NULL) {
-					// failed to open the file, exit this task
+				if (!parser_node_is_valid(content_root)) {
+					// failed to open or to parse the file, exit this task
 					ERROR("Failed to open content file '%s'.\n", name);
 				}
 				else {
-					int32_t size;
-					fseek(fptr, 0, SEEK_END);
-					size = ftell(fptr);
-					rewind(fptr);
-					char *data = malloc(size);
-					if (fread(data, 1, size, fptr)) {
-						uv_jsonreader_init(data, size);
-						// compute the path for nested content references
-						char namecopy[128] = {};
-						strcpy(namecopy, name);
-						char newpath[128] = {};
-						strcpy(newpath, dirname(namecopy));
-						strcat(newpath, "/");
-						parse_obj_dict_obj(this, data, newpath);
-					}
-					free(data);
-					fclose(fptr);
+					// compute the path for nested content references
+					char namecopy[128] = {};
+					strcpy(namecopy, name);
+					char newpath[128] = {};
+					strcpy(newpath, dirname(namecopy));
+					strcat(newpath, "/");
+					parse_obj_dict_obj(this, content_root, newpath);
 				}
+				free(data);
 			}
 			else {
 				ERROR("Skipping content file '%s' because of error in defines\n",
 						name);
 			}
-			if (defines != NULL) {
+			if (parser_node_is_valid(defines)) {
 				remove_defines(this, defines);
 			}
 		}
@@ -764,26 +756,26 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 
 		// after reading content array, look through other childs that overwrite
 		// just loaded parameters
-		char *data = uv_jsonreader_find_child(child, "data");
+		parser_node_st data = parser_find_child(child, "data");
 		if (check_obj(data, "", "", false) &&
-				uv_jsonreader_get_type(data) == JSON_ARRAY) {
-			for (uint16_t i = 0; i < uv_jsonreader_array_get_size(data); i++) {
-				char *c = uv_jsonreader_array_at(data, i);
-				if (uv_jsonreader_array_get_type(data, i) == JSON_OBJECT &&
-						c) {
+				parser_get_type(data) == PARSER_ARRAY) {
+			for (uint16_t i = 0; i < parser_array_get_size(data); i++) {
+				parser_node_st c = parser_array_at(data, i);
+				if (parser_array_get_type(data, i) == PARSER_OBJECT &&
+						parser_node_is_valid(c)) {
 					parse_obj_dict_obj(this, c, path);
 				}
 			}
 		}
 	}
 	else {
-		char *data = uv_jsonreader_find_child(child, "name");
-		if (data == NULL) {
+		parser_node_st data = parser_find_child(child, "name");
+		if (!parser_node_is_valid(data)) {
 			ERRORSTR("Object without name found.\n");
 			return false;
 		}
 		char name[128] = {};
-		uv_jsonreader_get_string(data, name, sizeof(name));
+		parser_get_string(data, name, sizeof(name));
 		str_to_upper_nonspace(name);
 
 
@@ -807,7 +799,7 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 			echo = false;
 		}
 
-		data = uv_jsonreader_find_child(child, "index");
+		data = parser_find_child(child, "index");
 		if (check_obj(data, "index", name, echo)) {
 			dbvalue_st dbval;
 			dbvalue_init(&dbval);
@@ -816,33 +808,33 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 			dbvalue_free(&dbval);
 		}
 
-		data = uv_jsonreader_find_child(child, "index_offset");
+		data = parser_find_child(child, "index_offset");
 		if (check_obj(data, "", NULL, false)) {
-			int offset = uv_jsonreader_get_int(data);
+			int offset = parser_get_int(data);
 			obj->obj.main_index += offset;
 		}
 
-		data = uv_jsonreader_find_child(child, "type");
+		data = parser_find_child(child, "type");
 		if (check_obj(data, "type", name, echo)) {
-			obj->obj.type = db_jsonval_to_type(data);
-			uv_jsonreader_get_string(data, obj->type_str, sizeof(obj->type_str));
+			obj->obj.type = db_paramval_to_type(data);
+			parser_get_string(data, obj->type_str, sizeof(obj->type_str));
 		}
 
-		data = uv_jsonreader_find_child(child, "numsystem");
+		data = parser_find_child(child, "numsystem");
 		if (check_obj(data, "", "", false)) {
 			char str[64] = {};
-			uv_jsonreader_get_string(data, str, sizeof(str));
+			parser_get_string(data, str, sizeof(str));
 			if (strcmp(str, "HEX") == 0) {
 				obj->numsys = DB_OBJ_NUMSYS_HEX;
 			}
 		}
 
-		data = uv_jsonreader_find_child(child, "permissions");
+		data = parser_find_child(child, "permissions");
 		if (check_obj(data, "permissions", name, echo)) {
 			obj->obj.permissions = str_to_permissions(data);
 		}
 
-		data = uv_jsonreader_find_child(child, "data_type");
+		data = parser_find_child(child, "data_type");
 		if (check_obj(data, "", "", false)) {
 			obj->obj_type = str_to_objtype(data);
 		}
@@ -850,11 +842,11 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 		if (!CANOPEN_IS_ARRAY(obj->obj.type)) {
 			// string parameters
 			if (CANOPEN_IS_STRING(obj->obj.type)) {
-				data = uv_jsonreader_find_child(child, "stringsize");
+				data = parser_find_child(child, "stringsize");
 				if (check_obj(data, "stringsize", name, echo)) {
 					dbvalue_set(&obj->string_len, data);
 				}
-				data = uv_jsonreader_find_child(child, "default");
+				data = parser_find_child(child, "default");
 				if (check_obj(data, "default", name, echo)) {
 					dbvalue_set(&obj->string_def, data);
 					if (!dbvalue_is_set(&obj->string_len)) {
@@ -864,18 +856,18 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 			}
 			// integer parameters
 			else {
-				data = uv_jsonreader_find_child(child, "subindex");
+				data = parser_find_child(child, "subindex");
 				if (check_obj(data, "subindex", name, echo)) {
-					obj->obj.sub_index = uv_jsonreader_get_int(data);
+					obj->obj.sub_index = parser_get_int(data);
 				}
 
-				data = uv_jsonreader_find_child(child, "min");
+				data = parser_find_child(child, "min");
 				if (check_obj(data, "min", name,
 						(obj->obj.permissions != CANOPEN_RO) ? echo : false)) {
 					dbvalue_set(&obj->min, data);
 				}
 
-				data = uv_jsonreader_find_child(child, "max");
+				data = parser_find_child(child, "max");
 				if (check_obj(data, "max", name,
 						(obj->obj.permissions != CANOPEN_RO) ? echo : false)) {
 					dbvalue_set(&obj->max, data);
@@ -883,9 +875,9 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 				// writable integer parameters
 				if (obj->obj.permissions != CANOPEN_RO) {
 
-					data = uv_jsonreader_find_child(child, "value");
-					if (data == NULL) {
-						data = uv_jsonreader_find_child(child, "default");
+					data = parser_find_child(child, "value");
+					if (!parser_node_is_valid(data)) {
+						data = parser_find_child(child, "default");
 					}
 					if (check_obj(data, "default", name, echo)) {
 						dbvalue_set(&obj->def, data);
@@ -894,9 +886,9 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 				}
 				// read-only integer parameters
 				else {
-					data = uv_jsonreader_find_child(child, "value");
+					data = parser_find_child(child, "value");
 					if (!check_obj(data, "", "", false)) {
-						data = uv_jsonreader_find_child(child, "default");
+						data = parser_find_child(child, "default");
 					}
 					if (check_obj(data, "default", name, echo)) {
 						dbvalue_set(&obj->value, data);
@@ -913,7 +905,7 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 		}
 		// array parameters
 		else {
-			data = uv_jsonreader_find_child(child, "arraysize");
+			data = parser_find_child(child, "arraysize");
 			if (check_obj(data, "", "", false)) {
 				dbvalue_set(&obj->array_max_size, data);
 			}
@@ -921,7 +913,7 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 			obj->obj.array_max_size = dbvalue_get_int(&obj->array_max_size);
 		}
 
-		data = uv_jsonreader_find_child(child, "dataptr");
+		data = parser_find_child(child, "dataptr");
 		if (check_obj(data, "dataptr", name, echo)) {
 			dbvalue_set(&obj->dataptr, data);
 		}
@@ -933,9 +925,9 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 
 			db_array_child_st *thischild;
 			void **last_ptr = (void**) &obj->child_ptr;
-			char *children = uv_jsonreader_find_child(child, "data");
+			parser_node_st children = parser_find_child(child, "data");
 
-			if (children == NULL && dbvalue_get_int(&obj->array_max_size) == 0) {
+			if (!parser_node_is_valid(children) && dbvalue_get_int(&obj->array_max_size) == 0) {
 				ERROR("array type object '%s' should define children count\n"
 						"either with \"arraysize\" or \"data\".\n",
 						dbvalue_get_string(&obj->name));
@@ -945,11 +937,11 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 				if ((dbvalue_get_type(&obj->array_max_size) == DBVALUE_INT) &&
 						dbvalue_get_int(&obj->array_max_size) == 0) {
 					dbvalue_set_int(&obj->array_max_size,
-							uv_jsonreader_array_get_size(children));
+							parser_array_get_size(children));
 				}
 
 				for (uint8_t i = 0;
-						i < MAX(uv_jsonreader_array_get_size(children),
+						i < MAX(parser_array_get_size(children),
 								dbvalue_get_int(&obj->array_max_size)); i++) {
 					if (*last_ptr == NULL) {
 						thischild = malloc(sizeof(db_array_child_st));
@@ -961,8 +953,8 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 					}
 					last_ptr = &(thischild->next_sibling);
 
-					char *str = uv_jsonreader_array_at(children, i);
-					if (str == NULL) {
+					parser_node_st str = parser_array_at(children, i);
+					if (!parser_node_is_valid(str)) {
 						if (strlen(dbvalue_get_string(&thischild->name)) == 0) {
 							char str[1024] = {};
 							sprintf(str, "CHILD%i", i + 1);
@@ -971,7 +963,7 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 						}
 					}
 					else {
-						data = uv_jsonreader_find_child(str, "name");
+						data = parser_find_child(str, "name");
 						if (check_obj(data, "", "", false)) {
 							dbvalue_set(&thischild->name, data);
 							str_to_upper_nonspace(dbvalue_get_string(&thischild->name));
@@ -985,29 +977,29 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 
 						}
 
-						data = uv_jsonreader_find_child(str, "numsystem");
+						data = parser_find_child(str, "numsystem");
 						if (check_obj(data, "", "", false)) {
 							char str[64] = {};
-							uv_jsonreader_get_string(data, str, sizeof(str));
+							parser_get_string(data, str, sizeof(str));
 							if (strcmp(str, "HEX") == 0) {
 								thischild->numsys = DB_OBJ_NUMSYS_HEX;
 							}
 						}
 
-						data = uv_jsonreader_find_child(str, "min");
+						data = parser_find_child(str, "min");
 						if (check_obj(data, "", "", false)) {
 							dbvalue_set(&thischild->min, data);
 						}
-						data = uv_jsonreader_find_child(str, "max");
+						data = parser_find_child(str, "max");
 						if (check_obj(data, "", "", false)) {
 							dbvalue_set(&thischild->max, data);
 						}
 
-						data = uv_jsonreader_find_child(str, "default");
-						if (data == NULL) {
-							data = uv_jsonreader_find_child(str, "value");
+						data = parser_find_child(str, "default");
+						if (!parser_node_is_valid(data)) {
+							data = parser_find_child(str, "value");
 						}
-						if (data != NULL) {
+						if (parser_node_is_valid(data)) {
 							dbvalue_set(&thischild->def, data);
 						}
 					}
@@ -1021,22 +1013,22 @@ static bool parse_obj_dict_obj(db_st *this, char *child, char *path) {
 }
 
 
-static bool define_push(db_st *this, char *define_name, char *v,
-		char *parent, char *parentname) {
+static bool define_push(db_st *this, char *define_name, parser_node_st v,
+		parser_node_st parent, char *parentname) {
 	bool ret = true;
 	db_define_st define;
 	strcpy(define.name, define_name);
 	str_to_upper_nonspace(define.name);
-	uv_json_types_e type = uv_jsonreader_get_type(v);
-	if (type == JSON_INT) {
+	parser_types_e type = parser_get_type(v);
+	if (type == PARSER_INT) {
 		define.type = DB_DEFINE_INT;
-		define.value = uv_jsonreader_get_int(v);
+		define.value = parser_get_int(v);
 		uv_vector_push_back(&this->defines, &define);
 	}
-	else if (type == JSON_STRING) {
+	else if (type == PARSER_STRING) {
 		define.type = DB_DEFINE_STRING;
 		memset(define.str, 0, sizeof(define.str));
-		uv_jsonreader_get_string(v, define.str, sizeof(define.str));
+		parser_get_string(v, define.str, sizeof(define.str));
 		// resolve define references in the value: if the string value
 		// matches an existing define, use that define's value instead.
 		// This allows passing defines forward recursively.
@@ -1064,23 +1056,23 @@ static bool define_push(db_st *this, char *define_name, char *v,
 		}
 		uv_vector_push_back(&this->defines, &define);
 	}
-	else if (type == JSON_ARRAY) {
+	else if (type == PARSER_ARRAY) {
 		define.type = DB_DEFINE_ENUM;
-		int32_t len = uv_jsonreader_array_get_size(v);
+		int32_t len = parser_array_get_size(v);
 		define.child_count = len + 1;
 		define.childs = malloc(128 * (len + 1));
 		for (int32_t i = 0; i < len; i++) {
 			char c[128];
-			uv_jsonreader_array_get_string(v, i, c, sizeof(c));
+			parser_array_get_string(v, i, c, sizeof(c));
 			strcpy(define.childs[i], c);
 		}
 		strcpy(define.childs[define.child_count - 1], "COUNT");
 
 		// in case of array, search for a key "type" which specifies
 		// the data type of the enum
-		v = uv_jsonreader_find_child(parent, "type");
-		if (v != NULL) {
-			define.data_type = db_jsonval_to_type(v);
+		v = parser_find_child(parent, "type");
+		if (parser_node_is_valid(v)) {
+			define.data_type = db_paramval_to_type(v);
 		}
 		else {
 			define.data_type = CANOPEN_UNDEFINED;
@@ -1098,30 +1090,30 @@ static bool define_push(db_st *this, char *define_name, char *v,
 	return ret;
 }
 
-static bool parse_defines(db_st *this, char *obj) {
+static bool parse_defines(db_st *this, parser_node_st obj) {
 	bool ret = true;
-	if (obj != NULL) {
+	if (parser_node_is_valid(obj)) {
 		char name[128] = "UNDEFINED";
-		uv_jsonreader_get_obj_name(obj, name, sizeof(name));
+		parser_get_obj_name(obj, name, sizeof(name));
 
-		if (uv_jsonreader_get_type(obj) != JSON_ARRAY) {
+		if (parser_get_type(obj) != PARSER_ARRAY) {
 			ERROR("DEFINES array '%s' is not an array\n",
 					name);
 			ret = false;
 		}
 		else {
-			for (unsigned int i = 0; i < uv_jsonreader_array_get_size(obj); i++) {
-				char *d = uv_jsonreader_array_at(obj, i);
-				if (d != NULL) {
-					char *v = uv_jsonreader_find_child(d, "name");
-					if (v == NULL) {
+			for (unsigned int i = 0; i < parser_array_get_size(obj); i++) {
+				parser_node_st d = parser_array_at(obj, i);
+				if (parser_node_is_valid(d)) {
+					parser_node_st v = parser_find_child(d, "name");
+					if (!parser_node_is_valid(v)) {
 						// old syntax where key-value pair key defines name
 						// and value defines the value
-						char *define = uv_jsonreader_get_child(d, 0);
-						if (define != NULL) {
+						parser_node_st define = parser_get_child(d, 0);
+						if (parser_node_is_valid(define)) {
 							char dname[128];
-							uv_jsonreader_get_obj_name(define, dname, sizeof(dname));
-							ret = define_push(this, dname, define, NULL, name);
+							parser_get_obj_name(define, dname, sizeof(dname));
+							ret = define_push(this, dname, define, parser_node_invalid(), name);
 						}
 						else {
 							ERROR("Define '%s' contained empty definition\n",
@@ -1132,8 +1124,8 @@ static bool parse_defines(db_st *this, char *obj) {
 					else {
 						// old syntax with "name" and "value" pairs
 						char dname[128];
-						uv_jsonreader_get_string(v, dname, sizeof(dname));
-						v = uv_jsonreader_find_child(d, "value");
+						parser_get_string(v, dname, sizeof(dname));
+						v = parser_find_child(d, "value");
 						ret = define_push(this, dname, v, d, name);
 					}
 				}
@@ -1152,26 +1144,26 @@ static bool parse_defines(db_st *this, char *obj) {
 }
 
 
-static void remove_defines(db_st *this, char *obj) {
-	if (obj != NULL) {
+static void remove_defines(db_st *this, parser_node_st obj) {
+	if (parser_node_is_valid(obj)) {
 		char name[128] = "";
-		if (uv_jsonreader_get_type(obj) != JSON_ARRAY) {
+		if (parser_get_type(obj) != PARSER_ARRAY) {
 			ERRORSTR("DEFINES array is not an array\n");
 		}
 		else {
-			for (unsigned int i = 0; i < uv_jsonreader_array_get_size(obj); i++) {
-				char *d = uv_jsonreader_array_at(obj, i);
-				if (d != NULL) {
-					char *v = uv_jsonreader_find_child(d, "name");
-					if (v == NULL) {
-						v = uv_jsonreader_get_child(d, 0);
-						if (v != NULL) {
-							uv_jsonreader_get_obj_name(v, name, sizeof(name));
+			for (unsigned int i = 0; i < parser_array_get_size(obj); i++) {
+				parser_node_st d = parser_array_at(obj, i);
+				if (parser_node_is_valid(d)) {
+					parser_node_st v = parser_find_child(d, "name");
+					if (!parser_node_is_valid(v)) {
+						v = parser_get_child(d, 0);
+						if (parser_node_is_valid(v)) {
+							parser_get_obj_name(v, name, sizeof(name));
 						}
 					}
 					else {
 						// old protocol
-						uv_jsonreader_get_string(v, name, sizeof(name));
+						parser_get_string(v, name, sizeof(name));
 					}
 					if (strlen(name) != 0) {
 						str_to_upper_nonspace(name);
@@ -1194,18 +1186,16 @@ static void remove_defines(db_st *this, char *obj) {
 }
 
 
-static bool parse_json(db_st *this, char *json, char *path) {
+static bool parse_document(db_st *this, parser_node_st root, char *path) {
 	bool ret = true;
 
-	uv_jsonreader_init(json, strlen(json));
-
-	char *data = json;
-	char *obj;
+	parser_node_st data = root;
+	parser_node_st obj;
 
 	// dev name
-	obj = uv_jsonreader_find_child(data, "DEV");
-	if (obj != NULL) {
-		uv_jsonreader_get_string(obj, this->dev_name, sizeof(this->dev_name));
+	obj = parser_find_child(data, "DEV");
+	if (parser_node_is_valid(obj)) {
+		parser_get_string(obj, this->dev_name, sizeof(this->dev_name));
 	}
 	else {
 		ERRORSTR("'DEV' object not found in the JSON\n");
@@ -1233,51 +1223,51 @@ static bool parse_json(db_st *this, char *json, char *path) {
 	}
 
 	// vendor id
-	obj = uv_jsonreader_find_child(data, "VENDORID");
-	if (obj != NULL) {
-		this->vendor_id = uv_jsonreader_get_int(obj);
+	obj = parser_find_child(data, "VENDORID");
+	if (parser_node_is_valid(obj)) {
+		this->vendor_id = parser_get_int(obj);
 	}
 	else {
 		this->vendor_id = CANOPEN_USEVOLT_VENDOR_ID;
 	}
 
 	// product code
-	obj = uv_jsonreader_find_child(data, "PRODUCTCODE");
-	if (obj != NULL) {
-		this->product_code = uv_jsonreader_get_int(obj);
+	obj = parser_find_child(data, "PRODUCTCODE");
+	if (parser_node_is_valid(obj)) {
+		this->product_code = parser_get_int(obj);
 	}
 	else {
 		this->product_code = 0;
 	}
 
 	// revision number
-	obj = uv_jsonreader_find_child(data, "REVISIONNUMBER");
-	if (obj != NULL) {
-		this->revision_number = uv_jsonreader_get_int(obj);
+	obj = parser_find_child(data, "REVISIONNUMBER");
+	if (parser_node_is_valid(obj)) {
+		this->revision_number = parser_get_int(obj);
 	}
 	else {
 		this->revision_number = 0;
 	}
 
 	// revision notes
-	obj = uv_jsonreader_find_child(data, "REVISION_NOTES");
-	if (obj != NULL && uv_jsonreader_get_type(obj) == JSON_ARRAY) {
-		for (uint16_t i = 0; i < uv_jsonreader_array_get_size(obj); i++) {
-			char *entry = uv_jsonreader_array_at(obj, i);
-			if (entry != NULL) {
+	obj = parser_find_child(data, "REVISION_NOTES");
+	if (parser_node_is_valid(obj) && parser_get_type(obj) == PARSER_ARRAY) {
+		for (uint16_t i = 0; i < parser_array_get_size(obj); i++) {
+			parser_node_st entry = parser_array_at(obj, i);
+			if (parser_node_is_valid(entry)) {
 				db_revnote_st revnote = {};
-				char *rev = uv_jsonreader_find_child(entry, "revision");
-				if (rev != NULL) {
-					revnote.revision = uv_jsonreader_get_int(rev);
+				parser_node_st rev = parser_find_child(entry, "revision");
+				if (parser_node_is_valid(rev)) {
+					revnote.revision = parser_get_int(rev);
 				}
-				char *notes = uv_jsonreader_find_child(entry, "notes");
-				if (notes != NULL && uv_jsonreader_get_type(notes) == JSON_ARRAY) {
-					revnote.note_count = uv_jsonreader_array_get_size(notes);
+				parser_node_st notes = parser_find_child(entry, "notes");
+				if (parser_node_is_valid(notes) && parser_get_type(notes) == PARSER_ARRAY) {
+					revnote.note_count = parser_array_get_size(notes);
 					if (revnote.note_count > DB_REVNOTE_MAX_NOTES) {
 						revnote.note_count = DB_REVNOTE_MAX_NOTES;
 					}
 					for (uint8_t j = 0; j < revnote.note_count; j++) {
-						uv_jsonreader_array_get_string(notes, j,
+						parser_array_get_string(notes, j,
 								revnote.notes[j], sizeof(revnote.notes[j]));
 					}
 				}
@@ -1287,9 +1277,9 @@ static bool parse_json(db_st *this, char *json, char *path) {
 	}
 
 	// nodeid
-	obj = uv_jsonreader_find_child(data, "NODEID");
-	if (obj != NULL) {
-		this->node_id = uv_jsonreader_get_int(obj);
+	obj = parser_find_child(data, "NODEID");
+	if (parser_node_is_valid(obj)) {
+		this->node_id = parser_get_int(obj);
 	}
 	else {
 		ERRORSTR("'NODEID' object not found in the JSON\n");
@@ -1297,36 +1287,36 @@ static bool parse_json(db_st *this, char *json, char *path) {
 
 
 	// emcy
-	obj = uv_jsonreader_find_child(data, "EMCY_INDEX");
-	if (obj == NULL ||
-			(uv_jsonreader_get_type(obj) != JSON_INT &&
-					uv_jsonreader_get_type(obj) != JSON_STRING)) {
+	obj = parser_find_child(data, "EMCY_INDEX");
+	if (!parser_node_is_valid(obj) ||
+			(parser_get_type(obj) != PARSER_INT &&
+					parser_get_type(obj) != PARSER_STRING)) {
 		WARNINGSTR("No EMCY_INDEX integer parameter defined. Skipping EMCY handling.\n");
 	}
 	else {
-		this->emcys_index = uv_jsonreader_get_int(obj);
+		this->emcys_index = parser_get_int(obj);
 
-		obj = uv_jsonreader_find_child(data, "EMCY");
+		obj = parser_find_child(data, "EMCY");
 		uint8_t str_count = 1;
-		if (uv_jsonreader_get_type(obj) != JSON_ARRAY) {
+		if (parser_get_type(obj) != PARSER_ARRAY) {
 			ERRORSTR("EMCY array is not an array\n");
 		}
-		else if (obj != NULL) {
-			for (unsigned int i = 0; i < uv_jsonreader_array_get_size(obj); i++) {
-				char *e = uv_jsonreader_array_at(obj, i);
-				if (e != NULL) {
+		else if (parser_node_is_valid(obj)) {
+			for (unsigned int i = 0; i < parser_array_get_size(obj); i++) {
+				parser_node_st e = parser_array_at(obj, i);
+				if (parser_node_is_valid(e)) {
 					db_emcy_st emcy = {};
-					char *v = uv_jsonreader_find_child(e, "name");
+					parser_node_st v = parser_find_child(e, "name");
 					CHECK_EMCY(v, "name", i);
-					uv_jsonreader_get_string(v, emcy.name, sizeof(emcy.name));
+					parser_get_string(v, emcy.name, sizeof(emcy.name));
 
 
-					v = uv_jsonreader_find_child(e, "str");
-					if (v != NULL) {
-						if (uv_jsonreader_get_type(v) == JSON_ARRAY) {
+					v = parser_find_child(e, "str");
+					if (parser_node_is_valid(v)) {
+						if (parser_get_type(v) == PARSER_ARRAY) {
 							uint32_t stri;
-							for (stri = 0; stri < uv_jsonreader_array_get_size(v); stri++) {
-								uv_jsonreader_array_get_string(v, stri,
+							for (stri = 0; stri < parser_array_get_size(v); stri++) {
+								parser_array_get_string(v, stri,
 										emcy.info_strs[stri], sizeof(emcy.info_strs[stri]));
 							}
 							if (i == 0) {
@@ -1352,17 +1342,17 @@ static bool parse_json(db_st *this, char *json, char *path) {
 	}
 
 	// defines
-	obj = uv_jsonreader_find_child(data, "DEFINES");
+	obj = parser_find_child(data, "DEFINES");
 	parse_defines(this, obj);
 
 
 	// object dictionary
-	obj = uv_jsonreader_find_child(data, "OBJ_DICT");
-	if ((obj != NULL) && (uv_jsonreader_get_type(obj) == JSON_ARRAY)) {
+	obj = parser_find_child(data, "OBJ_DICT");
+	if ((parser_node_is_valid(obj)) && (parser_get_type(obj) == PARSER_ARRAY)) {
 
-		for (int i = 0; i < uv_jsonreader_array_get_size(obj); i++) {
-			char *child = uv_jsonreader_array_at(obj, i);
-			if (child == NULL) {
+		for (int i = 0; i < parser_array_get_size(obj); i++) {
+			parser_node_st child = parser_array_at(obj, i);
+			if (!parser_node_is_valid(child)) {
 				ret = false;
 				break;
 			}
@@ -1448,31 +1438,31 @@ static bool parse_json(db_st *this, char *json, char *path) {
 	}
 
 	// RXPDOs
-	obj = uv_jsonreader_find_child(data, "RXPDO");
-	if ((obj != NULL) && (uv_jsonreader_get_type(obj) == JSON_ARRAY)) {
+	obj = parser_find_child(data, "RXPDO");
+	if ((parser_node_is_valid(obj)) && (parser_get_type(obj) == PARSER_ARRAY)) {
 		uint16_t rxpdo_count = 0;
-		for (int32_t i = 0; i < uv_jsonreader_array_get_size(obj); i++) {
-			char *pdojson = uv_jsonreader_array_at(obj, i);
-			if (pdojson == NULL) {
+		for (int32_t i = 0; i < parser_array_get_size(obj); i++) {
+			parser_node_st pdojson = parser_array_at(obj, i);
+			if (!parser_node_is_valid(pdojson)) {
 				break;
 			}
 			db_rxpdo_st pdo;
 
-			char *data = uv_jsonreader_find_child(pdojson, "cobid");
+			parser_node_st data = parser_find_child(pdojson, "cobid");
 			CHECK_RXPDO(data, "cobid", i);
-			uv_jsonreader_get_string(data, pdo.cobid, sizeof(pdo.cobid));
+			parser_get_string(data, pdo.cobid, sizeof(pdo.cobid));
 
-			data = uv_jsonreader_find_child(pdojson, "transmission");
+			data = parser_find_child(pdojson, "transmission");
 			CHECK_RXPDO(data, "transmission", i);
 			pdo.transmission = str_to_transmission(data);
 
-			char *mappingsjson = uv_jsonreader_find_child(pdojson, "mappings");
-			CHECK_RXPDO(mappingsjson, "mappings", i);
-			ret = pdo_parse_mappings(mappingsjson, &pdo.mappings);
+			parser_node_st mappingsnode = parser_find_child(pdojson, "mappings");
+			CHECK_RXPDO(mappingsnode, "mappings", i);
+			ret = pdo_parse_mappings(mappingsnode, &pdo.mappings);
 
-			char *index = uv_jsonreader_find_child(pdojson, "index");
-			if (index != NULL) {
-				int16_t in = uv_jsonreader_get_int(index);
+			parser_node_st index = parser_find_child(pdojson, "index");
+			if (parser_node_is_valid(index)) {
+				int16_t in = parser_get_int(index);
 				for (int16_t i = uv_vector_size(&this->rxpdos); i < in; i++) {
 					db_rxpdo_st p = {};
 					strcpy(p.cobid, "CANOPEN_PDO_DISABLED");
@@ -1495,9 +1485,9 @@ static bool parse_json(db_st *this, char *json, char *path) {
 			}
 		}
 	}
-	else if ((obj = uv_jsonreader_find_child(data, "RXPDO_COUNT")) != NULL) {
+	else if (parser_node_is_valid(obj = parser_find_child(data, "RXPDO_COUNT"))) {
 		// RXPDO_COUNT can be used to initialize RXPDOs
-		int count = uv_jsonreader_get_int(obj);
+		int count = parser_get_int(obj);
 		for (uint16_t i = 0; i < count; i++) {
 			db_rxpdo_st pdo = {
 					.cobid = {},
@@ -1515,34 +1505,34 @@ static bool parse_json(db_st *this, char *json, char *path) {
 
 
 	// TXPDOs
-	obj = uv_jsonreader_find_child(data, "TXPDO");
-	if ((obj != NULL) && (uv_jsonreader_get_type(obj) == JSON_ARRAY)) {
-		for (int32_t i = 0; i < uv_jsonreader_array_get_size(obj); i++) {
-			char *pdojson = uv_jsonreader_array_at(obj, i);
-			if (pdojson == NULL) {
+	obj = parser_find_child(data, "TXPDO");
+	if ((parser_node_is_valid(obj)) && (parser_get_type(obj) == PARSER_ARRAY)) {
+		for (int32_t i = 0; i < parser_array_get_size(obj); i++) {
+			parser_node_st pdojson = parser_array_at(obj, i);
+			if (!parser_node_is_valid(pdojson)) {
 				break;
 			}
 			db_txpdo_st pdo;
 
-			char *data = uv_jsonreader_find_child(pdojson, "cobid");
+			parser_node_st data = parser_find_child(pdojson, "cobid");
 			CHECK_TXPDO(data, "cobid", i);
-			uv_jsonreader_get_string(data, pdo.cobid, sizeof(pdo.cobid));
+			parser_get_string(data, pdo.cobid, sizeof(pdo.cobid));
 
-			data = uv_jsonreader_find_child(pdojson, "transmission");
+			data = parser_find_child(pdojson, "transmission");
 			CHECK_TXPDO(data, "transmission", i);
 			pdo.transmission = str_to_transmission(data);
 
-			data = uv_jsonreader_find_child(pdojson, "inhibittime");
+			data = parser_find_child(pdojson, "inhibittime");
 			CHECK_TXPDO(data, "inhibittime", i);
-			pdo.inhibit_time = uv_jsonreader_get_int(data);
+			pdo.inhibit_time = parser_get_int(data);
 
-			data = uv_jsonreader_find_child(pdojson, "eventtimer");
+			data = parser_find_child(pdojson, "eventtimer");
 			CHECK_TXPDO(data, "eventtimer", i);
-			pdo.event_timer = uv_jsonreader_get_int(data);
+			pdo.event_timer = parser_get_int(data);
 
-			char *mappingsjson = uv_jsonreader_find_child(pdojson, "mappings");
-			CHECK_TXPDO(mappingsjson, "mappings", i);
-			ret = pdo_parse_mappings(mappingsjson, &pdo.mappings);
+			parser_node_st mappingsnode = parser_find_child(pdojson, "mappings");
+			CHECK_TXPDO(mappingsnode, "mappings", i);
+			ret = pdo_parse_mappings(mappingsnode, &pdo.mappings);
 
 			if (ret) {
 				int32_t bytes = 0;
@@ -1555,9 +1545,9 @@ static bool parse_json(db_st *this, char *json, char *path) {
 			}
 		}
 	}
-	else if ((obj = uv_jsonreader_find_child(data, "TXPDO_COUNT")) != NULL) {
+	else if (parser_node_is_valid(obj = parser_find_child(data, "TXPDO_COUNT"))) {
 		// TXPDO_COUNT can be used to initialize TXPDOs
-		int count = uv_jsonreader_get_int(obj);
+		int count = parser_get_int(obj);
 		for (uint16_t i = 0; i < count; i++) {
 			db_txpdo_st pdo = {
 					.cobid = {},
@@ -1677,39 +1667,34 @@ bool cmd_db(const char *arg) {
 
 	// try to load the CANOpen database
 
-	FILE *fptr = fopen(arg, "r");
+	// the database can be given either as a JSON or as a YAML file; the
+	// format follows the file's extension
+	char *data = NULL;
+	parser_node_st root = parser_read_file(arg, &data);
 
-	if (fptr == NULL) {
-		// failed to open the file, exit this task
+	if (!parser_node_is_valid(root)) {
+		// failed to open or to parse the file, exit this task
 		ERROR("Failed to open database file %s.\n", arg);
 	}
 	else {
 		char *path = malloc(strlen(dirname(arg)) + 2);
 		strcpy(path, dirname(arg));
 		strcat(path, "/");
-		int32_t size;
-		fseek(fptr, 0, SEEK_END);
-		size = ftell(fptr);
-		rewind(fptr);
-		printf("file size: %u\n", size);
+		printf("file size: %u bytes, format: %s\n",
+				(unsigned int) strlen(data),
+				parser_format_to_str(parser_format_from_filename(arg)));
 
-		char *data = malloc(size);
-		if (fread(data, 1, size, fptr)) {
-			if (parse_json(this, data, path)) {
-				printf("JSON parsed succesfully.\n");
-				strcpy(dev.db.filepath, arg);
-				ret = true;
-			}
-			else {
-				ERRORSTR("Parsing the JSON file failed.\n");
-			}
+		if (parse_document(this, root, path)) {
+			printf("Database parsed succesfully.\n");
+			strcpy(dev.db.filepath, arg);
+			ret = true;
 		}
 		else {
-			ERRORSTR("Reading the JSON file failed.\n");
+			ERRORSTR("Parsing the database file failed.\n");
 		}
-		free(data);
 		free(path);
 	}
+	free(data);
 
 	is_loaded = ret;
 

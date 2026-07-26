@@ -21,6 +21,7 @@
 
 #include <stdbool.h>
 #include <uv_utilities.h>
+#include "parser.h"
 #include <uv_canopen.h>
 #include <string.h>
 
@@ -54,7 +55,7 @@ void dbvalue_set_int(dbvalue_st *this, int32_t value);
 /// @brief: Sets the dbvalue to string, allocates memory for the string
 void dbvalue_set_string(dbvalue_st *this, char *str, uint32_t str_len);
 
-void dbvalue_set(dbvalue_st *this, char *jsonobj);
+void dbvalue_set(dbvalue_st *this, parser_node_st node);
 
 static inline int32_t dbvalue_get_int(dbvalue_st *this) {
 	return this->value_int;
@@ -360,7 +361,7 @@ void db_type_to_str(canopen_object_type_e type, char *dest);
 void db_type_to_stdint(canopen_object_type_e type, char *dest);
 void db_transmission_to_str(canopen_pdo_transmission_types_e transmission, char *dest);
 canopen_object_type_e db_str_to_type(char *str);
-canopen_object_type_e db_jsonval_to_type(char *json_child);
+canopen_object_type_e db_paramval_to_type(parser_node_st node);
 
 /// @brief: Checks if the CAN interface versions match between two sources
 /// (e.g. parameter file vs device, or database vs device). If they differ,
