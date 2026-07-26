@@ -31,10 +31,17 @@
 #include "logcap.h"
 #include "uvstdin.h"
 #include "ui/devicetab.h"
+#include "ui/fleettab.h"
 #include "ui/uv_uitextedit.h"
+#include "ui/uv_uiimage.h"
+// The Usevolt logo, compiled into the binary as a byte array (usevolt_bg_png /
+// usevolt_bg_png_len). Generated from media/usevolt_bg.png by the makefile and
+// drawn as a faint background watermark.
+#include "media_usevolt_bg.h"
 
 
-// Maximum number of tabs: "System" + one per device + "Add device".
+// Maximum number of device-tab-window tabs: "Overview" + one per device +
+// "Add device".
 #define UVUI_TAB_MAX			(1 + SYSTEM_DEV_MAX_COUNT + 1)
 // Maximum number of objects the tab content area can hold at once.
 #define TABWINDOW_OBJ_MAX		16
@@ -47,6 +54,24 @@
 // Horizontal margin for the log widgets.
 #define MARGIN_X				8
 
+// Blend colour for the background logo watermark: white at a low alpha, so the
+// white logo is drawn faintly over the dark display background. The alpha byte
+// (0x10 ~ 6%) sets how visible it is.
+#define WATERMARK_COLOR			C(0x10FFFFFF)
+
+
+// The top-level tabs. "System" holds the system overview and one tab per device,
+// as a nested tab window; "Fleet" is reserved for the fleet view and is empty for
+// now.
+typedef enum {
+	MAINTAB_SYSTEM = 0,
+	MAINTAB_FLEET,
+	MAINTAB_COUNT,
+} maintab_e;
+
+// Names of the top-level tabs (handed to the main tab window as a pointer array).
+static char *maintab_names[MAINTAB_COUNT] = { "System", "Fleet" };
+
 
 typedef struct {
 	bool terminate;
@@ -54,6 +79,22 @@ typedef struct {
 	uv_uidisplay_st display;
 	uv_uiobject_st *display_buffer[8];
 
+	// faint Usevolt logo drawn as a background watermark: an image object filling
+	// the display, added as its back-most child so it sits behind the (transparent)
+	// tab window and shows through the gaps between the opaque panels. The bitmap is
+	// the logo compiled into the binary (media_usevolt_bg.h).
+	uv_uimedia_st bg_media;
+	uv_uiimage_st bg_image;
+
+	// top-level tab window filling the display: the "System" tab holds the nested
+	// device tab window below, the "Fleet" tab is still empty
+	uv_uitabwindow_st maintabs;
+	uv_uiobject_st *maintabs_buf[4];
+	maintab_e maintab;
+
+	// device tab window, nested inside the "System" main tab. It exists only while
+	// that main tab is active; selecting another main tab clears the main tab's
+	// content area and with it this window.
 	uv_uitabwindow_st tabwindow;
 	uv_uiobject_st *tabwindow_buffer[TABWINDOW_OBJ_MAX];
 
@@ -68,6 +109,11 @@ typedef struct {
 
 	// index of the "Add device" tab, or -1 when the system is full
 	int16_t add_tab_index;
+
+	// index of the selected device tab. Kept here rather than read from the tab
+	// window, which is destroyed and re-created every time the main tab changes,
+	// so the selection survives a trip to another main tab.
+	int16_t device_tab;
 
 	// log view: an opaque window pinned to the bottom of the screen, always
 	// visible. Minimized it shows a short titled frame with the newest log line;
@@ -124,6 +170,9 @@ static uvui_st _uvui;
 #define TAB_DOT_SPACE		(TAB_DOT_PAD + TAB_DOT_DIAMETER + 2)
 
 
+static void show_active_maintab(void);
+static uv_uiobject_ret_e maintab_step(void *me, const uint16_t step_ms);
+static void build_device_tabs(void);
 static void populate_tab_names(void);
 static void rebuild_tabs(void);
 static void show_active_tab(void);
@@ -158,6 +207,14 @@ void uvui_reset_log_title(void) {
 
 bool uvui_log_is_expanded(void) {
 	return this->log_expanded;
+}
+
+
+/// @brief: Returns true while the "System" main tab is active, i.e. while the
+/// nested device tab window exists and may be refreshed. On any other main tab
+/// its widgets are not part of the display and must be left alone.
+static bool device_tabs_shown(void) {
+	return this->maintab == MAINTAB_SYSTEM;
 }
 
 
@@ -210,34 +267,34 @@ void uvui_exec(void) {
 	uv_uidisplay_init(&this->display, this->display_buffer, &uv_uistyles[0]);
 	uv_uidisplay_set_touch_indicator(&this->display, true);
 
-	// build the tab names from the current system state and initialize the
-	// tab window to fill the whole display
-	populate_tab_names();
-	uv_uitabwindow_init(&this->tabwindow, this->tab_count, &uv_uistyles[0],
-			this->tabwindow_buffer, this->tab_names);
-	// the tab window fills the whole display; keep it transparent so the
+	// the top-level tab window fills the whole display; keep it transparent so the
 	// display background colour shows through instead of the window's opaque
-	// (near-black) fill
-	uv_uiwindow_set_transparent(&this->tabwindow, true);
-	// override the tab window's draw with our own so a status dot (green = online,
-	// amber = offline) is drawn before each device tab name. Kept in the app so
-	// the HAL tab window stays generic. uv_uitabwindow_clear() preserves whatever
-	// draw callback is currently set, so this survives tab rebuilds.
-	uv_uiobject_set_draw_callb(&this->tabwindow, &tabwindow_draw);
-	// matching custom touch handler: the HAL one measures tab widths without the
-	// status-dot space, so its hit regions drift from the drawn tabs. This one
-	// mirrors tabwindow_draw's geometry (string width + dot space) so touches land.
-	uv_uiobject_set_touch_callb(&this->tabwindow, &tabwindow_touch);
+	// (near-black) fill. Its tabs get the plain HAL header (no status dots); the
+	// nested device tab window built into the "System" tab draws its own.
+	uv_uitabwindow_init(&this->maintabs, MAINTAB_COUNT, &uv_uistyles[0],
+			this->maintabs_buf, maintab_names);
+	uv_uiwindow_set_transparent(&this->maintabs, true);
 	int16_t disp_w = uv_uibb(&this->display)->w;
 	int16_t disp_h = uv_uibb(&this->display)->h;
+
+	// background watermark: load the compiled-in Usevolt logo and add it as the
+	// display's first (back-most) child, filling the whole display and centered.
+	// The blend colour's low alpha draws it faint; being back-most and behind the
+	// transparent tab window, it shows through the gaps between the opaque panels.
+	uv_uimedia_newbitmapexmem_mem(&this->bg_media, "usevolt_bg",
+			usevolt_bg_png, usevolt_bg_png_len);
+	uv_uiimage_init(&this->bg_image, &this->bg_media,
+			UIIMAGE_WRAP_BORDER, ALIGN_CENTER);
+	uv_uiimage_set_blendc(&this->bg_image, WATERMARK_COLOR);
+	uv_uidisplay_addxy(&this->display, &this->bg_image, 0, 0, disp_w, disp_h);
 
 	// minimized log height: enough for the frame title row plus one line of text.
 	// Two text lines worth of height plus the frame/window margins is ample.
 	int16_t line_h = uv_ui_get_string_height("A", &UI_MONO_FONT);
 	this->log_collapsed_h = (int16_t) (line_h * 2 + 4 * MARGIN_X);
 
-	// the tab window fills the display above the minimized log frame
-	uv_uidisplay_addxy(&this->display, &this->tabwindow,
+	// the main tab window fills the display above the minimized log frame
+	uv_uidisplay_addxy(&this->display, &this->maintabs,
 			0, 0, disp_w, disp_h - this->log_collapsed_h);
 
 	// log view: an opaque window pinned to the bottom of the screen, always
@@ -305,8 +362,11 @@ void uvui_exec(void) {
 	find_start_monitor();
 	find_update_device_states(&dev.system);
 
-	// populate the initially active "System" tab
-	show_active_tab();
+	// populate the initially active "System" main tab, which in turn builds the
+	// device tab window and its initially active "Overview" tab
+	this->maintab = MAINTAB_SYSTEM;
+	this->device_tab = 0;
+	show_active_maintab();
 
 	// previous device count, used to rebuild the tabs as a CAN search discovers
 	// devices so their tabs appear live
@@ -340,11 +400,51 @@ void uvui_exec(void) {
 		}
 		prev_waiting = waiting_now;
 
+		// poll the device tab: its file pickers, the running simulators and the
+		// progress of any asynchronous device operation. Driven from here rather
+		// than from the device tab window's step callback so it keeps running while
+		// another main tab is shown and the device tabs do not exist.
+		if (devicetab_step()) {
+			// the user picked a new device file or removed a device: refresh tab
+			// names and content. The removal flag is consumed either way so it
+			// cannot leak into a later, unrelated rebuild.
+			bool removed = devicetab_poll_device_removed();
+			if (device_tabs_shown()) {
+				rebuild_tabs();
+				if (removed) {
+					// the removed device was the active tab; move the selection to
+					// the tab just before it (another device, or the overview tab
+					// when the removed device was the first / only one) rather than
+					// letting the device that shifted into the freed slot take over
+					// the selection
+					int16_t tab = uv_uitabwindow_get_tab(&this->tabwindow);
+					uv_uitabwindow_set_tab(&this->tabwindow, (tab > 0) ? tab - 1 : 0);
+				}
+				// a removal can shrink the tab list below the active index; keep the
+				// selection in range before re-showing
+				else if (uv_uitabwindow_get_tab(&this->tabwindow) >= this->tab_count) {
+					uv_uitabwindow_set_tab(&this->tabwindow, this->tab_count - 1);
+				}
+				else {
+					// the selection is still valid
+				}
+				show_active_tab();
+			}
+		}
+
+		// pump the Fleet tab's MQTT client and poll its widgets. Like the device
+		// tab above this runs on every main tab, so the broker connection stays up
+		// and the fleet list keeps filling in while the System tab is shown.
+		if (fleettab_step() && !device_tabs_shown()) {
+			show_active_maintab();
+		}
+
 		// reflect any device that just came online: redraw the tab dots and
 		// refresh the active tab so its state label/dot update too. While an async
 		// device operation is in progress the state is frozen (the operation owns
 		// the SDO client, and a flash resets the device).
-		if (!devicetab_is_busy() && find_update_device_states(&dev.system)) {
+		if (!devicetab_is_busy() && find_update_device_states(&dev.system) &&
+				device_tabs_shown()) {
 			uv_ui_refresh(&this->tabwindow);
 			show_active_tab();
 		}
@@ -354,9 +454,11 @@ void uvui_exec(void) {
 		// while a search runs (the search adds devices itself). New devices grow the
 		// device count, which the block below turns into a tab rebuild; an in-place
 		// identity upgrade (a BOOT-UP placeholder becoming readable) keeps the count,
-		// so refresh here when the poll reports a change.
+		// so refresh here when the poll reports a change. On another main tab there
+		// are no tabs to rebuild; entering the System tab builds them from the
+		// current state anyway.
 		if (!devicetab_is_busy() && find_search_is_finished() &&
-				find_poll_new_devices()) {
+				find_poll_new_devices() && device_tabs_shown()) {
 			rebuild_tabs();
 			show_active_tab();
 		}
@@ -367,12 +469,14 @@ void uvui_exec(void) {
 		uint8_t dev_count_now = system_get_dev_count(&dev.system);
 		if (dev_count_now != prev_dev_count) {
 			prev_dev_count = dev_count_now;
-			rebuild_tabs();
-			// a shrink can drop the active index out of range; keep it valid
-			if (uv_uitabwindow_get_tab(&this->tabwindow) >= this->tab_count) {
-				uv_uitabwindow_set_tab(&this->tabwindow, this->tab_count - 1);
+			if (device_tabs_shown()) {
+				rebuild_tabs();
+				// a shrink can drop the active index out of range; keep it valid
+				if (uv_uitabwindow_get_tab(&this->tabwindow) >= this->tab_count) {
+					uv_uitabwindow_set_tab(&this->tabwindow, this->tab_count - 1);
+				}
+				show_active_tab();
 			}
-			show_active_tab();
 		}
 
 		// start the expand / collapse animation when the strip or Close is clicked
@@ -484,6 +588,81 @@ void uvui_exec(void) {
 }
 
 
+/// @brief: Clears the main tab window's content area and fills it with the
+/// currently active main tab's content.
+static void show_active_maintab(void) {
+	uv_uitabwindow_clear(&this->maintabs);
+
+	// the Fleet tab keeps its widgets only while it is the active main tab; tell it
+	// so it does not poll them while they are not part of the display
+	fleettab_set_shown(false);
+
+	if (this->maintab == MAINTAB_SYSTEM) {
+		build_device_tabs();
+	}
+	else {
+		fleettab_show(&this->maintabs);
+	}
+
+	// uv_uitabwindow_clear() drops the window step callback, so re-register it
+	uv_uitabwindow_set_stepcallb(&this->maintabs, &maintab_step, NULL);
+	uv_ui_refresh(&this->maintabs);
+}
+
+
+static uv_uiobject_ret_e maintab_step(void *me, const uint16_t step_ms) {
+	if (uv_uitabwindow_tab_changed(&this->maintabs)) {
+		if (devicetab_is_busy()) {
+			// an asynchronous device operation owns the device tab's widgets and
+			// relies on them staying disabled until it finishes. Leaving the System
+			// tab would destroy them, and coming back would re-create them enabled,
+			// so keep the user here for the duration.
+			uv_uitabwindow_set_tab(&this->maintabs, this->maintab);
+		}
+		else {
+			this->maintab = uv_uitabwindow_get_tab(&this->maintabs);
+			show_active_maintab();
+		}
+	}
+
+	return UIOBJECT_RETURN_ALIVE;
+}
+
+
+/// @brief: Builds the device tab window into the "System" main tab's content
+/// area and shows the device tab that was last active. Called every time that
+/// main tab becomes active, since leaving it clears the content area and with it
+/// this window.
+static void build_device_tabs(void) {
+	populate_tab_names();
+	uv_uitabwindow_init(&this->tabwindow, this->tab_count, &uv_uistyles[0],
+			this->tabwindow_buffer, this->tab_names);
+	// keep it transparent so the display background colour shows through instead
+	// of the window's opaque (near-black) fill
+	uv_uiwindow_set_transparent(&this->tabwindow, true);
+	// override the tab window's draw with our own so a status dot (green = online,
+	// amber = offline) is drawn before each device tab name. Kept in the app so
+	// the HAL tab window stays generic. uv_uitabwindow_clear() preserves whatever
+	// draw callback is currently set, so this survives tab rebuilds.
+	uv_uiobject_set_draw_callb(&this->tabwindow, &tabwindow_draw);
+	// matching custom touch handler: the HAL one measures tab widths without the
+	// status-dot space, so its hit regions drift from the drawn tabs. This one
+	// mirrors tabwindow_draw's geometry (string width + dot space) so touches land.
+	uv_uiobject_set_touch_callb(&this->tabwindow, &tabwindow_touch);
+
+	// fill the main tab's content area
+	uv_bounding_box_st cbb = uv_uitabwindow_get_contentbb(&this->maintabs);
+	uv_uitabwindow_addxy(&this->maintabs, &this->tabwindow, 0, 0, cbb.w, cbb.h);
+
+	// devices can have come and gone while another main tab was shown
+	if (this->device_tab >= this->tab_count) {
+		this->device_tab = this->tab_count - 1;
+	}
+	uv_uitabwindow_set_tab(&this->tabwindow, this->device_tab);
+	show_active_tab();
+}
+
+
 /// @brief: Rebuilds the tab name array (and add_tab_index) from the current
 /// system state. The tab window keeps a pointer to this->tab_names, so only the
 /// contents and the tab count are refreshed here.
@@ -491,7 +670,7 @@ static void populate_tab_names(void) {
 	system_st *sys = &dev.system;
 	uint16_t i = 0;
 
-	strcpy(this->tab_name_buffer[i], "System");
+	strcpy(this->tab_name_buffer[i], "Overview");
 	i++;
 
 	for (uint8_t d = 0; d < system_get_dev_count(sys); d++) {
@@ -555,6 +734,9 @@ static void show_active_tab(void) {
 	uv_uitabwindow_clear(&this->tabwindow);
 
 	int16_t tab = uv_uitabwindow_get_tab(&this->tabwindow);
+	// remember the selection so it can be restored when this window is re-created
+	// after a trip to another main tab
+	this->device_tab = tab;
 	if (tab == 0) {
 		devicetab_show_system(&this->tabwindow, &dev.system);
 	}
@@ -589,28 +771,9 @@ static uv_uiobject_ret_e tabwindow_step(void *me, const uint16_t step_ms) {
 			show_active_tab();
 		}
 	}
-	else if (devicetab_step()) {
-		// the user picked a new device file or removed a device: refresh tab
-		// names and content
-		bool removed = devicetab_poll_device_removed();
-		rebuild_tabs();
-		if (removed) {
-			// the removed device was the active tab; move the selection to the
-			// tab just before it (another device, or the system tab when the
-			// removed device was the first / only one) rather than letting the
-			// device that shifted into the freed slot take over the selection
-			int16_t tab = uv_uitabwindow_get_tab(&this->tabwindow);
-			uv_uitabwindow_set_tab(&this->tabwindow, (tab > 0) ? tab - 1 : 0);
-		}
-		// a removal can shrink the tab list below the active index; keep the
-		// selection in range before re-showing
-		else if (uv_uitabwindow_get_tab(&this->tabwindow) >= this->tab_count) {
-			uv_uitabwindow_set_tab(&this->tabwindow, this->tab_count - 1);
-		}
-		show_active_tab();
-	}
 	else {
-		// nothing changed this cycle
+		// nothing changed this cycle. The device tab itself is polled from the
+		// uvui_exec() loop, so it keeps running on the other main tabs too.
 	}
 
 	return UIOBJECT_RETURN_ALIVE;
@@ -648,7 +811,7 @@ static bool device_dot_hollow(const device_st *device) {
 
 /// @brief: Returns the status-dot colour for tab *tab_i*. Device tabs (indices
 /// 1..dev_count) get a colour reflecting the device's CAN-bus state; the
-/// "System" and "New device" tabs get no dot (returns 0).
+/// "Overview" and "New device" tabs get no dot (returns 0).
 static color_t tab_dot_color(void *me, uint16_t tab_i) {
 	color_t ret = 0;
 	if ((tab_i >= 1) && (tab_i <= system_get_dev_count(&dev.system))) {
@@ -737,7 +900,7 @@ static void shorten_to_width(const char *name, int16_t max_w, uv_font_st *font,
 
 
 /// @brief: Fills tab_display_buffer with the names to draw: the full names when
-/// they all fit, otherwise the full names for the System tab (0), the active tab
+/// they all fit, otherwise the full names for the Overview tab (0), the active tab
 /// and the "Add device" tab, and shortened "start..." names for the rest, so the
 /// whole row fits the window width. Called by both the draw and touch handlers so
 /// their tab geometry stays identical.
@@ -760,7 +923,7 @@ static void compute_tab_display(uv_uitabwindow_st *tabwin, int16_t active) {
 		return;
 	}
 
-	// overflow: keep System, the active tab and the add tab full; shrink the rest
+	// overflow: keep Overview, the active tab and the add tab full; shrink the rest
 	int16_t fixed = 0;
 	int16_t truncatable = 0;
 	for (int16_t i = 0; i < count; i++) {

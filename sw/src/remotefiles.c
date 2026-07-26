@@ -505,8 +505,25 @@ bool remotefiles_download(const char *path, const char *dest_path,
 }
 
 
+bool remotefiles_is_logged_in(void) {
+	return rf_token[0] != '\0';
+}
+
+
+void remotefiles_logout(void) {
+	rf_token[0] = '\0';
+}
+
+
 #else /* CONFIG_TARGET_WIN: not wired up on the Windows build yet */
 
+
+bool remotefiles_is_logged_in(void) {
+	return false;
+}
+
+void remotefiles_logout(void) {
+}
 
 bool remotefiles_login(const char *url, const char *username,
 		const char *password, char *err, unsigned int err_len) {

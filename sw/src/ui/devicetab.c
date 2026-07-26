@@ -37,6 +37,7 @@
 #include "simrun.h"
 #include "terminaltab.h"
 #include "credentials.h"
+#include "remotefiles.h"
 #include "ui/uv_uitextedit.h"
 #include "ui/serverfiles_win.h"
 #include "ui/devsel_win.h"
@@ -305,9 +306,9 @@ static struct {
 	// button: writes the loaded system's bundled parameters onto every device
 	uv_uibutton_st sys_loadparams_btn;
 
-	// "Run simulator" button, shown on the system tab: launches the Linux
-	// simulator of every configured device. Its label gets a second line when
-	// disabled because devices are online.
+	// "Start simulator" button, shown on the system tab: launches the Linux
+	// simulator of every configured device. While the simulators are live it reads
+	// "Force stop simulator" and stops them all when clicked.
 	uv_uibutton_st run_sim_btn;
 	char run_sim_str[96];
 
@@ -332,6 +333,11 @@ static struct {
 	uv_uitextedit_st account_url;
 	uv_uitextedit_st account_user;
 	uv_uitextedit_st account_pass;
+	// "Connect" button logging in to the file server with the fields above, and
+	// the status line next to it (green while the session is open)
+	uv_uibutton_st account_connect_btn;
+	uv_uilabel_st account_status;
+	char account_status_str[256];
 } content;
 
 
@@ -365,6 +371,41 @@ static char account_url_buf[CREDENTIALS_MAX];
 static char account_user_buf[CREDENTIALS_MAX];
 static char account_pass_buf[CREDENTIALS_MAX];
 static bool account_seeded;
+
+// Reason the last "Connect" attempt failed, shown in red under the fields until
+// the next attempt. "" when there was none.
+static char account_err[256];
+
+
+/// @brief: Rewrites the Account panel's status line from the current file-server
+/// session state and greys the "Connect" button out while that session is open.
+/// Called after building the panel and whenever the state changes, so the panel
+/// never has to be rebuilt just to reflect a connect / disconnect.
+static void account_refresh_status(void) {
+	color_t c;
+	if (remotefiles_is_logged_in()) {
+		snprintf(content.account_status_str, sizeof(content.account_status_str),
+				"Connected to %s as '%s'", credentials_get_url(),
+				credentials_get_username());
+		c = DOT_COLOR_OP;
+		uv_uiobject_disable(&content.account_connect_btn);
+	}
+	else {
+		if (account_err[0] != '\0') {
+			snprintf(content.account_status_str,
+					sizeof(content.account_status_str), "%s", account_err);
+			c = WARNING_COLOR;
+		}
+		else {
+			strcpy(content.account_status_str, "Not connected");
+			c = uv_uistyles[0].text_color;
+		}
+		uv_uiobject_enable(&content.account_connect_btn);
+	}
+	uv_uilabel_set_color(&content.account_status, c);
+	uv_ui_refresh(&content.account_status);
+	uv_ui_refresh(&content.account_connect_btn);
+}
 
 // The two sub-tabs of a device tab.
 typedef enum {
@@ -543,9 +584,12 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	// the bottom on every target.
 	int16_t frame_x = MARGIN;
 	int16_t frame_w = cbb.w - 2 * MARGIN;
-	// the Account panel: its title bar plus a single row (URL, Username and
-	// Password side by side), the row being a field with its title below it
-	int16_t account_frame_h = 2 * BUTTON_H + MARGIN + TITLE_H;
+	// the Account panel: the fields row (URL / Username / Password, each a field
+	// with its title below it, sharing the row with the "Connect" button), plus a
+	// shorter status row below. The status row is only a text label, so it gets a
+	// label's height (TITLE_H) rather than a full button's - keeping the panel
+	// compact.
+	int16_t account_frame_h = 2 * BUTTON_H + MARGIN + TITLE_H + MARGIN + TITLE_H;
 	int16_t account_frame_y = cbb.h - MARGIN - account_frame_h;
 #if !CONFIG_TARGET_WIN
 	// the configuration panel needs room for the double-height source row plus the
@@ -654,30 +698,37 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 			frame_w, sim_frame_h);
 	uv_bounding_box_st mc = uv_uiframewindow_get_content_bb(&content.sim_frame);
 
-	// the panel is split into two columns: the "Run simulator" button on the left
+	// the panel is split into two columns: the "Start simulator" button on the left
 	// (a third of the width) and the running-simulator list on the right (the
 	// remaining two thirds).
 	int16_t left_w = (mc.w - MARGIN) / 3;
 	int16_t right_x = left_w + MARGIN;
 	int16_t right_w = mc.w - left_w - MARGIN;
 
-	// "Run simulator": launches the Linux simulator of every configured device.
-	// While the simulators are starting up / loading parameters (OP_SIMPARAM) the
-	// same button turns into a "Force stop simulator" that kills them all (handled
-	// in the busy branch of devicetab_step). Otherwise it is disabled only when no
-	// system file is loaded, when the simulators are already running, or while
-	// another system operation is busy. Devices already online no longer block it:
-	// pressing it restores those devices to defaults and loads the system
-	// parameters onto them instead of simulating them (see the click handler).
-	// Fills the left column.
+	// "Start simulator": launches the Linux simulator of every configured device.
+	// The same button is a "Force stop simulator" the whole time the simulators
+	// are live - both while they are starting up / loading parameters (OP_SIMPARAM)
+	// and once they are running afterwards - and stops them all when clicked (both
+	// cases handled in devicetab_step). Only when none is live does it start them;
+	// in that start mode it is disabled when no system file is loaded or another
+	// system operation is busy. Devices already online no longer block it: pressing
+	// it restores those devices to defaults and loads the system parameters onto
+	// them instead of simulating them (see the click handler). Fills the left
+	// column.
 	bool sims_running = simrun_any_running();
 	bool simparam_busy = busy && (busy_op == OP_SIMPARAM);
+	// "stop mode": the simulators are live (starting up or running), so the button
+	// stops them rather than starting new ones
+	bool sim_stop_mode = simparam_busy || sims_running;
 	strcpy(content.run_sim_str,
-			simparam_busy ? "Force stop simulator" : "Run simulator");
+			sim_stop_mode ? "Force stop simulator" : "Start simulator");
 	uv_uibutton_init(&content.run_sim_btn, content.run_sim_str, style);
 	uv_uiframewindow_addxy(&content.sim_frame, &content.run_sim_btn,
 			0, 0, left_w, mc.h);
-	if (!simparam_busy && (!system->loaded || sims_running || sys_busy)) {
+	// in stop mode the button stays live so the simulators can always be stopped;
+	// in start mode it is greyed out when there is nothing to start or another
+	// system operation owns the bus
+	if (!sim_stop_mode && (!system->loaded || sys_busy)) {
 		uv_uiobject_disable(&content.run_sim_btn);
 	}
 
@@ -695,24 +746,31 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	}
 	else {
 		// the rows live in their own window so they are not limited by the frame's
-		// object budget. Scale the row height so that every simulator's row (with
-		// its Kill button) fits inside the window's height, capped at the normal
-		// button height when there is room to spare.
+		// object budget. Each row keeps a fixed, comfortable height (a full button
+		// tall, so its two-line node/state label stays readable); when there are
+		// more simulators than fit, the window's content overflows and it becomes
+		// scrollable (content_autogrow grows the content box, and the window draws a
+		// scroll bar and accepts drag / wheel) instead of squeezing the rows.
 		uv_uiwindow_init(&content.sim_window, content.sim_window_buf, style);
+		uv_uiwindow_set_content_autogrow(&content.sim_window, true);
 		uv_uiframewindow_addxy(&content.sim_frame, &content.sim_window,
 				right_x, 0, right_w, mc.h);
 
 		int16_t gap = 4;
-		int16_t row_h = (mc.h - (simcount - 1) * gap) / simcount;
-		if (row_h > BUTTON_H) {
-			row_h = BUTTON_H;
+		int16_t row_h = BUTTON_H;
+		// leave room for the vertical scroll bar when the rows overflow, so it does
+		// not sit on top of the Kill buttons
+		int16_t rows_h = simcount * row_h + (simcount - 1) * gap;
+		int16_t list_w = right_w;
+		if (rows_h > mc.h) {
+			list_w -= CONFIG_UI_WINDOW_SCROLLBAR_WIDTH + gap;
 		}
 		// columns laid out from the right: Kill, Log, node id, then the name fills
 		// whatever is left
 		int16_t kill_w = 80;
 		int16_t log_w = 80;
 		int16_t node_w = 140;
-		int16_t kill_x = right_w - kill_w;
+		int16_t kill_x = list_w - kill_w;
 		int16_t log_x = kill_x - gap - log_w;
 		int16_t node_x = log_x - gap - node_w;
 		int16_t name_w = node_x - gap;
@@ -775,12 +833,22 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 			frame_w, account_frame_h);
 	uv_bounding_box_st ac = uv_uiframewindow_get_content_bb(&content.account_frame);
 
-	// one row holding all three fields: the URL takes half the width (it is by far
-	// the longest value), Username and Password a quarter each. Each field draws
-	// its title below itself.
+	// the bottom row holds the connection status on its own; the fields and the
+	// "Connect" button share the row above it. The status row is a plain label, so
+	// it is only TITLE_H tall (not a full button); the fields row gets the rest.
+	int16_t acc_status_h = TITLE_H;
+	int16_t acc_status_row_y = ac.h - acc_status_h;
+	int16_t acc_field_h = acc_status_row_y - MARGIN;
+
+	// top row: URL, Username, Password and the "Connect" button side by side. The
+	// URL takes the most width (it is by far the longest value). With only three
+	// fields here (the Fleet tab's panel has a fourth) there is room to give the
+	// button a wide, easy target. Each field draws its title below itself.
 	int16_t acc_gap = MARGIN;
-	int16_t acc_url_w = (ac.w - 2 * acc_gap) / 2;
-	int16_t acc_field_w = (ac.w - 2 * acc_gap - acc_url_w) / 2;
+	int16_t acc_conn_w = 3 * 2 * BUTTON_H;
+	int16_t acc_fields_w = ac.w - acc_conn_w - 4 * acc_gap;
+	int16_t acc_url_w = acc_fields_w / 2;
+	int16_t acc_field_w = (acc_fields_w - acc_url_w) / 2;
 	int16_t acc_x = 0;
 
 	uv_uitextedit_init(&content.account_url, account_url_buf,
@@ -788,7 +856,7 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	uv_uitextedit_set_title(&content.account_url, "URL");
 	uv_uitextedit_set_align(&content.account_url, ALIGN_CENTER_LEFT);
 	uv_uiframewindow_addxy(&content.account_frame, &content.account_url,
-			acc_x, 0, acc_url_w, ac.h);
+			acc_x, 0, acc_url_w, acc_field_h);
 	acc_x += acc_url_w + acc_gap;
 
 	uv_uitextedit_init(&content.account_user, account_user_buf,
@@ -796,7 +864,7 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	uv_uitextedit_set_title(&content.account_user, "Username");
 	uv_uitextedit_set_align(&content.account_user, ALIGN_CENTER_LEFT);
 	uv_uiframewindow_addxy(&content.account_frame, &content.account_user,
-			acc_x, 0, acc_field_w, ac.h);
+			acc_x, 0, acc_field_w, acc_field_h);
 	acc_x += acc_field_w + acc_gap;
 
 	uv_uitextedit_init(&content.account_pass, account_pass_buf,
@@ -805,7 +873,23 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	uv_uitextedit_set_title(&content.account_pass, "Password");
 	uv_uitextedit_set_align(&content.account_pass, ALIGN_CENTER_LEFT);
 	uv_uiframewindow_addxy(&content.account_frame, &content.account_pass,
-			acc_x, 0, acc_field_w, ac.h);
+			acc_x, 0, acc_field_w, acc_field_h);
+	acc_x += acc_field_w + acc_gap;
+
+	// the "Connect" button sits at the top of its column so it lines up with the
+	// fields' entry boxes, not with the titles drawn below them.
+	// account_refresh_status() below greys it out while the session is open.
+	uv_uibutton_init(&content.account_connect_btn, "Connect", style);
+	uv_uiframewindow_addxy(&content.account_frame, &content.account_connect_btn,
+			acc_x, 0, ac.w - acc_x, BUTTON_H);
+
+	// bottom row: the connection status, centered and filling the whole width
+	uv_uilabel_init(&content.account_status, style->font, ALIGN_CENTER,
+			style->text_color, content.account_status_str);
+	uv_uiframewindow_addxy(&content.account_frame, &content.account_status,
+			0, acc_status_row_y, ac.w, acc_status_h);
+
+	account_refresh_status();
 }
 
 
@@ -1255,16 +1339,59 @@ bool devicetab_step(void) {
 	// state; the fields exist only while the system tab is built. Editing them is
 	// equivalent to running with --user / --pwd.
 	if (showing_system) {
+		bool account_edited = false;
 		if (uv_uitextedit_value_changed(&content.account_url)) {
 			credentials_set_url(uv_uitextedit_get_text(&content.account_url));
+			account_edited = true;
 		}
 		if (uv_uitextedit_value_changed(&content.account_user)) {
 			credentials_set_username(
 					uv_uitextedit_get_text(&content.account_user));
+			account_edited = true;
 		}
 		if (uv_uitextedit_value_changed(&content.account_pass)) {
 			credentials_set_password(
 					uv_uitextedit_get_text(&content.account_pass));
+			account_edited = true;
+		}
+		// the session token belongs to the credentials that were in the fields when
+		// it was issued: editing any of them drops it, which puts the status back to
+		// "Not connected" and re-enables the button for reconnecting
+		if (account_edited) {
+			if (remotefiles_is_logged_in()) {
+				printf("File server: disconnected (account settings changed)\n");
+				fflush(stdout);
+			}
+			remotefiles_logout();
+			account_err[0] = '\0';
+			account_refresh_status();
+		}
+
+		// "Connect": log in to the file server with the current fields. This blocks
+		// for the round trip (curl, like the "Server files" browser does), which is
+		// short enough not to warrant its own task.
+		if (uv_uibutton_clicked(&content.account_connect_btn)) {
+			account_err[0] = '\0';
+			strcpy(content.account_status_str, "Connecting...");
+			uv_uilabel_set_color(&content.account_status,
+					uv_uistyles[0].text_color);
+			uv_ui_refresh(&content.account_status);
+			printf("File server: connecting to '%s' as '%s'...\n",
+					credentials_get_url(), credentials_get_username());
+			fflush(stdout);
+			if (remotefiles_login(credentials_get_url(),
+					credentials_get_username(), credentials_get_password(),
+					account_err, sizeof(account_err))) {
+				printf("File server: connected to '%s' as '%s'\n",
+						credentials_get_url(), credentials_get_username());
+				fflush(stdout);
+			}
+			else {
+				printf("File server: connecting to '%s' failed: %s\n",
+						credentials_get_url(), account_err);
+				fflush(stdout);
+			}
+			account_refresh_status();
 		}
 	}
 
@@ -1293,9 +1420,9 @@ bool devicetab_step(void) {
 		}
 		// during a simulator parameter load the system tab stays visible; rebuild
 		// it as the simulators move through Started -> Loading params -> Running.
-		// The "Run simulator" button is live in this state as "Force stop
-		// simulator": clicking it kills every simulator and cancels the in-progress
-		// parameter load (simrun_kill_all sets the load's cancel flag).
+		// The button is live in this state as "Force stop simulator": clicking it
+		// kills every simulator and cancels the in-progress parameter load
+		// (simrun_kill_all sets the load's cancel flag).
 		if ((busy_op == OP_SIMPARAM) && showing_system) {
 			if (uv_uibutton_clicked(&content.run_sim_btn)) {
 				printf("Force-stopping the simulators...\n");
@@ -1496,7 +1623,20 @@ bool devicetab_step(void) {
 			}
 		}
 #if !CONFIG_TARGET_WIN
-		// "Run simulator": launch the Linux simulator of every configured device,
+		// "Force stop simulator": while the simulators are running the same button
+		// stops them all instead of starting new ones (the mirror of the force-stop
+		// during the start-up parameter load, handled in the busy branch above).
+		// Guarded on simrun_any_running() so this click is consumed here before the
+		// start handler below can act on it; when nothing is running the condition
+		// is false and the click falls through to that start handler.
+		else if (simrun_any_running() &&
+				uv_uibutton_clicked(&content.run_sim_btn)) {
+			printf("Force-stopping the simulators...\n");
+			fflush(stdout);
+			simrun_kill_all();
+			ret = true;
+		}
+		// "Start simulator": launch the Linux simulator of every configured device,
 		// each as its own process connected to uvcan's CAN channel. Rebuild so the
 		// running-simulator list appears. Simulators are a Linux-only feature, so
 		// the button and its list exist only there.

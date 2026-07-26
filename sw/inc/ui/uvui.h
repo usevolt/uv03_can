@@ -27,9 +27,11 @@
 /// @brief: Opens uvcan's main graphical display and blocks until the window is
 /// closed.
 ///
-/// The display is a tab window whose first tab is "System" and whose remaining
-/// tabs are one per device in the current system (see system.h). When the
-/// system holds fewer than SYSTEM_DEV_MAX_COUNT devices, a final "Add device"
+/// The display is a tab window with two tabs: "System" and "Fleet" (the latter
+/// still empty). The "System" tab holds a nested tab window whose first tab is
+/// "Overview" (the system configuration, simulator and account panels) and whose
+/// remaining tabs are one per device in the current system (see system.h). When
+/// the system holds fewer than SYSTEM_DEV_MAX_COUNT devices, a final "Add device"
 /// tab is shown; selecting it appends a new, empty device and opens its tab.
 ///
 /// This is intended to be run after the HAL configuration window

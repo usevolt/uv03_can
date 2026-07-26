@@ -387,9 +387,11 @@ void terminaltab_build(void *parent, uint8_t nodeid) {
 		win_h = INPUT_H;
 	}
 
-	// scrollable receive window
+	// scrollable receive window. Kept transparent so the display background (and
+	// the faint Usevolt logo watermark drawn on it) shows through behind the
+	// terminal text, which stays readable as it is light on the dark background.
 	uv_uiwindow_init(&term_win, term_win_buf, style);
-	uv_uiwindow_set_transparent(&term_win, false);
+	uv_uiwindow_set_transparent(&term_win, true);
 	uv_uitabwindow_addxy(parent, &term_win,
 			MARGIN, MARGIN, cbb.w - 2 * MARGIN, win_h);
 

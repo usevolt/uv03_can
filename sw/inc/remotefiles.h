@@ -73,6 +73,18 @@ bool remotefiles_login(const char *url, const char *username,
 		const char *password, char *err, unsigned int err_len);
 
 
+/// @brief: True while a session token from a successful remotefiles_login() is
+/// held, i.e. while the tool is logged in to the file server. Used by the system
+/// tab's Account panel to show the connection status.
+bool remotefiles_is_logged_in(void);
+
+
+/// @brief: Drops the session token, so the next server access needs a fresh
+/// remotefiles_login(). Called when the user edits any of the account fields:
+/// the token belongs to the credentials that were in them at login time.
+void remotefiles_logout(void);
+
+
 /// @brief: Fetches the file list for the logged-in account into the internal store
 /// (accessed with remotefiles_get_*). Must be called after remotefiles_login().
 /// Returns true on success; fills *err* on failure.

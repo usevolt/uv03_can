@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Install dependencies (first time)
-sudo apt-get install libncurses-dev pkg-config
+sudo apt-get install libncurses-dev pkg-config libmosquitto-dev
 
 # Build
 make

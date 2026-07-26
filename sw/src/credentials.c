@@ -40,6 +40,13 @@ static char cred_username[CREDENTIALS_MAX];
 static char cred_password[CREDENTIALS_MAX];
 static char cred_url[CREDENTIALS_MAX];
 
+// The fleet account (MQTT broker), kept strictly separate from the file server
+// account above and persisted in the same file under "fleet_*" keys.
+static char fleet_username[CREDENTIALS_MAX];
+static char fleet_password[CREDENTIALS_MAX];
+static char fleet_url[CREDENTIALS_MAX];
+static char fleet_name[CREDENTIALS_MAX];
+
 
 // Creates *path* and any missing parent directories (best effort, like mkdir -p).
 // Existing directories and failures are ignored - the caller's fopen() reports any
@@ -60,11 +67,12 @@ static void cred_mkdir_p(const char *path) {
 }
 
 
-// Builds the shared account-file path into *out* (size *len*) and makes sure its
-// directory exists. The location is per-user and identical for every uvcan install
-// on the machine (see credentials.h). Returns false when no home directory is
-// known from the environment.
-static bool cred_path(char *out, size_t len) {
+// Builds the path of *filename* inside uvcan's per-user configuration directory
+// into *out* (size *len*) and makes sure the directory exists. The location is
+// per-user and identical for every uvcan install on the machine (see
+// credentials.h). Returns false when no home directory is known from the
+// environment.
+bool credentials_config_path(char *out, size_t len, const char *filename) {
 	bool ret = false;
 	char dir[900];
 #if CONFIG_TARGET_WIN
@@ -92,14 +100,20 @@ static bool cred_path(char *out, size_t len) {
 #endif
 	if (ret) {
 		cred_mkdir_p(dir);
-		snprintf(out, len, "%s%caccount.conf", dir, CRED_SEP);
+		snprintf(out, len, "%s%c%s", dir, CRED_SEP, filename);
 	}
 	return ret;
 }
 
 
-// Writes the current cred_username / cred_password to the shared file as two
-// "key=value" lines. Returns true on success.
+// Builds the shared account-file path into *out* (size *len*).
+static bool cred_path(char *out, size_t len) {
+	return credentials_config_path(out, len, "account.conf");
+}
+
+
+// Writes both accounts to the shared file as "key=value" lines. Returns true on
+// success.
 static bool cred_write_file(void) {
 	bool ret = false;
 	char path[1024];
@@ -109,6 +123,10 @@ static bool cred_write_file(void) {
 			fprintf(f, "username=%s\n", cred_username);
 			fprintf(f, "password=%s\n", cred_password);
 			fprintf(f, "url=%s\n", cred_url);
+			fprintf(f, "fleet_username=%s\n", fleet_username);
+			fprintf(f, "fleet_password=%s\n", fleet_password);
+			fprintf(f, "fleet_url=%s\n", fleet_url);
+			fprintf(f, "fleet_name=%s\n", fleet_name);
 			fclose(f);
 			ret = true;
 		}
@@ -141,6 +159,10 @@ void credentials_init(void) {
 	cred_username[0] = '\0';
 	cred_password[0] = '\0';
 	cred_url[0] = '\0';
+	fleet_username[0] = '\0';
+	fleet_password[0] = '\0';
+	fleet_url[0] = '\0';
+	fleet_name[0] = '\0';
 	char path[1024];
 	if (cred_path(path, sizeof(path))) {
 		FILE *f = fopen(path, "r");
@@ -156,12 +178,33 @@ void credentials_init(void) {
 				else if (strncmp(line, "url=", 4) == 0) {
 					cred_parse_value(line, cred_url, sizeof(cred_url));
 				}
+				else if (strncmp(line, "fleet_username=", 15) == 0) {
+					cred_parse_value(line, fleet_username, sizeof(fleet_username));
+				}
+				else if (strncmp(line, "fleet_password=", 15) == 0) {
+					cred_parse_value(line, fleet_password, sizeof(fleet_password));
+				}
+				else if (strncmp(line, "fleet_url=", 10) == 0) {
+					cred_parse_value(line, fleet_url, sizeof(fleet_url));
+				}
+				else if (strncmp(line, "fleet_name=", 11) == 0) {
+					cred_parse_value(line, fleet_name, sizeof(fleet_name));
+				}
 				else {
 					// unknown key: ignore
 				}
 			}
 			fclose(f);
 		}
+	}
+
+	// a never-set (or emptied) server address falls back to the Usevolt default,
+	// so a fresh install can connect without the user typing an address
+	if (cred_url[0] == '\0') {
+		strcpy(cred_url, CREDENTIALS_URL_DEFAULT);
+	}
+	if (fleet_url[0] == '\0') {
+		strcpy(fleet_url, CREDENTIALS_FLEET_URL_DEFAULT);
 	}
 }
 
@@ -201,4 +244,53 @@ void credentials_set_url(const char *url) {
 	strncpy(cred_url, (url != NULL) ? url : "", sizeof(cred_url) - 1);
 	cred_url[sizeof(cred_url) - 1] = '\0';
 	cred_write_file();
+}
+
+
+// Shared implementation of the fleet-account setters: copies *value* into *dst*
+// and persists the whole file.
+static void fleet_set(char *dst, const char *value) {
+	strncpy(dst, (value != NULL) ? value : "", CREDENTIALS_MAX - 1);
+	dst[CREDENTIALS_MAX - 1] = '\0';
+	cred_write_file();
+}
+
+
+const char *credentials_fleet_get_url(void) {
+	return fleet_url;
+}
+
+
+const char *credentials_fleet_get_username(void) {
+	return fleet_username;
+}
+
+
+const char *credentials_fleet_get_password(void) {
+	return fleet_password;
+}
+
+
+const char *credentials_fleet_get_fleet(void) {
+	return fleet_name;
+}
+
+
+void credentials_fleet_set_url(const char *url) {
+	fleet_set(fleet_url, url);
+}
+
+
+void credentials_fleet_set_username(const char *username) {
+	fleet_set(fleet_username, username);
+}
+
+
+void credentials_fleet_set_password(const char *password) {
+	fleet_set(fleet_password, password);
+}
+
+
+void credentials_fleet_set_fleet(const char *fleet) {
+	fleet_set(fleet_name, fleet);
 }

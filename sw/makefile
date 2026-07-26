@@ -35,9 +35,12 @@ BUILDDIR := release
 # Directory for build-time generated sources (e.g. images embedded into the
 # binary as C arrays). Lives under BUILDDIR so 'make clean' removes it.
 GENERATEDDIR := $(BUILDDIR)/generated
-# PNG images compiled into the binary. Each is turned into a C header holding a
-# byte array (via xxd -i) and #included by the UI code that draws it.
-EMBEDDED_MEDIA := $(GENERATEDDIR)/media_minus_hd.h
+# Files compiled into the binary as C byte arrays (via xxd -i) and #included by
+# the code that uses them: the UI's PNG images and the MQTT broker's CA
+# certificate.
+EMBEDDED_MEDIA := $(GENERATEDDIR)/media_minus_hd.h \
+				$(GENERATEDDIR)/media_usevolt_bg.h \
+				$(GENERATEDDIR)/cert_uvca.h
 
 
 ### Platform specific configuration ###############################
@@ -66,6 +69,19 @@ PLATFORM_CFLAGS := -I"thirdparty_win/include" -DCONFIG_UI_OPENGL=1 -DGLEW_STATIC
 # used by the FreeRTOS Win32 port for its tick) and the OpenGL UI stack.
 PLATFORM_LIBS := $(PLATFORM_SRCDIR)/PCANBasic.dll -lwinmm \
 				-L"thirdparty_win/lib" -lglfw3 -lfreetype -lopengl32 -lgdi32 -lcomdlg32
+# MQTT (the Fleet tab) needs a mingw-built libmosquitto plus its TLS backend
+# (OpenSSL) staged into thirdparty_win/{include,lib} - the apt mingw toolchain
+# ships neither. Until they are staged the Fleet tab's broker connection is
+# stubbed out (src/mqtt.c). Once the libs are in place, opt in with
+#   make win MOSQUITTO=1
+# which defines MOSQUITTO_WIN (compiling in the real client) and links it. The
+# extra Windows system libs are what static OpenSSL + winsock pull in; drop
+# -lssl -lcrypto and add the OpenSSL DLLs beside uvcan.exe instead if linking a
+# DLL-import libmosquitto (see the Windows MQTT notes).
+ifeq ($(MOSQUITTO),1)
+PLATFORM_CFLAGS += -DMOSQUITTO_WIN=1
+PLATFORM_LIBS += -lmosquitto -lssl -lcrypto -lws2_32 -lcrypt32 -lbcrypt
+endif
 # The OpenGL UI backend + PNG decoder live in src_linux (they are portable,
 # pure GLFW/GLEW/FreeType); GLEW is compiled straight from its amalgamated
 # source. These are added individually so the rest of src_linux is excluded.
@@ -85,8 +101,10 @@ PLATFORM_SRCDIR := hal/uv_hal/src_linux
 PLATFORM_PORTDIR := hal/uv_hal/freertos/portable/ThirdParty/GCC/Posix
 PLATFORM_PORTSRCDIRS := $(PLATFORM_PORTDIR) $(PLATFORM_PORTDIR)/utils
 PLATFORM_INCLUDEDIRS := -I"$(PLATFORM_PORTDIR)" -I"$(PLATFORM_PORTDIR)/utils"
-PLATFORM_CFLAGS := $(shell pkg-config --cflags ncurses glfw3 glew gl freetype2) -pthread -DCONFIG_UI_OPENGL=1
-PLATFORM_LIBS := -pthread -lncurses -lreadline $(shell pkg-config --libs glfw3 glew gl freetype2) -lm
+# libmosquitto is the MQTT client used by the Fleet tab (src/mqtt.c). It has no
+# mingw build here, so the Fleet tab's broker connection is Linux-only.
+PLATFORM_CFLAGS := $(shell pkg-config --cflags ncurses glfw3 glew gl freetype2 libmosquitto) -pthread -DCONFIG_UI_OPENGL=1
+PLATFORM_LIBS := -pthread -lncurses -lreadline $(shell pkg-config --libs glfw3 glew gl freetype2 libmosquitto) -lm
 # On Linux the UI backend + PNG decoder are compiled as part of src_linux.
 PLATFORM_EXTRA_SOURCES :=
 
@@ -234,6 +252,19 @@ image: $(BINARY)
 # the media/ dir with the bare filename yields exactly "minus_hd_png", which
 # also keeps this working on older xxd versions that lack the -n flag.
 $(GENERATEDDIR)/media_minus_hd.h: media/minus_hd.png
+	@mkdir -p $(@D)
+	cd $(<D) && xxd -i $(<F) > $(abspath $@)
+
+# The Usevolt logo, embedded the same way (usevolt_bg_png / usevolt_bg_png_len).
+# Drawn as a faint background watermark by the UI (see uvui.c).
+$(GENERATEDDIR)/media_usevolt_bg.h: media/usevolt_bg.png
+	@mkdir -p $(@D)
+	cd $(<D) && xxd -i $(<F) > $(abspath $@)
+
+# The MQTT broker's private CA certificate, embedded the same way (uvca_crt /
+# uvca_crt_len). libmosquitto wants a CA *file*, so mqtt.c writes these bytes out
+# next to the account file on first connect - see mqtt.c.
+$(GENERATEDDIR)/cert_uvca.h: certs/uvca.crt
 	@mkdir -p $(@D)
 	cd $(<D) && xxd -i $(<F) > $(abspath $@)
 
