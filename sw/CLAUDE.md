@@ -71,10 +71,13 @@ interface in `inc/parser.h`:
 - `parser_find_file(dir, "uvdev", ...)` locates a package manifest written in
   any of the supported formats.
 
-Notes on the two formats: uvcan's JSON files store hexadecimal values as strings
-(`"MAININDEX": "0x2100"`), which the JSON reader reports as integers. YAML has
-native hex, so there the same value is written unquoted (`MAININDEX: 0x2100`).
-A quoted YAML scalar is always a string, per the YAML spec.
+Notes on the two formats: in both of them uvcan stores hexadecimal values as
+quoted strings (`"MAININDEX": "0x2100"` / `MAININDEX: "0x2100"`) and the string
+values are quoted as well; only the YAML keys are left unquoted. `parser_get_type`
+reports a string which is a valid hexadecimal value as `PARSER_INT`, so a value
+like `"0x2100"` reads back as an integer in both formats. (In JSON the reader
+does the same for any quoted number.) A hand-written YAML file may also use
+native unquoted hex (`MAININDEX: 0x2100`) — that is read as an integer too.
 
 ### Parameter file query value formats
 

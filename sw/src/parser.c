@@ -167,6 +167,56 @@ static parser_types_e yaml_type(uv_yaml_types_e type) {
 }
 
 
+/// @brief: The buffer length which writing a hexadecimal value requires
+#define HEXBUF_LEN		16
+
+
+/// @brief: Writes *value* to *dest* in the hexadecimal notation which
+/// uvcan's files use
+static void hex_str(char *dest, unsigned int dest_length, uint32_t value) {
+	snprintf(dest, dest_length, "0x%x", value);
+}
+
+
+/// @brief: Returns true if the *len* characters long string at *str* is a
+/// hexadecimal value, e.g. "0x2100"
+static bool is_hex_str(const char *str, unsigned int len) {
+	bool ret = false;
+
+	if ((str != NULL) && (len > 2) && (str[0] == '0') &&
+			((str[1] == 'x') || (str[1] == 'X'))) {
+		ret = true;
+		for (unsigned int i = 2; i < len; i++) {
+			if (!isxdigit((int) str[i])) {
+				ret = false;
+				break;
+			}
+		}
+	}
+
+	return ret;
+}
+
+
+/// @brief: Returns the common type of a YAML node.
+///
+/// Both of uvcan's file formats store the hexadecimal values as strings,
+/// i.e. quoted in YAML, since that keeps them distinguishable from the
+/// decimal values. Such a string is reported as an integer, just like the
+/// JSON reader does.
+static parser_types_e yaml_node_type(uv_yaml_node_st node) {
+	parser_types_e ret = yaml_type(uv_yamlreader_get_type(node));
+
+	if ((ret == PARSER_STRING) &&
+			is_hex_str(uv_yamlreader_get_string_ptr(node),
+					uv_yamlreader_get_string_len(node))) {
+		ret = PARSER_INT;
+	}
+
+	return ret;
+}
+
+
 /// @brief: Wraps a JSON node into a common node
 static parser_node_st json_node(char *node) {
 	parser_node_st ret;
@@ -368,7 +418,7 @@ parser_types_e parser_get_type(parser_node_st node) {
 	if (parser_node_is_valid(node)) {
 		ret = (node.format == PARSER_FORMAT_JSON) ?
 				json_type(uv_jsonreader_get_type(node.json)) :
-				yaml_type(uv_yamlreader_get_type(node.yaml));
+				yaml_node_type(node.yaml);
 	}
 
 	return ret;
@@ -480,7 +530,7 @@ parser_types_e parser_array_get_type(parser_node_st array, unsigned int index) {
 	if (parser_node_is_valid(array)) {
 		ret = (array.format == PARSER_FORMAT_JSON) ?
 				json_type(uv_jsonreader_array_get_type(array.json, index)) :
-				yaml_type(uv_yamlreader_seq_get_type(array.yaml, index));
+				yaml_node_type(uv_yamlreader_seq_at(array.yaml, index));
 	}
 
 	return ret;
@@ -544,6 +594,9 @@ uv_errors_e parser_writer_init(parser_writer_st *this, char *buffer,
 	this->format = format;
 	if (format == PARSER_FORMAT_YAML) {
 		ret = uv_yamlwriter_init(&this->yaml, buffer, buffer_length);
+		// uvcan's files quote all the string values, keeping the values
+		// distinguishable from the YAML syntax at a glance
+		uv_yamlwriter_set_quote_strings(&this->yaml, true);
 	}
 	else {
 		ret = uv_jsonwriter_init(&this->json, buffer, buffer_length);
@@ -597,9 +650,20 @@ uv_errors_e parser_writer_add_int(parser_writer_st *this, const char *name, int 
 
 uv_errors_e parser_writer_add_int_hex(parser_writer_st *this,
 		const char *name, uint32_t value) {
-	return (this->format == PARSER_FORMAT_YAML) ?
-			uv_yamlwriter_add_int_hex(&this->yaml, name, value) :
-			uv_jsonwriter_add_int_hex(&this->json, (char*) name, value);
+	uv_errors_e ret;
+
+	if (this->format == PARSER_FORMAT_YAML) {
+		// uvcan's files store the hexadecimal values as strings.
+		// The reading side maps them back to integers.
+		char str[HEXBUF_LEN];
+		hex_str(str, sizeof(str), value);
+		ret = uv_yamlwriter_add_string(&this->yaml, name, str);
+	}
+	else {
+		ret = uv_jsonwriter_add_int_hex(&this->json, (char*) name, value);
+	}
+
+	return ret;
 }
 
 
@@ -627,9 +691,18 @@ uv_errors_e parser_writer_array_add_int(parser_writer_st *this, int value) {
 
 
 uv_errors_e parser_writer_array_add_int_hex(parser_writer_st *this, uint32_t value) {
-	return (this->format == PARSER_FORMAT_YAML) ?
-			uv_yamlwriter_seq_add_int_hex(&this->yaml, value) :
-			uv_jsonwriter_array_add_int_hex(&this->json, value);
+	uv_errors_e ret;
+
+	if (this->format == PARSER_FORMAT_YAML) {
+		char str[HEXBUF_LEN];
+		hex_str(str, sizeof(str), value);
+		ret = uv_yamlwriter_seq_add_string(&this->yaml, str);
+	}
+	else {
+		ret = uv_jsonwriter_array_add_int_hex(&this->json, value);
+	}
+
+	return ret;
 }
 
 

@@ -40,8 +40,12 @@
 ///
 /// Note that as JSON is a subset of YAML, a JSON document can also be read
 /// with the YAML parser. The formats are still kept separate, since the JSON
-/// parser is more permissive with the things which uvcan's own files rely on,
-/// such as hexadecimal values written as strings.
+/// parser is more permissive with the things which uvcan's own files rely on.
+///
+/// In both formats uvcan stores the hexadecimal values as strings, i.e.
+/// quoted ("MAININDEX": "0x2100"), and the string values are always quoted
+/// as well. A string which is a valid hexadecimal value is reported as
+/// PARSER_INT by *parser_get_type*.
 
 
 /// @brief: The file formats which the parser supports
