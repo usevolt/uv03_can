@@ -18,6 +18,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <ctype.h>
 #include "parser.h"
@@ -250,21 +251,163 @@ bool parser_node_is_valid(parser_node_st node) {
 /***** READING FUNCTIONS ******/
 
 
+// Why the last read returned an invalid node; see parser_last_error(). The
+// reading functions run one at a time (a load, a save or a database read owns
+// the operation while it runs), so a single shared reason is enough.
+static char last_error[192] = "no error";
+
+
+// Stores the reason why the read which is being performed failed.
+static void set_error(const char *fmt, ...) {
+	va_list args;
+	va_start(args, fmt);
+	vsnprintf(last_error, sizeof(last_error), fmt, args);
+	va_end(args);
+}
+
+
+const char *parser_last_error(void) {
+	return last_error;
+}
+
+
+// The nesting depth which the structure check accepts. uvcan's own documents
+// nest a handful of levels; this only bounds the check's own stack.
+#define JSON_MAX_DEPTH		64
+
+
+/// @brief: Checks that *buffer* holds a structurally complete JSON document:
+/// an object at the root, every '{' and '[' closed by a matching '}' or ']'
+/// and nothing but whitespace after the root's closing brace.
+///
+/// uv_jsonreader parses in place and does not validate anything: a truncated
+/// or otherwise malformed document is read without complaint and then gives
+/// silently wrong values for every lookup afterwards. A parameter file whose
+/// last brace is missing would, for example, load a random subset of the
+/// parameters onto a device. Such a document is caught here instead, before
+/// anything is read out of it.
+///
+/// Strings are recognized the same way the reader recognizes them - a '"'
+/// toggles in and out of a string, since uv_json knows no backslash escapes -
+/// so this accepts exactly the documents which the reader can really parse.
+static bool json_structure_is_valid(const char *buffer) {
+	bool ret = true;
+	char stack[JSON_MAX_DEPTH];
+	unsigned int depth = 0;
+	bool in_string = false;
+	// offset just past the root object's closing brace, 0 until it is closed
+	unsigned int root_end = 0;
+	unsigned int i = 0;
+
+	while (isspace((unsigned char) buffer[i])) {
+		i++;
+	}
+	if (buffer[i] != '{') {
+		set_error("the document does not begin with a JSON object");
+		ret = false;
+	}
+
+	for (; ret && (buffer[i] != '\0'); i++) {
+		char c = buffer[i];
+		if (c == '"') {
+			in_string = !in_string;
+		}
+		else if (in_string) {
+			// the contents of a string are not structure
+		}
+		else if ((c == '{') || (c == '[')) {
+			if (depth >= JSON_MAX_DEPTH) {
+				set_error("the document nests deeper than %u levels",
+						(unsigned int) JSON_MAX_DEPTH);
+				ret = false;
+			}
+			else {
+				stack[depth] = c;
+				depth++;
+			}
+		}
+		else if ((c == '}') || (c == ']')) {
+			char opener = (c == '}') ? '{' : '[';
+			if (depth == 0) {
+				set_error("a '%c' at offset %u closes nothing", c, i);
+				ret = false;
+			}
+			else if (stack[depth - 1] != opener) {
+				set_error("a '%c' at offset %u closes a '%c'",
+						c, i, stack[depth - 1]);
+				ret = false;
+			}
+			else {
+				depth--;
+				if ((depth == 0) && (root_end == 0)) {
+					root_end = i + 1;
+				}
+			}
+		}
+		else {
+			// an ordinary character outside a string
+		}
+	}
+
+	if (ret && in_string) {
+		set_error("the document ends inside a string");
+		ret = false;
+	}
+	if (ret && (depth != 0)) {
+		set_error("the document ends with %u unterminated object(s) or "
+				"array(s)", depth);
+		ret = false;
+	}
+	if (ret) {
+		// only whitespace may follow the root object
+		for (unsigned int j = root_end; ret && (buffer[j] != '\0'); j++) {
+			if (!isspace((unsigned char) buffer[j])) {
+				set_error("there is data after the root object, at offset %u",
+						j);
+				ret = false;
+			}
+		}
+	}
+
+	return ret;
+}
+
+
 parser_node_st parser_read_buffer(char *buffer, unsigned int buffer_length,
 		parser_formats_e format) {
 	parser_node_st ret = parser_node_invalid();
 
-	if (buffer != NULL) {
-		if (format == PARSER_FORMAT_YAML) {
-			if (uv_yamlreader_init(buffer, buffer_length) == ERR_NONE) {
-				ret = yaml_node(uv_yamlreader_get_root(buffer));
-			}
+	if (buffer == NULL) {
+		set_error("there is nothing to parse");
+	}
+	else if (format == PARSER_FORMAT_YAML) {
+		if (uv_yamlreader_init(buffer, buffer_length) != ERR_NONE) {
+			set_error("the YAML document could not be parsed");
 		}
 		else {
-			if (uv_jsonreader_init(buffer, buffer_length) == ERR_NONE) {
-				ret = json_node(buffer);
+			ret = yaml_node(uv_yamlreader_get_root(buffer));
+			if (!parser_node_is_valid(ret)) {
+				set_error("the YAML document has no root node");
 			}
 		}
+	}
+	else {
+		// the structure is checked before the reader is initialized: the reader
+		// strips the whitespace in place, so the offsets reported here still
+		// refer to the document as the user wrote it
+		if (!json_structure_is_valid(buffer)) {
+			// json_structure_is_valid() has set the reason
+		}
+		else if (uv_jsonreader_init(buffer, buffer_length) != ERR_NONE) {
+			set_error("the JSON document could not be parsed");
+		}
+		else {
+			ret = json_node(buffer);
+		}
+	}
+
+	if (parser_node_is_valid(ret)) {
+		set_error("no error");
 	}
 
 	return ret;
@@ -275,16 +418,32 @@ parser_node_st parser_read_file(const char *path, char **dest_buffer) {
 	parser_node_st ret = parser_node_invalid();
 	char *data = NULL;
 
-	if (path != NULL) {
+	if (path == NULL) {
+		set_error("no file was given");
+	}
+	else {
 		FILE *f = fopen(path, "rb");
-		if (f != NULL) {
+		if (f == NULL) {
+			set_error("the file could not be opened");
+		}
+		else {
 			fseek(f, 0, SEEK_END);
 			long size = ftell(f);
 			fseek(f, 0, SEEK_SET);
-			if (size > 0) {
+			if (size <= 0) {
+				set_error("the file is empty");
+			}
+			else {
 				data = malloc((size_t) size + 1);
-				if (data != NULL) {
-					if (fread(data, 1, (size_t) size, f) == (size_t) size) {
+				if (data == NULL) {
+					set_error("the file does not fit in memory (%ld bytes)",
+							size);
+				}
+				else {
+					if (fread(data, 1, (size_t) size, f) != (size_t) size) {
+						set_error("the file could not be read to the end");
+					}
+					else {
 						data[size] = '\0';
 						ret = parser_read_buffer(data, strlen(data),
 								parser_format_from_filename(path));

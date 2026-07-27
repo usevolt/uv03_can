@@ -139,6 +139,13 @@ parser_node_st parser_node_invalid(void);
 /// The buffer is modified in place and it has to stay valid as long as
 /// the returned node or any of it's children are used.
 ///
+/// The document's structure is checked before it is handed out: a JSON
+/// document has to be an object at the root with every brace and bracket
+/// closed, and nothing but whitespace after it. This matters because the
+/// reader itself does not validate anything - a truncated document would be
+/// "read" without complaint and then give silently wrong values for every
+/// lookup. Use *parser_last_error* for the reason a document was rejected.
+///
 /// @return: The root node of the document, or an invalid node on failure
 ///
 /// @param buffer: A null terminated buffer containing the whole document
@@ -149,15 +156,25 @@ parser_node_st parser_read_buffer(char *buffer, unsigned int buffer_length,
 
 
 /// @brief: Reads the whole file at *path* into a freshly malloc'd buffer and
-/// parses it in the format given by the file's extension.
+/// parses it in the format given by the file's extension. The document is
+/// checked like in *parser_read_buffer*.
 ///
 /// @return: The root node of the document, or an invalid node if the file
-/// could not be read.
+/// could not be read or is not a valid document.
 ///
 /// @param path: The path of the file to read
 /// @param dest_buffer: The malloc'd buffer is stored here. The caller has to
 /// free() it once the returned node is not used anymore. Set to NULL on failure.
 parser_node_st parser_read_file(const char *path, char **dest_buffer);
+
+
+/// @brief: Returns why the last *parser_read_file* or *parser_read_buffer*
+/// call returned an invalid node, as a short sentence which can be printed as
+/// a part of an error message, e.g. "the document ends with 3 unterminated
+/// object(s) or array(s)". Returns "no error" when the last read succeeded.
+///
+/// The returned string stays valid until the next read.
+const char *parser_last_error(void);
 
 
 /// @brief: Finds and returns a child node with a name *child_name* from the

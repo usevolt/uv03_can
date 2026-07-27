@@ -71,6 +71,15 @@ interface in `inc/parser.h`:
 - `parser_find_file(dir, "uvdev", ...)` locates a package manifest written in
   any of the supported formats.
 
+Both readers check the document's structure before handing the root out: a JSON
+document has to be an object at the root with every brace and bracket closed and
+nothing but whitespace after it. `uv_jsonreader` itself validates nothing, so a
+truncated file would otherwise be "read" without complaint and then answer every
+lookup with nonsense — a parameter file whose last brace is missing would load an
+arbitrary subset of the parameters onto a device. A rejected document gives an
+invalid node; `parser_last_error()` then tells why, as a sentence fit for an
+error message.
+
 Notes on the two formats: in both of them uvcan stores hexadecimal values as
 quoted strings (`"MAININDEX": "0x2100"` / `MAININDEX: "0x2100"`) and the string
 values are quoted as well; only the YAML keys are left unquoted. `parser_get_type`
