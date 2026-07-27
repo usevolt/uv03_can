@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include "parser.h"
+#include "ui/uv_uifileedit.h"
 
 // Platform null device, used to silence a child command's stdout.
 #if CONFIG_TARGET_WIN
@@ -237,6 +238,11 @@ bool system_set_file(system_st *this, const char *filepath) {
 		this->filepath[sizeof(this->filepath) - 1] = '\0';
 		name_from_path(filepath, this->name, sizeof(this->name));
 		this->loaded = true;
+		// The system package's own directory is where the user keeps this system's
+		// files, so the UI's file dialogs should start there. It is the only hint
+		// available when uvcan was started by double-clicking the .uvsys file: the
+		// file manager runs it with a working directory of its own choosing.
+		uv_uifiledialog_set_default_dir(filepath);
 	}
 	else if (extracted) {
 		// nothing usable was loaded: drop the just-created extraction
@@ -629,6 +635,8 @@ bool cmd_device(const char *arg) {
 				PRINT_RESET, arg);
 	}
 	else if (system_add_device(&dev.system, path, nodeid)) {
+		// as with --sys, start the UI's file dialogs next to the given file
+		uv_uifiledialog_set_default_dir(path);
 		if (nodeid != 0) {
 			PRINT("Added device configuration file '%s' with node id 0x%x\n",
 					path, nodeid);
