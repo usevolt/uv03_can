@@ -39,6 +39,7 @@
 #include <uv_canopen.h>
 #include "find.h"
 #include "loadparam.h"
+#include "uvstdin.h"
 
 
 // A single running simulator child process.
@@ -491,6 +492,19 @@ void simrun_kill_all(void) {
 // How long to wait for the simulated devices to come operational before loading.
 #define SIMRUN_OP_WAIT_MS		15000
 
+// How often the running parameter load is checked on.
+#define SIMRUN_PARAM_POLL_MS	200
+
+// How long the parameter load may go without any progress before it is given up
+// on. There is no sensible upper bound for the load itself - a full system's
+// parameters take minutes over a 250 kbit bus - so what is watched is progress
+// rather than total time: loadparam_get_progress_counter() advances on every SDO
+// transfer, and only a load which stops advancing for this long counts as stuck.
+// Long enough to cover the SDO client's own retries and a device which is busy
+// storing, short enough that a load which will never finish does not leave the
+// user staring at "Loading params" with no way to stop the simulators.
+#define SIMRUN_PARAM_STALL_MS	30000
+
 static system_st *pp_sys;
 static volatile bool pp_finished = true;
 // node ids of the online real devices that this load manages instead of
@@ -618,15 +632,59 @@ static void postparam_task(void *ptr) {
 
 		// 3. load the parameters: suppress EMCY on all, write each device, re-enable
 		// EMCY, store and reset all (handled by loadparam_load_system_async)
-		if (n > 0) {
+		if (n == 0) {
+			// Nothing to load. Worth saying out loud: the load is what the user
+			// is waiting for, and silence here is indistinguishable from a hang.
+			// A system package carries no parameters when reading them from the
+			// devices failed while it was saved, so point at that.
+			PRINT("None of the devices has any parameters saved in the system "
+					"configuration;\n"
+					"there is nothing to load and the simulators run with their "
+					"default settings.\n"
+					"Save the system configuration again if this is not what you "
+					"expected.\n");
+			fflush(stdout);
+		}
+		else {
 			loadparam_load_system_async(targets, n);
-			while (!loadparam_load_system_is_finished()) {
-				uv_rtos_task_delay(200);
+			// Wait for the load, but only while it is getting somewhere: a load
+			// which stops making progress (a device that never answers, a bug in
+			// the load itself) would otherwise keep the caller - and with it the
+			// UI's busy state - waiting forever, with no way to stop the
+			// simulators.
+			uint32_t last_progress = loadparam_get_progress_counter();
+			uint32_t stalled = 0;
+			while (!loadparam_load_system_is_finished() &&
+					(stalled < SIMRUN_PARAM_STALL_MS) && !pp_cancel) {
+				uv_rtos_task_delay(SIMRUN_PARAM_POLL_MS);
+				uint32_t progress = loadparam_get_progress_counter();
+				// a load which is waiting for the user to answer a prompt is not
+				// stalled, however long the user takes to answer it
+				if ((progress != last_progress) || uv_stdin_is_waiting()) {
+					last_progress = progress;
+					stalled = 0;
+				}
+				else {
+					stalled += SIMRUN_PARAM_POLL_MS;
+				}
+			}
+			if (!loadparam_load_system_is_finished() && !pp_cancel) {
+				PRINT("ERROR: the parameter load has not made any progress in "
+						"%u seconds and\n"
+						"is given up on. It is still running in the background; "
+						"stop the simulators\n"
+						"with \"Force stop simulator\" (or the Kill buttons) if "
+						"it does not recover.\n",
+						(unsigned int) (SIMRUN_PARAM_STALL_MS / 1000));
+				fflush(stdout);
 			}
 		}
 	}
 
-	// 4. every simulator that is still alive is now running
+	// 4. every simulator that is still alive is now running. Also done when the
+	// load above was given up on or cancelled: the state is what enables the per
+	// simulator Kill button, so leaving them in "Loading params" would take away
+	// the very thing the user needs after a stalled load.
 	for (uint8_t i = 0; i < proc_count; i++) {
 		if ((procs[i].state == SIMRUN_STARTED) ||
 				(procs[i].state == SIMRUN_PARAM)) {
