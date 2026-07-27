@@ -378,7 +378,7 @@ const char *simrun_get_state_str(uint8_t index) {
 			ret = "Started";
 			break;
 		case SIMRUN_PARAM:
-			ret = "Loading params";
+			ret = "Loading parameters";
 			break;
 		case SIMRUN_RUNNING:
 			ret = "Running";

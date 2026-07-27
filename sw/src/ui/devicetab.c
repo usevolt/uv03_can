@@ -321,7 +321,7 @@ static struct {
 	uv_uilabel_st sim_labels[SYSTEM_DEV_MAX_COUNT];
 	char sim_label_strs[SYSTEM_DEV_MAX_COUNT][96];
 	uv_uilabel_st sim_node_labels[SYSTEM_DEV_MAX_COUNT];
-	char sim_node_strs[SYSTEM_DEV_MAX_COUNT][16];
+	char sim_node_strs[SYSTEM_DEV_MAX_COUNT][32];
 	uv_uibutton_st sim_log_btns[SYSTEM_DEV_MAX_COUNT];
 	uv_uibutton_st sim_kill_btns[SYSTEM_DEV_MAX_COUNT];
 
