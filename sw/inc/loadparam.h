@@ -82,6 +82,13 @@ typedef struct {
 	// true if the last finished load completed without a CANopen transfer error.
 	// Set by loadparam_step() and returned by loadparam_load_device().
 	bool success;
+
+	// true when the last load stopped because the parameter file itself could
+	// not be read: it is missing, or it is not a structurally valid document
+	// (see parser_read_file). Separated from a CANopen failure so a multi-device
+	// load can tell the user which of the two went wrong, and so a broken file
+	// is never mistaken for a device which refused the parameters.
+	bool file_invalid;
 } loadparam_st;
 
 
@@ -91,6 +98,17 @@ typedef struct {
 static inline bool loadparam_is_finished(loadparam_st *this) {
 	return this->finished;
 }
+
+
+/// @brief: Returns a counter which is incremented every time a running load
+/// completes one SDO transfer, i.e. every time it moves forward by one
+/// parameter. It never decreases and it is not reset between the loads.
+///
+/// A caller which waits for an asynchronous load watches this to separate a
+/// load which is merely slow (a full system takes minutes over a 250 kbit bus)
+/// from one which is stuck, without having to guess how long the load should
+/// take. See the simulator's post-launch load in simrun.c.
+uint32_t loadparam_get_progress_counter(void);
 
 
 

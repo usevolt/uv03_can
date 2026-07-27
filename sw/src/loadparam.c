@@ -111,12 +111,25 @@ static void loadparam_sdo_log_retried(uv_errors_e ret, uint8_t node_id,
 	}
 }
 
+// Incremented on every completed SDO transfer, i.e. every time a load moves
+// forward by one parameter. A caller which waits for a load to finish (the
+// simulator's post-launch load) watches this to tell "still working, just slow"
+// apart from "stuck", instead of guessing a total duration.
+static volatile uint32_t progress_counter;
+
+
+uint32_t loadparam_get_progress_counter(void) {
+	return progress_counter;
+}
+
+
 // Wrappers around the SDO client that additionally retry the whole transfer when
 // the device aborts with CANOPEN_SDO_ERROR_UNSUPPORTED_ACCESS_TO_OBJECT (see
 // LOADPARAM_SDO_RETRY_COUNT). All of loadparam's parameter reads/writes go
 // through these instead of calling uv_canopen_sdo_*() directly.
 static uv_errors_e loadparam_sdo_write(uint8_t node_id, uint16_t mindex,
 		uint8_t sindex, uint32_t data_len, void *data) {
+	progress_counter++;
 	uv_errors_e ret = uv_canopen_sdo_write(node_id, mindex, sindex, data_len, data);
 	uint8_t attempt = 0;
 	while (loadparam_sdo_should_retry(ret, node_id, mindex, attempt, "write")) {
@@ -134,6 +147,7 @@ static uv_errors_e loadparam_sdo_write(uint8_t node_id, uint16_t mindex,
 
 static uv_errors_e loadparam_sdo_read(uint8_t node_id, uint16_t mindex,
 		uint8_t sindex, uint32_t data_len, void *data) {
+	progress_counter++;
 	uv_errors_e ret = uv_canopen_sdo_read(node_id, mindex, sindex, data_len, data);
 	uint8_t attempt = 0;
 	while (loadparam_sdo_should_retry(ret, node_id, mindex, attempt, "read")) {
@@ -185,6 +199,50 @@ bool loadparam_load(const char *path) {
 }
 
 
+/// @brief: Asks the user how a multi-device load should go on after the device
+/// at *nodeid* failed. Called only when there are devices left to load: with
+/// nothing left there is nothing to decide.
+///
+/// The devices of a system are loaded as a batch, and the two failures behind
+/// this differ in how much they say about the rest of the batch. A device which
+/// refused its parameters, or a parameter file which is broken, does not mean
+/// the next device would fail too - but it does leave the system half
+/// configured, which the user may well prefer to sort out before touching any
+/// more devices. So the choice is theirs rather than a fixed policy.
+///
+/// The answer is read with uv_stdin_getline(), which blocks without halting the
+/// scheduler, so the UI stays live and offers its log command line for it (see
+/// uv_stdin_is_waiting).
+///
+/// @return: true to load the remaining devices, false to stop the whole load
+static bool loadparam_ask_continue(uint8_t nodeid, uint8_t remaining) {
+	bool ret = true;
+
+	PROMPT("\n\n"
+			"Loading the parameters to node 0x%x failed (%s).\n"
+			"%u device(s) of this load have not been loaded yet.\n\n"
+			"Type 'abort' to stop the whole load and leave the remaining "
+			"devices untouched,\n"
+			"or press anything to continue with the next device.\n\n",
+			(unsigned int) nodeid,
+			this->file_invalid ? "the parameter file cannot be used" :
+					"a CANopen transfer failed",
+			(unsigned int) remaining);
+	char str[128] = {};
+	uv_stdin_getline(str, sizeof(str) - 1);
+	if (strstr(str, "abort") != NULL) {
+		printf("User selected: abort the whole parameter load\n");
+		ret = false;
+	}
+	else {
+		printf("User selected: continue with the next device\n");
+	}
+	fflush(stdout);
+
+	return ret;
+}
+
+
 // Loads bundled parameters onto each system device in the index range [start,
 // end). Each device's own PARAM file (recorded when the system package was loaded)
 // is the source; a device with no bundled parameters is skipped with a warning.
@@ -192,7 +250,8 @@ bool loadparam_load(const char *path) {
 static void loadparam_devices(uint8_t start, uint8_t end) {
 	uint8_t total = 0;
 	uint8_t ok = 0;
-	for (uint8_t i = start; i < end; i++) {
+	bool aborted = false;
+	for (uint8_t i = start; (i < end) && !aborted; i++) {
 		device_st *d = &dev.system.devs[i];
 		if (strlen(d->param_file) == 0) {
 			WARNING("Device '%s' (node 0x%x) has no bundled parameters; "
@@ -209,10 +268,17 @@ static void loadparam_devices(uint8_t start, uint8_t end) {
 		else {
 			ERROR("Parameter loading to node 0x%x failed.\n",
 					(unsigned int) d->nodeid);
+			// let the user stop the batch here, as long as there is still
+			// something left to stop
+			uint8_t remaining = (uint8_t) (end - i - 1);
+			if ((remaining > 0) && !loadparam_ask_continue(d->nodeid, remaining)) {
+				aborted = true;
+			}
 		}
 	}
-	printf("\nLoaded parameters to %u/%u device(s).\n",
-			(unsigned int) ok, (unsigned int) total);
+	printf("\nLoaded parameters to %u/%u device(s).%s\n",
+			(unsigned int) ok, (unsigned int) total,
+			aborted ? " The load was aborted by the user." : "");
 }
 
 
@@ -366,20 +432,30 @@ bool loadparam_load_params_is_finished(void) {
 
 /// @brief: Task body loading saved parameters onto each target device in turn.
 static void loadparam_params_task(void *ptr) {
-	for (uint8_t i = 0; i < async_params_count; i++) {
+	bool aborted = false;
+	for (uint8_t i = 0; (i < async_params_count) && !aborted; i++) {
 		device_st *d = async_params_devs[i];
 		if ((d != NULL) && (strlen(d->param_file) != 0)) {
 			printf("Loading parameters to node 0x%x from '%s'\n",
 					(unsigned int) d->nodeid, d->param_file);
 			fflush(stdout);
 			if (!loadparam_load_device(d, d->param_file)) {
-				// a CANopen transfer to this device failed: stop the whole load
-				ERROR("Parameter loading stopped: writing to node 0x%x failed.\n",
+				ERROR("Parameter loading to node 0x%x failed.\n",
 						(unsigned int) d->nodeid);
 				fflush(stdout);
-				break;
+				// with devices still queued the user decides whether the rest of
+				// them are loaded; with none left there is nothing to ask about
+				uint8_t remaining = (uint8_t) (async_params_count - i - 1);
+				if ((remaining == 0) ||
+						!loadparam_ask_continue(d->nodeid, remaining)) {
+					aborted = true;
+				}
 			}
 		}
+	}
+	if (aborted) {
+		ERRORSTR("Parameter loading stopped.\n");
+		fflush(stdout);
 	}
 	async_params_finished = true;
 	uv_rtos_task_delete(NULL);
@@ -1247,6 +1323,7 @@ static void emcy_suppress_write(const emcy_suppress_st *s, uint8_t node,
 void loadparam_step(void *ptr) {
 	this->finished = false;
 	this->success = false;
+	this->file_invalid = false;
 
 	// NOTE: the file list (this->files) is prepared by the caller. The
 	// command-line entry (loadparam_run_files) collects the primary file and any
@@ -1275,8 +1352,20 @@ void loadparam_step(void *ptr) {
 		parser_node_st root = parser_read_file(file, &buffer);
 
 		if (!parser_node_is_valid(root)) {
-			// failed to open or to parse the file
-			ERROR("Failed to open parameter file '%s'.\n", file);
+			// The file is missing, or it is not a structurally valid document.
+			// Loading anything out of it would write an arbitrary subset of the
+			// parameters onto the device (the reader answers every lookup, with
+			// nonsense, on a broken document), so stop here and leave the device
+			// as it is rather than half-configure it.
+			ERROR("ERROR: the parameter file '%s' cannot be used:\n"
+					"  %s.\n"
+					"No parameters were written. Save the file again with "
+					"--saveparam\n"
+					"(or the UI's \"Save system configuration to file\").\n",
+					file, parser_last_error());
+			fflush(stdout);
+			this->file_invalid = true;
+			e = ERR_ABORTED;
 		}
 		else {
 			printf("Opened file '%s'. Size: %u bytes, format: %s.\n",
@@ -1456,7 +1545,17 @@ void loadparam_step(void *ptr) {
 	}
 
 	uv_errors_e ret = ERR_NONE;
-	if (e != ERR_NONE) {
+	if (this->file_invalid) {
+		// The parameter file could not be read at all, so nothing was written to
+		// begin with: say that instead of blaming the bus, and do not claim the
+		// device might be half programmed.
+		LOG_END();
+		ERRORSTR("\nERROR: Parameter loading stopped: the parameter file could "
+				"not be read.\n"
+				"Nothing was written to the device(s).\n\n");
+		fflush(stdout);
+	}
+	else if (e != ERR_NONE) {
 		// A CANopen read/write failed (after the SDO client's retries). Stop the
 		// whole load: the target device(s) are only partially programmed, so do
 		// not store the parameters or reset them.
@@ -1522,7 +1621,14 @@ bool loadparam_can_if_mismatch(device_st *device,
 		// large variable-length array on the stack)
 		char *buffer = NULL;
 		parser_node_st root = parser_read_file(device->param_file, &buffer);
-		if (parser_node_is_valid(root)) {
+		if (!parser_node_is_valid(root)) {
+			// say so here already: this check runs before the load is started,
+			// so it is the first place the user can be told the file is broken
+			WARNING("The parameter file '%s' cannot be used: %s.\n",
+					device->param_file, parser_last_error());
+			fflush(stdout);
+		}
+		else {
 			// the param file stores its CAN IF VERSION inside the DEVS array
 			// (one object per device); fall back to the top level for the
 			// deprecated single-device format
@@ -1648,10 +1754,11 @@ static void loadparam_system_task(void *ptr) {
 	}
 
 	// Phase 2: write each device's parameters in turn (system-load mode skips the
-	// per-device EMCY handling, store and reset done in the phases below). A failed
-	// device aborts the whole system load: the remaining devices are left untouched
-	// and only the devices written so far are stored/reset below.
-	for (uint8_t i = 0; i < n; i++) {
+	// per-device EMCY handling, store and reset done in the phases below). When a
+	// device fails the user chooses whether the remaining devices are still loaded;
+	// either way only the devices written so far are stored/reset below.
+	bool aborted = false;
+	for (uint8_t i = 0; (i < n) && !aborted; i++) {
 		device_st *d = async_sys_devs[i];
 		if ((d != NULL) && (strlen(d->param_file) != 0)) {
 			char title[256];
@@ -1665,12 +1772,21 @@ static void loadparam_system_task(void *ptr) {
 			fflush(stdout);
 			written[i] = loadparam_load_device_ex(d, d->param_file, true);
 			if (!written[i]) {
-				ERROR("System load stopped: writing parameters to node 0x%x "
-						"failed.\n", (unsigned int) d->nodeid);
+				ERROR("Loading the parameters to node 0x%x failed.\n",
+						(unsigned int) d->nodeid);
 				fflush(stdout);
-				break;
+				uint8_t remaining = (uint8_t) (n - i - 1);
+				if ((remaining == 0) ||
+						!loadparam_ask_continue(d->nodeid, remaining)) {
+					aborted = true;
+				}
 			}
 		}
+	}
+	if (aborted) {
+		ERRORSTR("System load stopped. The devices which were already written "
+				"are stored and reset below.\n");
+		fflush(stdout);
 	}
 
 	// Phase 3: re-enable EMCY messages now that all parameters are written, so the
