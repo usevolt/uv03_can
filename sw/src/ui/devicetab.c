@@ -37,6 +37,7 @@
 #include "simrun.h"
 #include "terminaltab.h"
 #include "credentials.h"
+#include "mqtt.h"
 #include "remotefiles.h"
 #include "ui/uv_uitextedit.h"
 #include "ui/serverfiles_win.h"
@@ -329,12 +330,13 @@ static struct {
 	// values are stored on this computer and shared by every uvcan install (see
 	// credentials.c). Edits are saved back in devicetab_step().
 	uv_uiframewindow_st account_frame;
-	uv_uiobject_st *account_frame_buf[6];
+	uv_uiobject_st *account_frame_buf[8];
 	uv_uitextedit_st account_url;
+	uv_uitextedit_st account_fleet_url;
 	uv_uitextedit_st account_user;
 	uv_uitextedit_st account_pass;
-	// "Connect" button logging in to the file server with the fields above, and
-	// the status line next to it (green while the session is open)
+	// "Connect" button opening both sessions with the fields above, and the
+	// status line beside it (green while a session is open)
 	uv_uibutton_st account_connect_btn;
 	uv_uilabel_st account_status;
 	char account_status_str[256];
@@ -368,6 +370,7 @@ static bool showing_system;
 // credentials the first time the system tab is built; edits are saved back to the
 // shared file in devicetab_step().
 static char account_url_buf[CREDENTIALS_MAX];
+static char account_fleet_url_buf[CREDENTIALS_MAX];
 static char account_user_buf[CREDENTIALS_MAX];
 static char account_pass_buf[CREDENTIALS_MAX];
 static bool account_seeded;
@@ -383,12 +386,22 @@ static char account_err[256];
 /// never has to be rebuilt just to reflect a connect / disconnect.
 static void account_refresh_status(void) {
 	color_t c;
-	if (remotefiles_is_logged_in()) {
+	bool files = remotefiles_is_logged_in();
+	bool fleet = mqtt_is_connected();
+	if (files || fleet) {
+		// one account, two sessions: say which of them is actually up
 		snprintf(content.account_status_str, sizeof(content.account_status_str),
-				"Connected to %s as '%s'", credentials_get_url(),
-				credentials_get_username());
-		c = DOT_COLOR_OP;
-		uv_uiobject_disable(&content.account_connect_btn);
+				"'%s': files %s, fleet %s", credentials_get_username(),
+				files ? "connected" : "not connected",
+				fleet ? "connected" : (mqtt_get_state() == MQTT_STATE_CONNECTING ?
+						"connecting..." : "not connected"));
+		c = (files && fleet) ? DOT_COLOR_OP : uv_uistyles[0].text_color;
+		if (files) {
+			uv_uiobject_disable(&content.account_connect_btn);
+		}
+		else {
+			uv_uiobject_enable(&content.account_connect_btn);
+		}
 	}
 	else {
 		if (account_err[0] != '\0') {
@@ -589,7 +602,9 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	// shorter status row below. The status row is only a text label, so it gets a
 	// label's height (TITLE_H) rather than a full button's - keeping the panel
 	// compact.
-	int16_t account_frame_h = 2 * BUTTON_H + MARGIN + TITLE_H + MARGIN + TITLE_H;
+	// two field rows (file server URL / fleet URL) plus the status row
+	int16_t account_frame_h = 2 * BUTTON_H + MARGIN + TITLE_H + MARGIN +
+			TITLE_H + BUTTON_H + TITLE_H + MARGIN;
 	int16_t account_frame_y = cbb.h - MARGIN - account_frame_h;
 #if !CONFIG_TARGET_WIN
 	// the configuration panel needs room for the double-height source row plus the
@@ -818,6 +833,9 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 		strncpy(account_url_buf, credentials_get_url(),
 				sizeof(account_url_buf) - 1);
 		account_url_buf[sizeof(account_url_buf) - 1] = '\0';
+		strncpy(account_fleet_url_buf, credentials_fleet_get_url(),
+				sizeof(account_fleet_url_buf) - 1);
+		account_fleet_url_buf[sizeof(account_fleet_url_buf) - 1] = '\0';
 		strncpy(account_user_buf, credentials_get_username(),
 				sizeof(account_user_buf) - 1);
 		account_user_buf[sizeof(account_user_buf) - 1] = '\0';
@@ -833,17 +851,15 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 			frame_w, account_frame_h);
 	uv_bounding_box_st ac = uv_uiframewindow_get_content_bb(&content.account_frame);
 
-	// the bottom row holds the connection status on its own; the fields and the
-	// "Connect" button share the row above it. The status row is a plain label, so
-	// it is only TITLE_H tall (not a full button); the fields row gets the rest.
+	// Two field rows on the left, the "Connect" button filling the panel's full
+	// height on the right, and the status line along the bottom of the field
+	// area only - it no longer spans the whole width, since the button now
+	// reaches all the way down.
 	int16_t acc_status_h = TITLE_H;
 	int16_t acc_status_row_y = ac.h - acc_status_h;
-	int16_t acc_field_h = acc_status_row_y - MARGIN;
+	int16_t acc_fields_h = acc_status_row_y - MARGIN;
+	int16_t acc_row_h = (acc_fields_h - MARGIN) / 2;
 
-	// top row: URL, Username, Password and the "Connect" button side by side. The
-	// URL takes the most width (it is by far the longest value). With only three
-	// fields here (the Fleet tab's panel has a fourth) there is room to give the
-	// button a wide, easy target. Each field draws its title below itself.
 	int16_t acc_gap = MARGIN;
 	int16_t acc_conn_w = 3 * 2 * BUTTON_H;
 	int16_t acc_fields_w = ac.w - acc_conn_w - 4 * acc_gap;
@@ -851,12 +867,23 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	int16_t acc_field_w = (acc_fields_w - acc_url_w) / 2;
 	int16_t acc_x = 0;
 
+	// top row: the two servers' credentials. The user name and the password are
+	// shared - one Usevolt account opens both the file server and the fleet
+	// broker - so they are entered once here.
 	uv_uitextedit_init(&content.account_url, account_url_buf,
 			sizeof(account_url_buf), UITEXTEDIT_FLAG_ONELINE, style);
-	uv_uitextedit_set_title(&content.account_url, "URL");
+	uv_uitextedit_set_title(&content.account_url, "File server URL");
 	uv_uitextedit_set_align(&content.account_url, ALIGN_CENTER_LEFT);
 	uv_uiframewindow_addxy(&content.account_frame, &content.account_url,
-			acc_x, 0, acc_url_w, acc_field_h);
+			acc_x, 0, acc_url_w, acc_row_h);
+
+	// second row, directly under it: the broker the Fleet tab talks to
+	uv_uitextedit_init(&content.account_fleet_url, account_fleet_url_buf,
+			sizeof(account_fleet_url_buf), UITEXTEDIT_FLAG_ONELINE, style);
+	uv_uitextedit_set_title(&content.account_fleet_url, "Fleet URL");
+	uv_uitextedit_set_align(&content.account_fleet_url, ALIGN_CENTER_LEFT);
+	uv_uiframewindow_addxy(&content.account_frame, &content.account_fleet_url,
+			acc_x, acc_row_h + MARGIN, acc_url_w, acc_row_h);
 	acc_x += acc_url_w + acc_gap;
 
 	uv_uitextedit_init(&content.account_user, account_user_buf,
@@ -864,7 +891,7 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	uv_uitextedit_set_title(&content.account_user, "Username");
 	uv_uitextedit_set_align(&content.account_user, ALIGN_CENTER_LEFT);
 	uv_uiframewindow_addxy(&content.account_frame, &content.account_user,
-			acc_x, 0, acc_field_w, acc_field_h);
+			acc_x, 0, acc_field_w, acc_row_h);
 	acc_x += acc_field_w + acc_gap;
 
 	uv_uitextedit_init(&content.account_pass, account_pass_buf,
@@ -873,21 +900,20 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	uv_uitextedit_set_title(&content.account_pass, "Password");
 	uv_uitextedit_set_align(&content.account_pass, ALIGN_CENTER_LEFT);
 	uv_uiframewindow_addxy(&content.account_frame, &content.account_pass,
-			acc_x, 0, acc_field_w, acc_field_h);
+			acc_x, 0, acc_field_w, acc_row_h);
 	acc_x += acc_field_w + acc_gap;
 
-	// the "Connect" button sits at the top of its column so it lines up with the
-	// fields' entry boxes, not with the titles drawn below them.
-	// account_refresh_status() below greys it out while the session is open.
+	// the "Connect" button fills the panel top to bottom, so it is a large,
+	// easy target and reads as acting on everything to its left
 	uv_uibutton_init(&content.account_connect_btn, "Connect", style);
 	uv_uiframewindow_addxy(&content.account_frame, &content.account_connect_btn,
-			acc_x, 0, ac.w - acc_x, BUTTON_H);
+			acc_x, 0, ac.w - acc_x, ac.h);
 
-	// bottom row: the connection status, centered and filling the whole width
+	// the status line, centred under the fields rather than under the button
 	uv_uilabel_init(&content.account_status, style->font, ALIGN_CENTER,
 			style->text_color, content.account_status_str);
 	uv_uiframewindow_addxy(&content.account_frame, &content.account_status,
-			0, acc_status_row_y, ac.w, acc_status_h);
+			0, acc_status_row_y, acc_x - acc_gap, acc_status_h);
 
 	account_refresh_status();
 }
@@ -1344,6 +1370,13 @@ bool devicetab_step(void) {
 			credentials_set_url(uv_uitextedit_get_text(&content.account_url));
 			account_edited = true;
 		}
+		if (uv_uitextedit_value_changed(&content.account_fleet_url)) {
+			credentials_fleet_set_url(
+					uv_uitextedit_get_text(&content.account_fleet_url));
+			// the open fleet session was made against the previous broker
+			mqtt_disconnect();
+			account_edited = true;
+		}
 		if (uv_uitextedit_value_changed(&content.account_user)) {
 			credentials_set_username(
 					uv_uitextedit_get_text(&content.account_user));
@@ -1363,6 +1396,9 @@ bool devicetab_step(void) {
 				fflush(stdout);
 			}
 			remotefiles_logout();
+			// the user name and the password are shared, so the fleet session
+			// was made with the old ones too
+			mqtt_disconnect();
 			account_err[0] = '\0';
 			account_refresh_status();
 		}
@@ -1390,6 +1426,18 @@ bool devicetab_step(void) {
 				printf("File server: connecting to '%s' failed: %s\n",
 						credentials_get_url(), account_err);
 				fflush(stdout);
+			}
+
+			// the same account opens the fleet broker, so one button does both.
+			// The Fleet tab only displays what this connection discovers.
+			if (!mqtt_connect(credentials_fleet_get_url(),
+					credentials_get_username(), credentials_get_password(),
+					credentials_fleet_get_fleet())) {
+				if (account_err[0] == '\0') {
+					strncpy(account_err, mqtt_get_error(),
+							sizeof(account_err) - 1);
+					account_err[sizeof(account_err) - 1] = '\0';
+				}
 			}
 			account_refresh_status();
 		}

@@ -22,15 +22,13 @@
 
 #include <stdio.h>
 #include <string.h>
-#include "credentials.h"
 #include "mqtt.h"
-#include "ui/uv_uitextedit.h"
 #include "ui/remoteui_win.h"
 #include "uv_remote_proto.h"
 
 
 // Margin in pixels around the tab content, height of a button / field row and of
-// a plain text row. Matched to the system tab so the two Account panels line up.
+// a plain text row. Matched to the system tab so the two tabs line up.
 #define MARGIN			10
 #define BUTTON_H		44
 #define TITLE_H			30
@@ -41,28 +39,9 @@
 #define WARNING_COLOR	C(0xFFE02020)
 
 
-// --- "Account" panel: the broker address, the fleet admin credentials and the
-// fleet name, all persisted with credentials_fleet_set_*(). The text buffers must
-// outlive the frequent tab rebuilds (the textedits read and write them in place),
-// so they are file-scope; they are seeded once from the stored values.
-static char acc_url_buf[CREDENTIALS_MAX];
-static char acc_user_buf[CREDENTIALS_MAX];
-static char acc_pass_buf[CREDENTIALS_MAX];
-static char acc_fleet_buf[CREDENTIALS_MAX];
-static bool acc_seeded;
-
-static uv_uiframewindow_st acc_frame;
-static uv_uiobject_st *acc_frame_buf[8];
-static uv_uitextedit_st acc_url;
-static uv_uitextedit_st acc_user;
-static uv_uitextedit_st acc_pass;
-static uv_uitextedit_st acc_fleet;
-static uv_uibutton_st acc_connect_btn;
-static uv_uilabel_st acc_status;
-static char acc_status_str[320];
-
-// --- the fleet / device tab windows, shown below the Account panel once the
-// broker connection is up.
+// --- the fleet / device tab windows. The connection itself is opened from the
+// System tab's Account panel: one Usevolt account serves both the file server
+// and the fleet broker, so it is entered in one place.
 static uv_uitabwindow_st fleet_tabs;
 static uv_uiobject_st *fleet_tabs_buf[4];
 static char fleet_name_buf[MQTT_MAX_FLEETS][MQTT_NAME_MAX];
@@ -96,11 +75,6 @@ static char placeholder_str[320];
 // True while the Fleet tab's widgets are built (see fleettab_set_shown()).
 static bool shown;
 
-// Reason the last connection attempt failed, shown in red until the next one.
-static char acc_err[256];
-
-
-static void acc_refresh_status(void);
 static void build_dev_info_str(void);
 static void build_fleet_tabs(uv_uitabwindow_st *tabwin, int16_t y, int16_t h);
 static void show_active_dev_tab(void);
@@ -110,155 +84,6 @@ static uv_uiobject_ret_e dev_tabs_step(void *me, const uint16_t step_ms);
 
 void fleettab_set_shown(bool value) {
 	shown = value;
-}
-
-
-/// @brief: Starts connecting with whatever is in the Account fields.
-static void fleet_connect(void) {
-	acc_err[0] = '\0';
-	if (!mqtt_connect(credentials_fleet_get_url(),
-			credentials_fleet_get_username(), credentials_fleet_get_password(),
-			credentials_fleet_get_fleet())) {
-		strncpy(acc_err, mqtt_get_error(), sizeof(acc_err) - 1);
-		acc_err[sizeof(acc_err) - 1] = '\0';
-		printf("Connecting to the broker failed: %s\n", acc_err);
-		fflush(stdout);
-	}
-}
-
-
-/// @brief: Rewrites the Account panel's status line from the current connection
-/// state and greys the "Connect" button out while the connection is up (or being
-/// established). Called on every state change, so the panel does not have to be
-/// rebuilt just to reflect one.
-static void acc_refresh_status(void) {
-	color_t c = uv_uistyles[0].text_color;
-	bool btn_enabled = true;
-
-	switch (mqtt_get_state()) {
-	case MQTT_STATE_CONNECTED:
-		snprintf(acc_status_str, sizeof(acc_status_str),
-				"Connected to %s as '%s'", mqtt_get_host(),
-				credentials_fleet_get_username());
-		c = OK_COLOR;
-		btn_enabled = false;
-		break;
-	case MQTT_STATE_CONNECTING:
-		snprintf(acc_status_str, sizeof(acc_status_str), "Connecting to %s...",
-				mqtt_get_host());
-		btn_enabled = false;
-		break;
-	case MQTT_STATE_ERROR:
-		snprintf(acc_status_str, sizeof(acc_status_str), "%s", mqtt_get_error());
-		c = WARNING_COLOR;
-		break;
-	case MQTT_STATE_DISCONNECTED:
-	default:
-		if (acc_err[0] != '\0') {
-			snprintf(acc_status_str, sizeof(acc_status_str), "%s", acc_err);
-			c = WARNING_COLOR;
-		}
-		else {
-			strcpy(acc_status_str, "Not connected");
-		}
-		break;
-	}
-
-	uv_uilabel_set_color(&acc_status, c);
-	uv_ui_set_enabled(&acc_connect_btn, btn_enabled);
-	uv_ui_refresh(&acc_status);
-	uv_ui_refresh(&acc_connect_btn);
-}
-
-
-/// @brief: Builds the "Account" panel at the top of the tab and returns its
-/// height, so the caller knows where the fleet tabs start.
-static int16_t build_account_panel(uv_uitabwindow_st *tabwin,
-		uv_bounding_box_st cbb) {
-	const uv_uistyle_st *style = &uv_uistyles[0];
-
-	// seed the fields once from the stored values; later rebuilds keep whatever is
-	// in the buffers, including edits the user has not committed yet
-	if (!acc_seeded) {
-		strncpy(acc_url_buf, credentials_fleet_get_url(),
-				sizeof(acc_url_buf) - 1);
-		strncpy(acc_user_buf, credentials_fleet_get_username(),
-				sizeof(acc_user_buf) - 1);
-		strncpy(acc_pass_buf, credentials_fleet_get_password(),
-				sizeof(acc_pass_buf) - 1);
-		strncpy(acc_fleet_buf, credentials_fleet_get_fleet(),
-				sizeof(acc_fleet_buf) - 1);
-		acc_seeded = true;
-	}
-
-	// laid out to match the system tab's Account panel: the fields share the top
-	// row with the "Connect" button, and a shorter status row (a plain label) sits
-	// below. The status row is only a label, so it gets a label's height (TITLE_H)
-	// rather than a full button's, keeping the panel compact.
-	int16_t frame_h = 2 * BUTTON_H + MARGIN + TITLE_H + MARGIN + TITLE_H;
-	uv_uiframewindow_init(&acc_frame, acc_frame_buf, style);
-	uv_uiframewindow_set_title(&acc_frame, "Account");
-	uv_uitabwindow_addxy(tabwin, &acc_frame, MARGIN, MARGIN,
-			cbb.w - 2 * MARGIN, frame_h);
-	uv_bounding_box_st ac = uv_uiframewindow_get_content_bb(&acc_frame);
-
-	int16_t status_h = TITLE_H;
-	int16_t status_row_y = ac.h - status_h;
-	int16_t field_h = status_row_y - MARGIN;
-
-	// top row: URL, Username, Password, Fleet and the "Connect" button side by
-	// side. The URL is the longest value so it takes two shares, the other three
-	// fields one each; the button is kept narrow (four fields here leave less room
-	// than the system tab's three). Each field draws its title below itself.
-	int16_t gap = MARGIN;
-	int16_t conn_w = 2 * BUTTON_H;
-	int16_t unit_w = (ac.w - conn_w - 5 * gap) / 5;
-	int16_t url_w = 2 * unit_w;
-	int16_t x = 0;
-
-	uv_uitextedit_init(&acc_url, acc_url_buf, sizeof(acc_url_buf),
-			UITEXTEDIT_FLAG_ONELINE, style);
-	uv_uitextedit_set_title(&acc_url, "URL");
-	uv_uitextedit_set_align(&acc_url, ALIGN_CENTER_LEFT);
-	uv_uiframewindow_addxy(&acc_frame, &acc_url, x, 0, url_w, field_h);
-	x += url_w + gap;
-
-	uv_uitextedit_init(&acc_user, acc_user_buf, sizeof(acc_user_buf),
-			UITEXTEDIT_FLAG_ONELINE, style);
-	uv_uitextedit_set_title(&acc_user, "Username");
-	uv_uitextedit_set_align(&acc_user, ALIGN_CENTER_LEFT);
-	uv_uiframewindow_addxy(&acc_frame, &acc_user, x, 0, unit_w, field_h);
-	x += unit_w + gap;
-
-	uv_uitextedit_init(&acc_pass, acc_pass_buf, sizeof(acc_pass_buf),
-			UITEXTEDIT_FLAG_ONELINE | UITEXTEDIT_FLAG_PASSWORD, style);
-	uv_uitextedit_set_title(&acc_pass, "Password");
-	uv_uitextedit_set_align(&acc_pass, ALIGN_CENTER_LEFT);
-	uv_uiframewindow_addxy(&acc_frame, &acc_pass, x, 0, unit_w, field_h);
-	x += unit_w + gap;
-
-	uv_uitextedit_init(&acc_fleet, acc_fleet_buf, sizeof(acc_fleet_buf),
-			UITEXTEDIT_FLAG_ONELINE, style);
-	uv_uitextedit_set_title(&acc_fleet, "Fleet");
-	uv_uitextedit_set_align(&acc_fleet, ALIGN_CENTER_LEFT);
-	uv_uiframewindow_addxy(&acc_frame, &acc_fleet, x, 0, unit_w, field_h);
-	x += unit_w + gap;
-
-	// the "Connect" button sits at the top of its column so it lines up with the
-	// fields' entry boxes, not with the titles drawn below them
-	uv_uibutton_init(&acc_connect_btn, "Connect", style);
-	uv_uiframewindow_addxy(&acc_frame, &acc_connect_btn,
-			x, 0, ac.w - x, BUTTON_H);
-
-	// bottom row: the connection status, centered and filling the whole width
-	uv_uilabel_init(&acc_status, style->font, ALIGN_CENTER,
-			style->text_color, acc_status_str);
-	uv_uiframewindow_addxy(&acc_frame, &acc_status,
-			0, status_row_y, ac.w, status_h);
-
-	acc_refresh_status();
-
-	return frame_h;
 }
 
 
@@ -376,7 +201,7 @@ static void ui_start(void) {
 }
 
 
-/// @brief: Shows *text* in the area below the Account panel, for the states in
+/// @brief: Shows *text* in the tab's content area, for the states in
 /// which there is no fleet tree to show.
 static void build_placeholder(uv_uitabwindow_st *tabwin, const char *text,
 		int16_t y, int16_t h, uv_bounding_box_st cbb) {
@@ -392,8 +217,7 @@ static void build_placeholder(uv_uitabwindow_st *tabwin, const char *text,
 void fleettab_show(uv_uitabwindow_st *tabwin) {
 	uv_bounding_box_st cbb = uv_uitabwindow_get_contentbb(tabwin);
 
-	int16_t acc_h = build_account_panel(tabwin, cbb);
-	int16_t rest_y = MARGIN + acc_h + MARGIN;
+	int16_t rest_y = MARGIN;
 	int16_t rest_h = cbb.h - rest_y - MARGIN;
 
 	if (!mqtt_is_supported()) {
@@ -402,13 +226,12 @@ void fleettab_show(uv_uitabwindow_st *tabwin) {
 				rest_y, rest_h, cbb);
 	}
 	else if (!mqtt_is_connected()) {
-		build_placeholder(tabwin, "Connect to the broker to see the fleets and "
-				"their devices.", rest_y, rest_h, cbb);
+		build_placeholder(tabwin, "Not connected to the fleet broker. Connect "
+				"on the System tab, under Account.", rest_y, rest_h, cbb);
 	}
 	else if (mqtt_get_fleet_count() == 0) {
 		build_placeholder(tabwin, "Connected. No fleets seen yet - a fleet "
-				"appears once one of its devices publishes something. Name a "
-				"fleet in the Account panel to list it right away.",
+				"appears once one of its devices publishes something.",
 				rest_y, rest_h, cbb);
 	}
 	else {
@@ -420,7 +243,7 @@ void fleettab_show(uv_uitabwindow_st *tabwin) {
 
 
 /// @brief: Builds the fleet tab window (one tab per discovered fleet) into the
-/// area below the Account panel, and fills it with the active fleet's devices.
+/// tab's content area, and fills it with the active fleet's devices.
 static void build_fleet_tabs(uv_uitabwindow_st *tabwin, int16_t y, int16_t h) {
 	uv_bounding_box_st cbb = uv_uitabwindow_get_contentbb(tabwin);
 
@@ -545,40 +368,6 @@ bool fleettab_step(void) {
 	mqtt_step();
 
 	if (shown) {
-		// persist every committed field edit (Enter or click away). Editing any of
-		// them invalidates the current session - it was made with the previous
-		// values - so the connection is dropped and "Connect" becomes available
-		// again for reconnecting.
-		bool edited = false;
-		if (uv_uitextedit_value_changed(&acc_url)) {
-			credentials_fleet_set_url(uv_uitextedit_get_text(&acc_url));
-			edited = true;
-		}
-		if (uv_uitextedit_value_changed(&acc_user)) {
-			credentials_fleet_set_username(uv_uitextedit_get_text(&acc_user));
-			edited = true;
-		}
-		if (uv_uitextedit_value_changed(&acc_pass)) {
-			credentials_fleet_set_password(uv_uitextedit_get_text(&acc_pass));
-			edited = true;
-		}
-		if (uv_uitextedit_value_changed(&acc_fleet)) {
-			credentials_fleet_set_fleet(uv_uitextedit_get_text(&acc_fleet));
-			edited = true;
-		}
-		if (edited) {
-			mqtt_disconnect();
-			acc_err[0] = '\0';
-			acc_refresh_status();
-			// the fleet tree went away with the connection
-			ret = true;
-		}
-
-		if (uv_uibutton_clicked(&acc_connect_btn)) {
-			fleet_connect();
-			acc_refresh_status();
-		}
-
 		if ((dev_tab_count > 0) && uv_uibutton_clicked(&dev_ui_btn)) {
 			if (ui_shows_selected()) {
 				ui_stop();
@@ -641,12 +430,9 @@ bool fleettab_step(void) {
 		}
 	}
 
-	// a state change or a newly discovered fleet / device means the tabs below the
-	// Account panel no longer match what the client knows
+	// a state change or a newly discovered fleet / device means the tabs no
+	// longer match what the client knows
 	if (mqtt_poll_changed()) {
-		if (shown) {
-			acc_refresh_status();
-		}
 		ret = true;
 	}
 
