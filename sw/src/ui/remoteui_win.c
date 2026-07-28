@@ -50,7 +50,99 @@
 #define ATLAS_MAX			16
 #define GLYPH_FIRST			32
 #define GLYPH_LAST			126
-#define GLYPH_COUNT			(GLYPH_LAST - GLYPH_FIRST + 1)
+#define GLYPH_ASCII_COUNT	(GLYPH_LAST - GLYPH_FIRST + 1)
+
+// Beyond printable ASCII, the Nordic letters. The device sends strings as raw
+// UTF-8, and a Finnish UI is full of these — without them "Näytön Kirkkaus"
+// renders as "Nytn Kirkkaus".
+static const uint32_t glyph_extra[] = {
+		0x00C4,	// A umlaut
+		0x00C5,	// A ring
+		0x00D6,	// O umlaut
+		0x00E4,	// a umlaut
+		0x00E5,	// a ring
+		0x00F6	// o umlaut
+};
+#define GLYPH_EXTRA_COUNT	((uint16_t) (sizeof(glyph_extra) / \
+									sizeof(glyph_extra[0])))
+#define GLYPH_COUNT			(GLYPH_ASCII_COUNT + GLYPH_EXTRA_COUNT)
+
+
+/// @brief: Unicode code point held in atlas slot *gi*.
+static uint32_t glyph_codepoint(uint16_t gi) {
+	return (gi < GLYPH_ASCII_COUNT) ?
+			(uint32_t) (GLYPH_FIRST + gi) :
+			glyph_extra[gi - GLYPH_ASCII_COUNT];
+}
+
+
+/// @brief: Atlas slot for *cp*, or -1 when the atlas does not carry it.
+static int16_t glyph_index_of(uint32_t cp) {
+	int16_t ret = -1;
+	if ((cp >= GLYPH_FIRST) && (cp <= GLYPH_LAST)) {
+		ret = (int16_t) (cp - GLYPH_FIRST);
+	}
+	else {
+		for (uint16_t i = 0; i < GLYPH_EXTRA_COUNT; i++) {
+			if (glyph_extra[i] == cp) {
+				ret = (int16_t) (GLYPH_ASCII_COUNT + i);
+				break;
+			}
+		}
+	}
+	return ret;
+}
+
+
+/// @brief: Decodes one UTF-8 code point starting at *i, advancing it past the
+/// sequence. Returns 0 for a malformed or truncated one, having advanced by a
+/// single byte so the caller always makes progress.
+static uint32_t utf8_next(const char *s, uint16_t len, uint16_t *i) {
+	uint32_t ret = 0;
+	uint8_t c = (uint8_t) s[*i];
+	uint8_t extra = 0;
+	if (c < 0x80) {
+		ret = c;
+	}
+	else if ((c & 0xE0) == 0xC0) {
+		ret = c & 0x1Fu;
+		extra = 1;
+	}
+	else if ((c & 0xF0) == 0xE0) {
+		ret = c & 0x0Fu;
+		extra = 2;
+	}
+	else if ((c & 0xF8) == 0xF0) {
+		ret = c & 0x07u;
+		extra = 3;
+	}
+	else {
+		// a stray continuation byte
+		ret = 0;
+	}
+
+	if ((extra > 0) && ((*i + extra) < len)) {
+		for (uint8_t n = 1; n <= extra; n++) {
+			uint8_t cc = (uint8_t) s[*i + n];
+			if ((cc & 0xC0) != 0x80) {
+				ret = 0;
+				extra = 0;
+				break;
+			}
+			ret = (ret << 6) | (cc & 0x3Fu);
+		}
+	}
+	else if (extra > 0) {
+		// truncated at the end of the string
+		ret = 0;
+		extra = 0;
+	}
+	else {
+	}
+
+	*i = (uint16_t) (*i + 1 + extra);
+	return ret;
+}
 
 
 typedef struct {
@@ -162,8 +254,8 @@ static atlas_st *atlas_get(bool mono, uint16_t px) {
 	// lay the printable ASCII range out in one row
 	uint16_t total_w = 0;
 	uint16_t max_h = 0;
-	for (uint16_t ch = GLYPH_FIRST; ch <= GLYPH_LAST; ch++) {
-		if (FT_Load_Char(face, ch, FT_LOAD_RENDER) != 0) {
+	for (uint16_t gi = 0; gi < GLYPH_COUNT; gi++) {
+		if (FT_Load_Char(face, glyph_codepoint(gi), FT_LOAD_RENDER) != 0) {
 			continue;
 		}
 		total_w = (uint16_t) (total_w + face->glyph->bitmap.width + 1);
@@ -183,9 +275,8 @@ static atlas_st *atlas_get(bool mono, uint16_t px) {
 	}
 
 	uint16_t pen = 0;
-	for (uint16_t ch = GLYPH_FIRST; ch <= GLYPH_LAST; ch++) {
-		uint16_t gi = (uint16_t) (ch - GLYPH_FIRST);
-		if (FT_Load_Char(face, ch, FT_LOAD_RENDER) != 0) {
+	for (uint16_t gi = 0; gi < GLYPH_COUNT; gi++) {
+		if (FT_Load_Char(face, glyph_codepoint(gi), FT_LOAD_RENDER) != 0) {
 			continue;
 		}
 		FT_GlyphSlot g = face->glyph;
@@ -230,14 +321,15 @@ static atlas_st *atlas_get(bool mono, uint16_t px) {
 
 static uint16_t text_width(atlas_st *a, const char *str, uint16_t len) {
 	uint16_t ret = 0;
-	for (uint16_t i = 0; i < len; i++) {
-		uint8_t ch = (uint8_t) str[i];
-		if ((ch >= GLYPH_FIRST) && (ch <= GLYPH_LAST)) {
-			ret = (uint16_t) (ret + a->advance[ch - GLYPH_FIRST]);
+	uint16_t i = 0;
+	while (i < len) {
+		int16_t gi = glyph_index_of(utf8_next(str, len, &i));
+		if (gi >= 0) {
+			ret = (uint16_t) (ret + a->advance[gi]);
 		}
 		else {
-			// a non-ASCII byte: the stream is UTF-8 and the atlas is not, so it
-			// contributes nothing rather than a wrong glyph
+			// a code point the atlas does not carry contributes nothing rather
+			// than a wrong glyph
 		}
 	}
 	return ret;
@@ -268,12 +360,13 @@ static void draw_text(atlas_st *a, int16_t x, int16_t y, uint16_t align,
 	set_color(color);
 	glBegin(GL_QUADS);
 	int16_t pen = x;
-	for (uint16_t i = 0; i < len; i++) {
-		uint8_t ch = (uint8_t) str[i];
-		if ((ch < GLYPH_FIRST) || (ch > GLYPH_LAST)) {
+	uint16_t i = 0;
+	while (i < len) {
+		int16_t g = glyph_index_of(utf8_next(str, len, &i));
+		if (g < 0) {
 			continue;
 		}
-		uint16_t gi = (uint16_t) (ch - GLYPH_FIRST);
+		uint16_t gi = (uint16_t) g;
 		float gx = (float) pen + a->bearing_x[gi];
 		float gy = (float) y + (float) a->ascender - a->bearing_y[gi];
 		float gw = a->w[gi];

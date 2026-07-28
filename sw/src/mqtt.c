@@ -60,11 +60,6 @@
 // Keepalive sent to the broker, in seconds.
 #define KEEPALIVE_S			30
 
-// How many times a connect interrupted by a signal is retried before it is
-// reported as a failure (see mqtt_connect_task()).
-#define EINTR_RETRIES		5
-
-
 // Largest mirrored UI frame we will reassemble. The device drops any frame that
 // does not fit its own 4 kB encoder buffer, so anything beyond that is a
 // desynchronised stream rather than a real frame.
@@ -112,24 +107,10 @@ typedef struct {
 static struct mosquitto *mosq;
 static bool lib_inited;
 
-// The client the connect task is working on. It owns *task_mosq* for the duration
-// of the blocking mosquitto_connect(), so nothing else may destroy it meanwhile.
-static struct mosquitto *task_mosq;
-// Set when mqtt_disconnect() is called while that connect is still running: the
-// task then throws its client away instead of handing it over. Needed because a
-// connect to an unreachable host runs into the TCP timeout, which is far too long
-// to keep the UI waiting for.
-static volatile bool task_abandoned;
 
 // Connection state. Written by the connect task as well as by the callbacks that
 // run inside mqtt_step(), hence volatile.
 static volatile mqtt_state_e state = MQTT_STATE_DISCONNECTED;
-// True while the connect task is inside the blocking mosquitto_connect(); the
-// client must not be pumped from the UI thread until it is done.
-static volatile bool connecting_task_busy;
-// Set by the connect task when mosquitto_connect() succeeded, so mqtt_step() may
-// start pumping the client and waiting for the CONNACK.
-static volatile bool connect_started;
 
 static char err_str[256];
 static char host_str[CREDENTIALS_MAX];
@@ -629,42 +610,6 @@ static void on_message(struct mosquitto *m, void *obj,
 }
 
 
-/// @brief: Task body performing the blocking part of the connect (DNS lookup, TCP
-/// connect and the TLS handshake). Run on its own task so the UI stays live even
-/// when the broker is unreachable and the attempt runs into its timeout.
-static void mqtt_connect_task(void *ptr) {
-	(void) ptr;
-	int rc = MOSQ_ERR_SUCCESS;
-	// The FreeRTOS POSIX port drives its scheduler with signals, so the blocking
-	// connect() and TLS handshake inside libmosquitto get interrupted regularly.
-	// That is not a connection failure - retry a few times before believing it.
-	for (uint8_t try = 0; try < EINTR_RETRIES; try++) {
-		rc = mosquitto_connect(task_mosq, host_str, MQTT_PORT, KEEPALIVE_S);
-		if (!((rc == MOSQ_ERR_ERRNO) && (errno == EINTR))) {
-			break;
-		}
-	}
-
-	if (task_abandoned) {
-		// the user disconnected (or changed the settings) while we were waiting:
-		// this client was handed over to us, so throw it away here
-		mosquitto_destroy(task_mosq);
-		task_mosq = NULL;
-	}
-	else if (rc == MOSQ_ERR_SUCCESS) {
-		// connected at the socket level; the CONNACK is picked up by mqtt_step()
-		connect_started = true;
-	}
-	else {
-		char msg[512];
-		snprintf(msg, sizeof(msg), "Could not reach %s: %s", host_str,
-				(rc == MOSQ_ERR_ERRNO) ? strerror(errno) : mosquitto_strerror(rc));
-		mqtt_fail(msg);
-	}
-	connecting_task_busy = false;
-}
-
-
 bool mqtt_connect(const char *host, const char *username, const char *password,
 		const char *fleet) {
 	bool ret = false;
@@ -679,12 +624,7 @@ bool mqtt_connect(const char *host, const char *username, const char *password,
 	conn_pass[sizeof(conn_pass) - 1] = '\0';
 	err_str[0] = '\0';
 
-	if (connecting_task_busy) {
-		// a previous attempt is still waiting for its connect to time out; it owns
-		// the client and the connection parameters, so it has to finish first
-		mqtt_fail("The previous connection attempt is still in progress.");
-	}
-	else if (host_str[0] == '\0') {
+	if (host_str[0] == '\0') {
 		mqtt_fail("No broker address set.");
 	}
 	else if (!mqtt_write_ca()) {
@@ -732,16 +672,31 @@ bool mqtt_connect(const char *host, const char *username, const char *password,
 				printf("MQTT: connecting to %s:%d as '%s'...\n", host_str, MQTT_PORT,
 						(conn_user[0] != '\0') ? conn_user : "(anonymous)");
 				fflush(stdout);
-				state = MQTT_STATE_CONNECTING;
-				changed = true;
-				connect_started = false;
-				task_abandoned = false;
-				task_mosq = mosq;
-				connecting_task_busy = true;
-				uv_rtos_task_create(&mqtt_connect_task, "mqtt_connect",
-						UV_RTOS_MIN_STACK_SIZE * 5, NULL,
-						UV_RTOS_IDLE_PRIORITY + 1, NULL);
-				ret = true;
+
+				// Connect asynchronously and let mqtt_step()'s mosquitto_loop
+				// carry it through. The blocking mosquitto_connect() cannot be
+				// used here: the FreeRTOS POSIX port drives its scheduler with
+				// signals, so the TCP connect and the TLS handshake inside it
+				// are interrupted constantly and it reports EINTR rather than
+				// ever completing. Retrying does not help - every attempt is
+				// interrupted - whereas the async path never blocks and so has
+				// nothing to interrupt.
+				rc = mosquitto_connect_async(mosq, host_str, MQTT_PORT,
+						KEEPALIVE_S);
+				if (rc != MOSQ_ERR_SUCCESS) {
+					char msg[512];
+					snprintf(msg, sizeof(msg), "Could not reach %s: %s",
+							host_str, (rc == MOSQ_ERR_ERRNO) ?
+									strerror(errno) : mosquitto_strerror(rc));
+					mqtt_fail(msg);
+					mosquitto_destroy(mosq);
+					mosq = NULL;
+				}
+				else {
+					state = MQTT_STATE_CONNECTING;
+					changed = true;
+					ret = true;
+				}
 			}
 		}
 	}
@@ -754,13 +709,7 @@ void mqtt_disconnect(void) {
 		printf("MQTT: disconnecting from %s\n", host_str);
 		fflush(stdout);
 	}
-	if (connecting_task_busy) {
-		// a connect is still in flight and the task owns the client: hand it over
-		// to be destroyed there rather than blocking here until it times out
-		task_abandoned = true;
-		mosq = NULL;
-	}
-	else if (mosq != NULL) {
+	if (mosq != NULL) {
 		(void) mosquitto_disconnect(mosq);
 		mosquitto_destroy(mosq);
 		mosq = NULL;
@@ -768,7 +717,6 @@ void mqtt_disconnect(void) {
 	else {
 		// nothing to close
 	}
-	connect_started = false;
 	if (state != MQTT_STATE_DISCONNECTED) {
 		state = MQTT_STATE_DISCONNECTED;
 		changed = true;
@@ -783,11 +731,13 @@ void mqtt_disconnect(void) {
 
 
 void mqtt_step(void) {
-	// only pump once the connect task has handed the client over, and never while
-	// it is still inside mosquitto_connect()
-	if ((mosq != NULL) && connect_started && !connecting_task_busy) {
+	// pump from the moment the async connect was started: the loop is what
+	// carries it through the handshake and then delivers the CONNACK
+	if (mosq != NULL) {
 		int rc = mosquitto_loop(mosq, 0, 1);
-		if ((rc != MOSQ_ERR_SUCCESS) && (state == MQTT_STATE_CONNECTED)) {
+		if ((rc != MOSQ_ERR_SUCCESS) &&
+				(rc != MOSQ_ERR_NO_CONN) &&
+				(state == MQTT_STATE_CONNECTED)) {
 			// EINTR is expected here: the FreeRTOS POSIX port drives its scheduler
 			// with signals, so the loop's select() is interrupted regularly. Only a
 			// real transport failure ends the session.
