@@ -230,7 +230,7 @@ void fleettab_show(uv_uitabwindow_st *tabwin) {
 				"on the System tab, under Account.", rest_y, rest_h, cbb);
 	}
 	else if (mqtt_get_fleet_count() == 0) {
-		build_placeholder(tabwin, "Connected. No fleets seen yet - a fleet "
+		build_placeholder(tabwin, "Connected to broker. No fleets seen yet - a fleet "
 				"appears once one of its devices publishes something.",
 				rest_y, rest_h, cbb);
 	}

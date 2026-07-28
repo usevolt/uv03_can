@@ -385,40 +385,70 @@ static char account_err[256];
 /// Called after building the panel and whenever the state changes, so the panel
 /// never has to be rebuilt just to reflect a connect / disconnect.
 static void account_refresh_status(void) {
-	color_t c;
 	bool files = remotefiles_is_logged_in();
 	bool fleet = mqtt_is_connected();
-	if (files || fleet) {
-		// one account, two sessions: say which of them is actually up
-		snprintf(content.account_status_str, sizeof(content.account_status_str),
-				"'%s': files %s, fleet %s", credentials_get_username(),
-				files ? "connected" : "not connected",
-				fleet ? "connected" : (mqtt_get_state() == MQTT_STATE_CONNECTING ?
-						"connecting..." : "not connected"));
-		c = (files && fleet) ? DOT_COLOR_OP : uv_uistyles[0].text_color;
-		if (files) {
-			uv_uiobject_disable(&content.account_connect_btn);
-		}
-		else {
-			uv_uiobject_enable(&content.account_connect_btn);
-		}
+	const char *user = credentials_get_username();
+
+	// One line per server. They are two different protocols against two
+	// different hosts and either can be up without the other, so a single
+	// combined line could only ever be vague about which one had failed.
+	char files_line[192];
+	if (files) {
+		snprintf(files_line, sizeof(files_line), "Files: connected to %s as '%s'",
+				credentials_get_url(), user);
+	}
+	else if (account_err[0] != '\0') {
+		snprintf(files_line, sizeof(files_line), "Files: %s", account_err);
 	}
 	else {
-		if (account_err[0] != '\0') {
-			snprintf(content.account_status_str,
-					sizeof(content.account_status_str), "%s", account_err);
-			c = WARNING_COLOR;
-		}
-		else {
-			strcpy(content.account_status_str, "Not connected");
-			c = uv_uistyles[0].text_color;
-		}
+		strcpy(files_line, "Files: not connected");
+	}
+
+	char fleet_line[192];
+	switch (mqtt_get_state()) {
+	case MQTT_STATE_CONNECTED:
+		snprintf(fleet_line, sizeof(fleet_line), "Fleet: connected to %s as '%s'",
+				credentials_fleet_get_url(), user);
+		break;
+	case MQTT_STATE_CONNECTING:
+		snprintf(fleet_line, sizeof(fleet_line), "Fleet: connecting to %s...",
+				credentials_fleet_get_url());
+		break;
+	case MQTT_STATE_ERROR:
+		snprintf(fleet_line, sizeof(fleet_line), "Fleet: %s", mqtt_get_error());
+		break;
+	default:
+		strcpy(fleet_line, "Fleet: not connected");
+		break;
+	}
+
+	snprintf(content.account_status_str, sizeof(content.account_status_str),
+			"%s\n%s", files_line, fleet_line);
+
+	color_t c;
+	if (files && fleet) {
+		c = DOT_COLOR_OP;
+	}
+	else if ((account_err[0] != '\0') ||
+			(mqtt_get_state() == MQTT_STATE_ERROR)) {
+		c = WARNING_COLOR;
+	}
+	else {
+		c = uv_uistyles[0].text_color;
+	}
+
+	// the button reconnects whatever is still down
+	if (files && fleet) {
+		uv_uiobject_disable(&content.account_connect_btn);
+	}
+	else {
 		uv_uiobject_enable(&content.account_connect_btn);
 	}
 	uv_uilabel_set_color(&content.account_status, c);
 	uv_ui_refresh(&content.account_status);
 	uv_ui_refresh(&content.account_connect_btn);
 }
+
 
 // The two sub-tabs of a device tab.
 typedef enum {

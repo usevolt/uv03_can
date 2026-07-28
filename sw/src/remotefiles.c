@@ -186,6 +186,21 @@ bool remotefiles_login(const char *url, const char *username,
 		rf_url[ul - 1] = '\0';
 	}
 
+	// Default to https when the address carries no scheme. curl would otherwise
+	// try http, and the server permanently redirects that to https - a redirect
+	// which by definition preserves the method and the body, so the login POST
+	// would put the password on the wire in the clear before being told to use
+	// TLS. Being explicit here means the password only ever leaves over TLS.
+	if ((strlen(rf_url) > 0) &&
+			(strstr(rf_url, "://") == NULL)) {
+		char scheme_url[sizeof(rf_url)];
+		snprintf(scheme_url, sizeof(scheme_url), "https://%s", rf_url);
+		strncpy(rf_url, scheme_url, sizeof(rf_url) - 1);
+		rf_url[sizeof(rf_url) - 1] = '\0';
+	}
+	else {
+	}
+
 	if (strlen(rf_url) == 0) {
 		rf_err(err, err_len, "No server URL set.");
 	}
