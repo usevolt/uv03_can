@@ -25,6 +25,8 @@
 #include "credentials.h"
 #include "mqtt.h"
 #include "ui/uv_uitextedit.h"
+#include "ui/remoteui_win.h"
+#include "uv_remote_proto.h"
 
 
 // Margin in pixels around the tab content, height of a button / field row and of
@@ -82,6 +84,12 @@ static int16_t selected_dev;
 // show yet (not connected, no fleets, or a fleet with no devices).
 static uv_uilabel_st dev_info;
 static char dev_info_str[512];
+// "Open remote UI" / "Kill remote UI" for the active device tab
+static uv_uibutton_st dev_ui_btn;
+// Which device the mirror window is showing, so the button on every other tab
+// reads "Open" and closing it targets the right device.
+static int16_t ui_fleet = -1;
+static int16_t ui_dev = -1;
 static uv_uilabel_st placeholder;
 static char placeholder_str[320];
 
@@ -257,17 +265,114 @@ static int16_t build_account_panel(uv_uitabwindow_st *tabwin,
 /// @brief: (Re)builds the active device tab's information text from what the
 /// client currently knows about that device.
 static void build_dev_info_str(void) {
+	uint8_t f = (uint8_t) selected_fleet;
+	uint8_t d = (uint8_t) selected_dev;
+	const char *devname = mqtt_get_dev_devname(f, d);
+	uint8_t feat = mqtt_get_dev_features(f, d);
+	uint16_t w = 0;
+	uint16_t h = 0;
+	char size_str[32];
+	if (mqtt_get_dev_ui_size(f, d, &w, &h)) {
+		snprintf(size_str, sizeof(size_str), "%u x %u", w, h);
+	}
+	else {
+		strcpy(size_str, "unknown until mirrored");
+	}
+	uint32_t up = mqtt_get_dev_uptime_s(f, d);
+
 	snprintf(dev_info_str, sizeof(dev_info_str),
+			"Name:       %s\n"
 			"Fleet:      %s\n"
 			"Client id:  %s\n"
+			"State:      %u\n"
+			"Uptime:     %u h %02u min\n"
+			"Remote:     UI %s, CAN %s\n"
+			"Display:    %s\n"
 			"Messages:   %u\n"
 			"Last seen:  %u s ago\n",
-			mqtt_get_fleet_name((uint8_t) selected_fleet),
-			mqtt_get_dev_name((uint8_t) selected_fleet, (uint8_t) selected_dev),
-			(unsigned int) mqtt_get_dev_msg_count((uint8_t) selected_fleet,
-					(uint8_t) selected_dev),
-			(unsigned int) mqtt_get_dev_age_s((uint8_t) selected_fleet,
-					(uint8_t) selected_dev));
+			(devname[0] != '\0') ? devname : "(not heard from yet)",
+			mqtt_get_fleet_name(f),
+			mqtt_get_dev_name(f, d),
+			(unsigned int) mqtt_get_dev_state(f, d),
+			(unsigned int) (up / 3600u), (unsigned int) ((up / 60u) % 60u),
+			((feat & REMOTE_IOT_FEATURE_UI) != 0) ? "on" : "off",
+			((feat & REMOTE_IOT_FEATURE_CAN) != 0) ? "on" : "off",
+			size_str,
+			(unsigned int) mqtt_get_dev_msg_count(f, d),
+			(unsigned int) mqtt_get_dev_age_s(f, d));
+}
+
+
+/// @brief: True while the mirror window is showing the device whose tab is open.
+static bool ui_shows_selected(void) {
+	return remoteui_win_is_open() &&
+			(ui_fleet == selected_fleet) &&
+			(ui_dev == selected_dev);
+}
+
+
+// uv_uibutton_set_text takes a mutable string, so hand it a buffer of ours
+static char ui_btn_buf[24];
+
+static char *ui_btn_text(void) {
+	strcpy(ui_btn_buf, ui_shows_selected() ?
+			"Kill remote UI" : "Open remote UI");
+	return ui_btn_buf;
+}
+
+
+/// @brief: Retitles the button and greys it out while the device cannot be
+/// mirrored: that needs a live connection, and the device has to have answered
+/// at least once so we know it is really there.
+static void refresh_ui_btn(void) {
+	uv_uibutton_set_text(&dev_ui_btn, ui_btn_text());
+	bool can = mqtt_is_connected() &&
+			(mqtt_get_dev_msg_count((uint8_t) selected_fleet,
+					(uint8_t) selected_dev) > 0);
+	uv_ui_set_enabled(&dev_ui_btn, can || ui_shows_selected());
+	uv_ui_refresh(&dev_ui_btn);
+}
+
+
+/// @brief: Stops mirroring whoever is being mirrored, closing the window and
+/// telling the device to stop sending.
+static void ui_stop(void) {
+	if ((ui_fleet >= 0) && (ui_dev >= 0)) {
+		(void) mqtt_dev_set_ui_active((uint8_t) ui_fleet, (uint8_t) ui_dev,
+				false);
+	}
+	ui_fleet = -1;
+	ui_dev = -1;
+	remoteui_win_close();
+}
+
+
+/// @brief: Receives one mirrored frame. Frames for a device other than the one
+/// on screen are ignored: the device may still be finishing a frame that was in
+/// flight when mirroring was switched off.
+static void ui_frame_callb(uint8_t fleet_index, uint8_t dev_index,
+		const uint8_t *cmds, uint32_t len, void *user) {
+	(void) user;
+	if (remoteui_win_is_open() &&
+			(fleet_index == ui_fleet) &&
+			(dev_index == ui_dev)) {
+		remoteui_win_draw_frame(cmds, len);
+	}
+}
+
+
+/// @brief: Starts mirroring the selected device. The window can only be sized
+/// once the device has said how big its display is, so this asks first and the
+/// window opens from fleettab_step() when the answer arrives.
+static void ui_start(void) {
+	ui_stop();
+	ui_fleet = selected_fleet;
+	ui_dev = selected_dev;
+	mqtt_set_ui_frame_callb(&ui_frame_callb, NULL);
+	if (!mqtt_dev_set_ui_active((uint8_t) ui_fleet, (uint8_t) ui_dev, true)) {
+		ui_fleet = -1;
+		ui_dev = -1;
+	}
 }
 
 
@@ -474,6 +579,16 @@ bool fleettab_step(void) {
 			acc_refresh_status();
 		}
 
+		if ((dev_tab_count > 0) && uv_uibutton_clicked(&dev_ui_btn)) {
+			if (ui_shows_selected()) {
+				ui_stop();
+			}
+			else {
+				ui_start();
+			}
+			refresh_ui_btn();
+		}
+
 		// the message count and the "last seen" age tick on with every message
 		// from the device, which is far too often to rebuild the tabs for. Redraw
 		// just the label, and only when its text actually changed.
@@ -483,6 +598,45 @@ bool fleettab_step(void) {
 			build_dev_info_str();
 			if (strcmp(prev, dev_info_str) != 0) {
 				uv_ui_refresh(&dev_info);
+			}
+		}
+	}
+
+	// The window is opened here rather than from the button, because it can only
+	// be sized once the device has answered with its display geometry - the
+	// button only asks it to start mirroring.
+	if ((ui_fleet >= 0) && (ui_dev >= 0) && !remoteui_win_is_open()) {
+		uint16_t w;
+		uint16_t h;
+		if (mqtt_get_dev_ui_size((uint8_t) ui_fleet, (uint8_t) ui_dev,
+				&w, &h)) {
+			char title[160];
+			const char *devname = mqtt_get_dev_devname((uint8_t) ui_fleet,
+					(uint8_t) ui_dev);
+			snprintf(title, sizeof(title), "%s - %s",
+					(devname[0] != '\0') ? devname : "remote device",
+					mqtt_get_dev_name((uint8_t) ui_fleet, (uint8_t) ui_dev));
+			if (!remoteui_win_open(title, w, h)) {
+				ui_stop();
+			}
+			if (shown) {
+				refresh_ui_btn();
+			}
+		}
+	}
+
+	// the user can close the mirror window from its own title bar, which leaves
+	// the device still sending until we notice and tell it to stop
+	remoteui_win_step();
+	if ((ui_fleet >= 0) && (ui_dev >= 0) && !remoteui_win_is_open()) {
+		uint16_t w;
+		uint16_t h;
+		if (mqtt_get_dev_ui_size((uint8_t) ui_fleet, (uint8_t) ui_dev,
+				&w, &h)) {
+			// it was open and the user closed it
+			ui_stop();
+			if (shown) {
+				refresh_ui_btn();
 			}
 		}
 	}

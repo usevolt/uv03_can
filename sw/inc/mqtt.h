@@ -145,4 +145,64 @@ uint32_t mqtt_get_dev_age_s(uint8_t fleet_index, uint8_t dev_index);
 bool mqtt_poll_changed(void);
 
 
+// --- what a device tells us about itself ------------------------------------
+//
+// Devices publish a JSON heartbeat on their fleet's announce topic every few
+// seconds, and REMOTE protocol messages on their own to_admin topic. The
+// heartbeat is what makes an idle device show up at all: it names itself there,
+// whereas the announce *topic* does not identify who published.
+
+/// @brief: The device's own name for itself ("UV0D Display"), or "" until it
+/// has been heard from. Distinct from mqtt_get_dev_name(), which is the MQTT
+/// client id the broker knows it by.
+const char *mqtt_get_dev_devname(uint8_t fleet_index, uint8_t dev_index);
+
+/// @brief: Seconds since the device booted, as of its last heartbeat.
+uint32_t mqtt_get_dev_uptime_s(uint8_t fleet_index, uint8_t dev_index);
+
+/// @brief: Mask of REMOTE_IOT_FEATURE_* the device currently has switched on.
+uint8_t mqtt_get_dev_features(uint8_t fleet_index, uint8_t dev_index);
+
+/// @brief: The device's remote_iot_state_e.
+uint8_t mqtt_get_dev_state(uint8_t fleet_index, uint8_t dev_index);
+
+/// @brief: Size of the device's display, as reported when UI mirroring was
+/// switched on. False until it has told us, which is why the UI window can only
+/// be opened once the device has answered.
+bool mqtt_get_dev_ui_size(uint8_t fleet_index, uint8_t dev_index,
+		uint16_t *width, uint16_t *height);
+
+
+// --- driving a device -------------------------------------------------------
+
+/// @brief: Asks the device to switch the given REMOTE_IOT_FEATURE_* mask on.
+/// The mask is absolute, not a set/clear, so resending the same one is
+/// harmless. What actually took effect comes back in the heartbeat and in the
+/// device's status message — the device may veto a feature locally.
+///
+/// @return: false when not connected or the publish was refused.
+bool mqtt_dev_set_features(uint8_t fleet_index, uint8_t dev_index,
+		uint8_t features);
+
+
+/// @brief: Called with one complete mirrored UI frame, i.e. the compact command
+/// stream between FRAME_BEGIN and FRAME_END. Runs inside mqtt_step(), on the
+/// caller's thread. The buffer is owned by the client and only valid for the
+/// duration of the call.
+typedef void (*mqtt_ui_frame_callb_t)(uint8_t fleet_index, uint8_t dev_index,
+		const uint8_t *cmds, uint32_t len, void *user);
+
+/// @brief: Registers the sink for mirrored UI frames. Pass NULL to clear.
+void mqtt_set_ui_frame_callb(mqtt_ui_frame_callb_t callb, void *user);
+
+/// @brief: Starts or stops collecting mirrored UI frames from a device. While
+/// collecting, complete frames go to the callback above. Enabling also asks the
+/// device to start mirroring, and disabling asks it to stop.
+bool mqtt_dev_set_ui_active(uint8_t fleet_index, uint8_t dev_index,
+		bool active);
+
+/// @brief: True while frames from this device are being collected.
+bool mqtt_dev_get_ui_active(uint8_t fleet_index, uint8_t dev_index);
+
+
 #endif /* MQTT_H_ */

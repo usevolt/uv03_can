@@ -52,6 +52,8 @@
 
 
 // Topic prefix every fleet topic starts with.
+#include "uv_remote_stream.h"
+
 #define TOPIC_ROOT			"fleets/"
 #define TOPIC_ROOT_LEN		(sizeof(TOPIC_ROOT) - 1)
 
@@ -63,11 +65,40 @@
 #define EINTR_RETRIES		5
 
 
+// Largest mirrored UI frame we will reassemble. The device drops any frame that
+// does not fit its own 4 kB encoder buffer, so anything beyond that is a
+// desynchronised stream rather than a real frame.
+#define UI_FRAME_MAX		8192
+
+
 // One device (an MQTT client id) seen inside a fleet.
 typedef struct {
 	char name[MQTT_NAME_MAX];
 	uint32_t msg_count;
 	time_t last_seen;
+
+	// what the device says about itself in its heartbeat
+	char devname[MQTT_NAME_MAX];
+	uint32_t uptime_s;
+	uint8_t features;
+	uint8_t dev_state;
+
+	// REMOTE messages arrive on this device's own to_admin topic, so each
+	// device needs its own framer: the streams are independent.
+	remote_stream_st rx;
+
+	// geometry of the mirrored display, from REMOTE_MSG_TYPE_UI_INFO
+	uint16_t ui_w;
+	uint16_t ui_h;
+	bool ui_size_known;
+
+	// Mirrored UI frame being reassembled from its chunks. Allocated only while
+	// a device is actually being mirrored - one buffer per known device would
+	// be megabytes for a fleet that is merely listed.
+	bool ui_active;
+	uint8_t *ui_buf;
+	uint32_t ui_len;
+	bool ui_dropping;
 } mqtt_dev_st;
 
 // One fleet, with the devices seen in it.
@@ -112,6 +143,10 @@ static uint8_t fleet_count;
 
 // Set whenever the state or the tree changed, cleared by mqtt_poll_changed().
 static bool changed;
+
+// Sink for reassembled mirrored UI frames.
+static mqtt_ui_frame_callb_t ui_frame_callb;
+static void *ui_frame_user;
 
 
 // Connection parameters, copied here so the connect task can use them after
@@ -270,6 +305,223 @@ static void topic_parse(const char *topic) {
 }
 
 
+
+// --- the device heartbeat ---------------------------------------------------
+//
+// {"n":"UV0D Display","id":"aa:bb:cc:dd:ee:ff","up":25,"en":3,"st":2}
+//
+// Flat, ours, and only ever these keys, so a full JSON parser would be more
+// machinery than the payload deserves. These two helpers are deliberately
+// strict: anything unexpected simply does not match and the field is left
+// alone, rather than half-parsed.
+
+/// @brief: Extracts a quoted string value for *key*. Returns false when the key
+/// is absent or the value is not a string.
+static bool json_get_str(const char *payload, const char *key,
+		char *out, size_t outlen) {
+	bool ret = false;
+	char pattern[32];
+	snprintf(pattern, sizeof(pattern), "\"%s\":", key);
+	const char *p = strstr(payload, pattern);
+	if (p != NULL) {
+		p += strlen(pattern);
+		if (*p == '"') {
+			p++;
+			const char *end = strchr(p, '"');
+			if (end != NULL) {
+				size_t len = (size_t) (end - p);
+				if (len > outlen - 1) {
+					len = outlen - 1;
+				}
+				memcpy(out, p, len);
+				out[len] = '\0';
+				ret = true;
+			}
+		}
+	}
+	return ret;
+}
+
+
+/// @brief: Extracts an unsigned number value for *key*.
+static bool json_get_uint(const char *payload, const char *key,
+		uint32_t *out) {
+	bool ret = false;
+	char pattern[32];
+	snprintf(pattern, sizeof(pattern), "\"%s\":", key);
+	const char *p = strstr(payload, pattern);
+	if (p != NULL) {
+		p += strlen(pattern);
+		char *end = NULL;
+		unsigned long v = strtoul(p, &end, 10);
+		if (end != p) {
+			*out = (uint32_t) v;
+			ret = true;
+		}
+	}
+	return ret;
+}
+
+
+/// @brief: Finds a device by fleet and client id, or NULL.
+static mqtt_dev_st *dev_find(const char *fleet, const char *dev) {
+	mqtt_dev_st *ret = NULL;
+	for (uint8_t i = 0; (i < fleet_count) && (ret == NULL); i++) {
+		if (strcmp(fleets[i].name, fleet) == 0) {
+			for (uint8_t j = 0; j < fleets[i].dev_count; j++) {
+				if (strcmp(fleets[i].devs[j].name, dev) == 0) {
+					ret = &fleets[i].devs[j];
+					break;
+				}
+			}
+		}
+	}
+	return ret;
+}
+
+
+/// @brief: Handles a heartbeat published on a fleet's announce topic. The
+/// announce *topic* does not say who published, so the client id in the payload
+/// is what puts the device on the list - without this an idle device, which
+/// only heartbeats, would never appear at all.
+static void announce_parse(const char *fleet, const char *payload,
+		uint16_t len) {
+	char buf[512];
+	uint16_t n = (len < sizeof(buf) - 1) ? len : (uint16_t) (sizeof(buf) - 1);
+	memcpy(buf, payload, n);
+	buf[n] = '\0';
+
+	char id[MQTT_NAME_MAX];
+	if (json_get_str(buf, "id", id, sizeof(id))) {
+		dev_seen(fleet, id);
+		mqtt_dev_st *d = dev_find(fleet, id);
+		if (d != NULL) {
+			char name[MQTT_NAME_MAX];
+			if (json_get_str(buf, "n", name, sizeof(name))) {
+				if (strcmp(d->devname, name) != 0) {
+					strncpy(d->devname, name, sizeof(d->devname) - 1);
+					d->devname[sizeof(d->devname) - 1] = '\0';
+					changed = true;
+				}
+			}
+			uint32_t v;
+			if (json_get_uint(buf, "up", &v)) {
+				d->uptime_s = v;
+			}
+			if (json_get_uint(buf, "en", &v)) {
+				d->features = (uint8_t) v;
+			}
+			if (json_get_uint(buf, "st", &v)) {
+				d->dev_state = (uint8_t) v;
+			}
+		}
+	}
+	else {
+		// not one of ours, or an older device that announces something else
+	}
+}
+
+
+// --- REMOTE messages on a device's to_admin topic ---------------------------
+
+/// @brief: Appends a mirrored UI chunk to the frame being reassembled, and
+/// hands the finished frame to the sink on FRAME_END.
+static void ui_chunk(mqtt_dev_st *d, const uint8_t *msg, uint8_t len,
+		uint8_t fleet_index, uint8_t dev_index) {
+	uint8_t chunk_len = msg[2];
+	uint8_t flags = msg[3];
+	const uint8_t *cmds = &msg[4];
+	if (chunk_len > (uint8_t) (len - 4)) {
+		chunk_len = (uint8_t) (len - 4);
+	}
+
+	if ((flags & REMOTE_UI_FLAG_FRAME_START) != 0) {
+		// a new frame supersedes whatever was half-collected
+		d->ui_len = 0;
+		d->ui_dropping = false;
+	}
+
+	if (d->ui_buf == NULL) {
+		// not mirroring this device
+	}
+	else if (d->ui_dropping) {
+		// already over the limit; keep discarding until the next frame start
+	}
+	else if ((d->ui_len + chunk_len) > UI_FRAME_MAX) {
+		// The device never sends a frame this large, so the stream is out of
+		// step. Drop the rest of it rather than render garbage.
+		d->ui_dropping = true;
+		d->ui_len = 0;
+	}
+	else {
+		memcpy(&d->ui_buf[d->ui_len], cmds, chunk_len);
+		d->ui_len += chunk_len;
+
+		if (((flags & REMOTE_UI_FLAG_FRAME_END) != 0) &&
+				(ui_frame_callb != NULL) &&
+				(d->ui_len > 0)) {
+			ui_frame_callb(fleet_index, dev_index, d->ui_buf, d->ui_len,
+					ui_frame_user);
+			d->ui_len = 0;
+		}
+	}
+}
+
+
+// Which device the framer is currently decoding for, so the callback can find
+// it again. The frame callback carries a void* but the decode is strictly
+// sequential inside on_message, so a small context struct is enough.
+typedef struct {
+	mqtt_dev_st *dev;
+	uint8_t fleet_index;
+	uint8_t dev_index;
+} rx_ctx_st;
+
+
+/// @brief: Handles one complete REMOTE message from a device.
+static void dev_frame_callb(void *user, remote_msg_types_e type,
+		const uint8_t *data, uint8_t len) {
+	rx_ctx_st *ctx = user;
+	mqtt_dev_st *d = ctx->dev;
+
+	switch (type) {
+	case REMOTE_MSG_TYPE_IOT_STATUS:
+		if (d->features != data[2]) {
+			d->features = data[2];
+			changed = true;
+		}
+		d->dev_state = data[3];
+		break;
+
+	case REMOTE_MSG_TYPE_UI_INFO:
+	{
+		uint16_t w;
+		uint16_t h;
+		memcpy(&w, &data[2], sizeof(w));
+		memcpy(&h, &data[4], sizeof(h));
+		if ((w != d->ui_w) || (h != d->ui_h) || !d->ui_size_known) {
+			d->ui_w = w;
+			d->ui_h = h;
+			d->ui_size_known = true;
+			changed = true;
+			printf("MQTT: device '%s' mirrors a %ux%u display\n",
+					d->name, (unsigned int) w, (unsigned int) h);
+			fflush(stdout);
+		}
+		break;
+	}
+
+	case REMOTE_MSG_TYPE_UI:
+		ui_chunk(d, data, len, ctx->fleet_index, ctx->dev_index);
+		break;
+
+	default:
+		// CAN traffic and the rest are not consumed by the fleet view yet
+		break;
+	}
+}
+
+
 static void on_connect(struct mosquitto *m, void *obj, int rc) {
 	(void) obj;
 	if (rc == 0) {
@@ -318,6 +570,61 @@ static void on_message(struct mosquitto *m, void *obj,
 	(void) obj;
 	if ((msg != NULL) && (msg->topic != NULL)) {
 		topic_parse(msg->topic);
+
+		// beyond discovery, the payload matters: the announce topic carries the
+		// heartbeat that names the device, and to_admin carries REMOTE messages
+		if (strncmp(msg->topic, TOPIC_ROOT, TOPIC_ROOT_LEN) == 0) {
+			char fleet[MQTT_NAME_MAX];
+			const char *rest = level_copy(msg->topic + TOPIC_ROOT_LEN,
+					fleet, sizeof(fleet));
+			if (rest != NULL) {
+				char what[32];
+				const char *rest2 = level_copy(rest, what, sizeof(what));
+				if ((strcmp(what, "announce") == 0) &&
+						(msg->payload != NULL)) {
+					announce_parse(fleet, (const char *) msg->payload,
+							(uint16_t) msg->payloadlen);
+				}
+				else if ((strcmp(what, "clients") == 0) &&
+						(rest2 != NULL) &&
+						(msg->payload != NULL)) {
+					char dev[MQTT_NAME_MAX];
+					const char *rest3 = level_copy(rest2, dev, sizeof(dev));
+					char leaf[32];
+					if (rest3 != NULL) {
+						(void) level_copy(rest3, leaf, sizeof(leaf));
+					}
+					else {
+						leaf[0] = '\0';
+					}
+					if (strcmp(leaf, "to_admin") == 0) {
+						rx_ctx_st ctx = { NULL, 0, 0 };
+						for (uint8_t i = 0; i < fleet_count; i++) {
+							if (strcmp(fleets[i].name, fleet) != 0) {
+								continue;
+							}
+							for (uint8_t j = 0; j < fleets[i].dev_count; j++) {
+								if (strcmp(fleets[i].devs[j].name, dev) == 0) {
+									ctx.dev = &fleets[i].devs[j];
+									ctx.fleet_index = i;
+									ctx.dev_index = j;
+									break;
+								}
+							}
+						}
+						if (ctx.dev != NULL) {
+							remote_stream_feed(&ctx.dev->rx,
+									(const uint8_t *) msg->payload,
+									(uint16_t) msg->payloadlen,
+									&dev_frame_callb, &ctx);
+						}
+					}
+				}
+				else {
+					// another topic under this fleet
+				}
+			}
+		}
 	}
 }
 
@@ -648,3 +955,142 @@ bool mqtt_poll_changed(void) {
 
 
 #endif
+
+
+// --- device detail and control ----------------------------------------------
+
+/// @brief: Bounds-checked lookup used by every getter below.
+static mqtt_dev_st *dev_at(uint8_t fleet_index, uint8_t dev_index) {
+	mqtt_dev_st *ret = NULL;
+	if ((fleet_index < fleet_count) &&
+			(dev_index < fleets[fleet_index].dev_count)) {
+		ret = &fleets[fleet_index].devs[dev_index];
+	}
+	return ret;
+}
+
+
+const char *mqtt_get_dev_devname(uint8_t fleet_index, uint8_t dev_index) {
+	mqtt_dev_st *d = dev_at(fleet_index, dev_index);
+	return (d != NULL) ? d->devname : "";
+}
+
+
+uint32_t mqtt_get_dev_uptime_s(uint8_t fleet_index, uint8_t dev_index) {
+	mqtt_dev_st *d = dev_at(fleet_index, dev_index);
+	return (d != NULL) ? d->uptime_s : 0;
+}
+
+
+uint8_t mqtt_get_dev_features(uint8_t fleet_index, uint8_t dev_index) {
+	mqtt_dev_st *d = dev_at(fleet_index, dev_index);
+	return (d != NULL) ? d->features : 0;
+}
+
+
+uint8_t mqtt_get_dev_state(uint8_t fleet_index, uint8_t dev_index) {
+	mqtt_dev_st *d = dev_at(fleet_index, dev_index);
+	return (d != NULL) ? d->dev_state : 0;
+}
+
+
+bool mqtt_get_dev_ui_size(uint8_t fleet_index, uint8_t dev_index,
+		uint16_t *width, uint16_t *height) {
+	mqtt_dev_st *d = dev_at(fleet_index, dev_index);
+	bool ret = false;
+	if ((d != NULL) && d->ui_size_known) {
+		if (width != NULL) {
+			*width = d->ui_w;
+		}
+		if (height != NULL) {
+			*height = d->ui_h;
+		}
+		ret = true;
+	}
+	return ret;
+}
+
+
+bool mqtt_dev_set_features(uint8_t fleet_index, uint8_t dev_index,
+		uint8_t features) {
+	mqtt_dev_st *d = dev_at(fleet_index, dev_index);
+	bool ret = false;
+	if ((d != NULL) && (mosq != NULL) && (state == MQTT_STATE_CONNECTED)) {
+		char topic[MQTT_NAME_MAX * 2 + 32];
+		snprintf(topic, sizeof(topic), "%s%s/clients/%s/to_dev",
+				TOPIC_ROOT, fleets[fleet_index].name, d->name);
+		uint8_t frame[REMOTE_MSG_TYPE_IOT_CTRL_LEN] = {
+				REMOTE_MSG_START_BYTE,
+				REMOTE_MSG_TYPE_IOT_CTRL,
+				features
+		};
+		int rc = mosquitto_publish(mosq, NULL, topic, (int) sizeof(frame),
+				frame, 0, false);
+		if (rc == MOSQ_ERR_SUCCESS) {
+			ret = true;
+		}
+		else {
+			printf("MQTT: could not ask '%s' for features 0x%x: %s\n",
+					d->name, (unsigned int) features, mosquitto_strerror(rc));
+			fflush(stdout);
+		}
+	}
+	return ret;
+}
+
+
+void mqtt_set_ui_frame_callb(mqtt_ui_frame_callb_t callb, void *user) {
+	ui_frame_callb = callb;
+	ui_frame_user = user;
+}
+
+
+bool mqtt_dev_set_ui_active(uint8_t fleet_index, uint8_t dev_index,
+		bool active) {
+	mqtt_dev_st *d = dev_at(fleet_index, dev_index);
+	bool ret = false;
+	if (d != NULL) {
+		if (active && (d->ui_buf == NULL)) {
+			// only mirrored devices carry a reassembly buffer; one per known
+			// device would be megabytes for a fleet that is merely listed
+			d->ui_buf = malloc(UI_FRAME_MAX);
+		}
+		else {
+		}
+		if (active && (d->ui_buf == NULL)) {
+			printf("MQTT: out of memory for the mirrored frame buffer\n");
+			fflush(stdout);
+		}
+		else {
+			d->ui_active = active;
+			d->ui_len = 0;
+			d->ui_dropping = false;
+			if (!active) {
+				free(d->ui_buf);
+				d->ui_buf = NULL;
+				d->ui_size_known = false;
+			}
+			else {
+			}
+			// ask the device to start or stop mirroring. The CAN feature is
+			// left as it is: it is switched independently and nothing here owns
+			// it.
+			uint8_t mask = d->features;
+            if (active) {
+                mask |= REMOTE_IOT_FEATURE_UI;
+            }
+            else {
+                mask &= (uint8_t) ~REMOTE_IOT_FEATURE_UI;
+            }
+			ret = mqtt_dev_set_features(fleet_index, dev_index, mask);
+			changed = true;
+		}
+	}
+	return ret;
+}
+
+
+bool mqtt_dev_get_ui_active(uint8_t fleet_index, uint8_t dev_index) {
+	mqtt_dev_st *d = dev_at(fleet_index, dev_index);
+	return (d != NULL) ? d->ui_active : false;
+}
