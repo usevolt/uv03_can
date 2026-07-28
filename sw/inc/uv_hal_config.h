@@ -43,6 +43,8 @@ extern bool silent;
 
 
 #define CONFIG_UI									1
+// desktop build: Tab moves the keyboard focus between fields and buttons
+#define CONFIG_UI_ENABLEFOCUS						1
 // Native window title shown by the host (OpenGL/GLFW) UI backend.
 #define CONFIG_UI_NAME								"uvcan"
 // The UI rendering backend (CONFIG_UI_OPENGL / CONFIG_UI_X11) is selected in
