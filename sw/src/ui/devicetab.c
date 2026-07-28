@@ -602,9 +602,9 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	// shorter status row below. The status row is only a text label, so it gets a
 	// label's height (TITLE_H) rather than a full button's - keeping the panel
 	// compact.
-	// two field rows (file server URL / fleet URL) plus the status row
-	int16_t account_frame_h = 2 * BUTTON_H + MARGIN + TITLE_H + MARGIN +
-			TITLE_H + BUTTON_H + TITLE_H + MARGIN;
+	// two field rows; the status shares the second one with the fleet URL
+	int16_t account_frame_h = 2 * BUTTON_H + MARGIN + TITLE_H +
+			BUTTON_H + TITLE_H + MARGIN;
 	int16_t account_frame_y = cbb.h - MARGIN - account_frame_h;
 #if !CONFIG_TARGET_WIN
 	// the configuration panel needs room for the double-height source row plus the
@@ -851,14 +851,11 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 			frame_w, account_frame_h);
 	uv_bounding_box_st ac = uv_uiframewindow_get_content_bb(&content.account_frame);
 
-	// Two field rows on the left, the "Connect" button filling the panel's full
-	// height on the right, and the status line along the bottom of the field
-	// area only - it no longer spans the whole width, since the button now
-	// reaches all the way down.
-	int16_t acc_status_h = TITLE_H;
-	int16_t acc_status_row_y = ac.h - acc_status_h;
-	int16_t acc_fields_h = acc_status_row_y - MARGIN;
-	int16_t acc_row_h = (acc_fields_h - MARGIN) / 2;
+	// Two field rows on the left and the "Connect" button filling the panel's
+	// full height on the right. The status shares the second row with the fleet
+	// URL rather than taking one of its own, which keeps the panel a row
+	// shorter and leaves the space above it for the device list.
+	int16_t acc_row_h = (ac.h - MARGIN) / 2;
 
 	int16_t acc_gap = MARGIN;
 	int16_t acc_conn_w = 3 * 2 * BUTTON_H;
@@ -909,11 +906,13 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	uv_uiframewindow_addxy(&content.account_frame, &content.account_connect_btn,
 			acc_x, 0, ac.w - acc_x, ac.h);
 
-	// the status line, centred under the fields rather than under the button
+	// the status line sits beside the fleet URL, filling the width the user name
+	// and password fields occupy on the row above
 	uv_uilabel_init(&content.account_status, style->font, ALIGN_CENTER,
 			style->text_color, content.account_status_str);
 	uv_uiframewindow_addxy(&content.account_frame, &content.account_status,
-			0, acc_status_row_y, acc_x - acc_gap, acc_status_h);
+			acc_url_w + acc_gap, acc_row_h + MARGIN,
+			acc_x - acc_gap - (acc_url_w + acc_gap), acc_row_h);
 
 	account_refresh_status();
 }
