@@ -80,17 +80,23 @@ typedef enum {
 bool mqtt_is_supported(void);
 
 
-/// @brief: Starts connecting to *host* as fleet admin *username* / *password*.
-/// Returns immediately - the connection completes (or fails) over the following
-/// mqtt_step() calls; watch mqtt_get_state(). *fleet*, when not empty, is listed
-/// as a fleet right away so its tab exists before any device has published.
-/// Any existing connection is dropped first.
+/// @brief: Starts connecting to *host* as *username* / *password*. Returns
+/// immediately - the connection completes (or fails) over the following
+/// mqtt_step() calls; watch mqtt_get_state(). Any existing connection is
+/// dropped first, which also forgets the fleets discovered so far.
 ///
 /// Returns false when the client could not even be started (no host given, or
 /// libmosquitto refused the parameters), in which case the state is
 /// MQTT_STATE_ERROR and mqtt_get_error() has the reason.
-bool mqtt_connect(const char *host, const char *username, const char *password,
-		const char *fleet);
+bool mqtt_connect(const char *host, const char *username, const char *password);
+
+
+/// @brief: Lists *name* as a fleet without waiting to hear from it, so its tab
+/// exists before any of its devices has published anything. Called with the
+/// fleets the file server said this account holds; the broker's ACL confines
+/// the subscriptions to the same set, so nothing is shown that could not be
+/// listened to anyway. Harmless to repeat.
+void mqtt_add_fleet(const char *name);
 
 
 /// @brief: Closes the connection and forgets the discovered fleets and devices.

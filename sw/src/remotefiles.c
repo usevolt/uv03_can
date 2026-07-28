@@ -36,7 +36,18 @@
 // written to the credentials file) and passed to curl through a config file so it
 // does not appear in the process arguments.
 static char rf_url[CREDENTIALS_MAX];
-static char rf_token[1024];
+// The file server authenticates every request with HTTP Basic, so the
+// credentials are kept rather than a session token: there is nothing to
+// exchange them for. They live only in memory, and only for as long as the
+// session lasts.
+static char rf_user[CREDENTIALS_MAX];
+static char rf_pass[CREDENTIALS_MAX];
+// The fleets this account may read, as the server reported them at login. The
+// client does not choose these - it is told them - so there is no fleet setting
+// to keep in step with the server's idea of who may see what.
+static char rf_fleets[REMOTEFILES_MAX_FLEETS][REMOTEFILES_FLEET_MAX];
+static uint8_t rf_fleet_count;
+static bool rf_logged_in;
 static remotefiles_product_st rf_products[REMOTEFILES_MAX_PRODUCTS];
 static uint8_t rf_product_count;
 
@@ -86,30 +97,8 @@ static char *rf_read_file(const char *path) {
 }
 
 
-// Appends *src* to *dst* as a JSON string value (without the surrounding quotes),
-// escaping the characters JSON requires. Used to build the login body so a password
-// containing quotes/backslashes is transmitted correctly. *dst* is a buffer of
-// *dstlen* bytes already holding a null-terminated prefix.
-static void rf_json_escape_append(char *dst, size_t dstlen, const char *src) {
-	size_t d = strlen(dst);
-	for (size_t i = 0; (src[i] != '\0') && (d + 2 < dstlen); i++) {
-		unsigned char c = (unsigned char) src[i];
-		if ((c == '"') || (c == '\\')) {
-			dst[d++] = '\\';
-			dst[d++] = (char) c;
-		}
-		else if (c < 0x20) {
-			// control character: emit as \u00XX (needs 6 bytes)
-			if (d + 6 < dstlen) {
-				d += snprintf(dst + d, dstlen - d, "\\u%04x", c);
-			}
-		}
-		else {
-			dst[d++] = (char) c;
-		}
-	}
-	dst[d] = '\0';
-}
+// (The JSON string escaper that used to live here built the login request body.
+// Basic auth has no body, so nothing needs escaping any more.)
 
 
 // Copies *src* into *dst* (size *dstlen*) dropping characters that could break out
@@ -175,12 +164,117 @@ static void rf_err(char *err, unsigned int err_len, const char *msg) {
 }
 
 
+/// @brief: Builds the base URL of one of this account's fleet directories.
+static void rf_fleet_url(char *dst, size_t dstlen, const char *fleet) {
+	char f[REMOTEFILES_FLEET_MAX];
+	rf_cfg_sanitize(f, sizeof(f), (fleet != NULL) ? fleet : "");
+	snprintf(dst, dstlen, "%s/%s", rf_url, f);
+}
+
+
+/// @brief: Emits the curl config lines every request shares: the timeouts and
+/// the Basic credentials.
+static int rf_cfg_common(char *dst, size_t dstlen, int timeout_s) {
+	char user[CREDENTIALS_MAX];
+	char pass[CREDENTIALS_MAX];
+	rf_cfg_sanitize(user, sizeof(user), rf_user);
+	rf_cfg_sanitize(pass, sizeof(pass), rf_pass);
+	return snprintf(dst, dstlen,
+			"silent\nshow-error\n"
+			"connect-timeout = 15\nmax-time = %d\n"
+			"user = \"%s:%s\"\n",
+			timeout_s, user, pass);
+}
+
+
+/// @brief: Turns an HTTP status into the reason the caller shows. Shared so the
+/// three calls describe the same failure the same way.
+static void rf_http_err(long code, const char *what, char *err,
+		unsigned int err_len) {
+	if (code == 0) {
+		rf_err(err, err_len,
+				"Could not reach the server (is curl installed and the URL "
+				"correct?).");
+	}
+	else if (code == 401) {
+		rf_err(err, err_len, "Invalid username or password.");
+	}
+	else if (code == 403) {
+		rf_err(err, err_len, "This account may not read that fleet's files.");
+	}
+	else if (code == 404) {
+		rf_err(err, err_len,
+				"No such fleet on the file server, or it has no files area yet.");
+	}
+	else {
+		char m[128];
+		snprintf(m, sizeof(m), "Server returned HTTP %ld %s.", code, what);
+		rf_err(err, err_len, m);
+	}
+}
+
+
+/// @brief: Reads the fleet list the server answered with into rf_fleets.
+///
+/// The body is {"user":…,"super":…,"fleets":[{"name":"a"},{"name":"b"}]}. The
+/// fleets are objects rather than bare strings because this project's JSON
+/// reader finds a value by scanning forward for its key's ':' — a string
+/// sitting directly in an array has no key, and reads back as whatever follows
+/// it in the document.
+///
+/// An account with no fleets at all is a valid answer - somebody has an account
+/// but has not been granted anything yet - and is reported as such rather than
+/// as a failure to log in, because the credentials plainly worked.
+static bool rf_parse_fleets(char *body) {
+	bool ret = false;
+	rf_fleet_count = 0;
+	parser_node_st root = parser_read_buffer(body, strlen(body),
+			PARSER_FORMAT_JSON);
+	if (parser_node_is_valid(root)) {
+		parser_node_st arr = parser_find_child(root, "fleets");
+		if (parser_node_is_valid(arr) &&
+				(parser_get_type(arr) == PARSER_ARRAY)) {
+			unsigned int n = parser_array_get_size(arr);
+			for (unsigned int i = 0;
+					(i < n) && (rf_fleet_count < REMOTEFILES_MAX_FLEETS); i++) {
+				parser_node_st e = parser_array_at(arr, i);
+				parser_node_st nn = parser_find_child(e, "name");
+				if (parser_node_is_valid(nn)) {
+					char name[REMOTEFILES_FLEET_MAX] = { '\0' };
+					parser_get_string(nn, name, sizeof(name));
+					if (name[0] != '\0') {
+						strncpy(rf_fleets[rf_fleet_count], name,
+								REMOTEFILES_FLEET_MAX - 1);
+						rf_fleets[rf_fleet_count][REMOTEFILES_FLEET_MAX - 1] =
+								'\0';
+						rf_fleet_count++;
+					}
+				}
+			}
+			ret = true;
+		}
+	}
+	return ret;
+}
+
+
+uint8_t remotefiles_get_fleet_count(void) {
+	return rf_fleet_count;
+}
+
+
+const char *remotefiles_get_fleet(uint8_t index) {
+	return (index < rf_fleet_count) ? rf_fleets[index] : "";
+}
+
+
 bool remotefiles_login(const char *url, const char *username,
 		const char *password, char *err, unsigned int err_len) {
 	bool ret = false;
-	rf_token[0] = '\0';
+	rf_logged_in = false;
+	rf_fleet_count = 0;
 	rf_cfg_sanitize(rf_url, sizeof(rf_url), (url != NULL) ? url : "");
-	// strip a trailing '/' so "<url>/api/..." never doubles the slash
+	// strip a trailing '/' so "<url>/<fleet>" never doubles the slash
 	size_t ul = strlen(rf_url);
 	if ((ul > 0) && (rf_url[ul - 1] == '/')) {
 		rf_url[ul - 1] = '\0';
@@ -188,12 +282,11 @@ bool remotefiles_login(const char *url, const char *username,
 
 	// Default to https when the address carries no scheme. curl would otherwise
 	// try http, and the server permanently redirects that to https - a redirect
-	// which by definition preserves the method and the body, so the login POST
-	// would put the password on the wire in the clear before being told to use
-	// TLS. Being explicit here means the password only ever leaves over TLS.
+	// which by definition preserves the method and the headers, so the
+	// credentials would go out in the clear before being told to use TLS.
 	if ((strlen(rf_url) > 0) &&
 			(strstr(rf_url, "://") == NULL)) {
-		char scheme_url[sizeof(rf_url)];
+		char scheme_url[sizeof(rf_url) + 16];
 		snprintf(scheme_url, sizeof(scheme_url), "https://%s", rf_url);
 		strncpy(rf_url, scheme_url, sizeof(rf_url) - 1);
 		rf_url[sizeof(rf_url) - 1] = '\0';
@@ -201,203 +294,337 @@ bool remotefiles_login(const char *url, const char *username,
 	else {
 	}
 
+	strncpy(rf_user, (username != NULL) ? username : "", sizeof(rf_user) - 1);
+	rf_user[sizeof(rf_user) - 1] = '\0';
+	strncpy(rf_pass, (password != NULL) ? password : "", sizeof(rf_pass) - 1);
+	rf_pass[sizeof(rf_pass) - 1] = '\0';
+
 	if (strlen(rf_url) == 0) {
 		rf_err(err, err_len, "No server URL set.");
 	}
 	else {
-		// the credentials go into a data file (JSON-escaped), never onto the command
-		// line or into the config, so they are not visible in the process list
-		char body[2 * CREDENTIALS_MAX + 64];
-		strcpy(body, "{\"username\":\"");
-		rf_json_escape_append(body, sizeof(body), (username != NULL) ? username : "");
-		strncat(body, "\",\"password\":\"", sizeof(body) - strlen(body) - 1);
-		rf_json_escape_append(body, sizeof(body), (password != NULL) ? password : "");
-		strncat(body, "\"}", sizeof(body) - strlen(body) - 1);
-
-		char body_path[256];
+		// There is no login endpoint to call: Basic auth is checked on every
+		// request. Asking for the fleet list is both the smallest request that
+		// proves the credentials work and the one that says what this account
+		// may read - the server decides that, so there is nothing to configure
+		// here and no fleet name to get wrong.
 		char resp_path[256];
-		rf_tmp_path(body_path, sizeof(body_path), "body");
 		rf_tmp_path(resp_path, sizeof(resp_path), "resp");
 
-		if (!rf_write_file(body_path, body)) {
-			rf_err(err, err_len, "Could not write the request.");
+		char cfg[2048];
+		int n = rf_cfg_common(cfg, sizeof(cfg), 30);
+		snprintf(&cfg[n], sizeof(cfg) - n,
+				"url = \"%s/fleets.json\"\n"
+				"output = \"%s\"\n"
+				"write-out = \"%%{http_code}\"\n",
+				rf_url, resp_path);
+		long code = rf_curl_with_cfg(cfg);
+		char *body = (code == 200) ? rf_read_file(resp_path) : NULL;
+		remove(resp_path);
+
+		if (code != 200) {
+			rf_http_err(code, "on login", err, err_len);
+		}
+		else if ((body == NULL) || !rf_parse_fleets(body)) {
+			rf_err(err, err_len,
+					"The server did not answer with a fleet list.");
 		}
 		else {
-			char cfg[2048];
-			snprintf(cfg, sizeof(cfg),
-					"silent\nshow-error\n"
-					"connect-timeout = 15\nmax-time = 30\n"
-					"url = \"%s/api/v1/login\"\n"
-					"request = \"POST\"\n"
-					"header = \"Content-Type: application/json\"\n"
-					"data = \"@%s\"\n"
-					"output = \"%s\"\n"
-					"write-out = \"%%{http_code}\"\n",
-					rf_url, body_path, resp_path);
-			long code = rf_curl_with_cfg(cfg);
-			remove(body_path);
+			rf_logged_in = true;
+			ret = true;
+		}
+		free(body);
+	}
+	return ret;
+}
 
-			if (code == 0) {
-				rf_err(err, err_len,
-						"Could not reach the server (is curl installed and the URL "
-						"correct?).");
-			}
-			else if (code == 401) {
-				rf_err(err, err_len, "Invalid username or password.");
-			}
-			else if (code != 200) {
-				char m[96];
-				snprintf(m, sizeof(m), "Server returned HTTP %ld on login.", code);
-				rf_err(err, err_len, m);
-			}
-			else {
-				char *resp = rf_read_file(resp_path);
-				if (resp == NULL) {
-					rf_err(err, err_len, "Empty login response.");
-				}
-				else {
-					// the server always answers in JSON
-					parser_node_st root = parser_read_buffer(resp, strlen(resp),
-							PARSER_FORMAT_JSON);
-					parser_node_st tok = parser_find_child(root, "token");
-					if (parser_node_is_valid(tok) &&
-							parser_get_string(tok, rf_token,
-									sizeof(rf_token)) &&
-							(strlen(rf_token) > 0)) {
-						ret = true;
+
+/// @brief: Reads one entry of a directory listing into *ver*. The server
+/// reports only what a file system knows, so the release notes and the checksum
+/// the structure can carry stay empty.
+static void rf_parse_entry(parser_node_st obj, const char *dir,
+		remotefiles_version_st *ver) {
+	memset(ver, 0, sizeof(*ver));
+	parser_node_st c;
+	char name[256] = { '\0' };
+	if (parser_node_is_valid(c = parser_find_child(obj, "name"))) {
+		parser_get_string(c, name, sizeof(name));
+	}
+	strncpy(ver->version, name, sizeof(ver->version) - 1);
+	if (dir[0] != '\0') {
+		snprintf(ver->path, sizeof(ver->path), "%s/%s", dir, name);
+	}
+	else {
+		strncpy(ver->path, name, sizeof(ver->path) - 1);
+	}
+	if (parser_node_is_valid(c = parser_find_child(obj, "size"))) {
+		ver->size = (uint64_t) parser_get_int(c);
+	}
+	if (parser_node_is_valid(c = parser_find_child(obj, "mod_time"))) {
+		parser_get_string(c, ver->modified, sizeof(ver->modified));
+		// the date alone is what the list shows
+		strncpy(ver->released, ver->modified, 10);
+		ver->released[10] = '\0';
+	}
+}
+
+
+/// @brief: Returns true when a listing entry is a directory.
+static bool rf_entry_is_dir(parser_node_st obj) {
+	bool ret = false;
+	parser_node_st c = parser_find_child(obj, "is_dir");
+	if (parser_node_is_valid(c)) {
+		ret = (parser_get_bool(c) != 0);
+	}
+	return ret;
+}
+
+
+/// @brief: Fetches one directory listing as JSON.
+/// @return: the HTTP status; *out is the response body to free, or NULL.
+static long rf_fetch_dir(const char *fleet, const char *dir, char **out) {
+	*out = NULL;
+	char base[1024];
+	rf_fleet_url(base, sizeof(base), fleet);
+	char edir[512];
+	rf_cfg_sanitize(edir, sizeof(edir), dir);
+
+	char resp_path[256];
+	rf_tmp_path(resp_path, sizeof(resp_path), "resp");
+	char cfg[2560];
+	int n = rf_cfg_common(cfg, sizeof(cfg), 30);
+	snprintf(&cfg[n], sizeof(cfg) - n,
+			"url = \"%s/%s\"\n"
+			"header = \"Accept: application/json\"\n"
+			"output = \"%s\"\n"
+			"write-out = \"%%{http_code}\"\n",
+			base, edir, resp_path);
+	long code = rf_curl_with_cfg(cfg);
+	if (code == 200) {
+		*out = rf_read_file(resp_path);
+	}
+	remove(resp_path);
+	return code;
+}
+
+
+/// @brief: Parses a directory listing into an array node.
+///
+/// The server answers with a bare top-level array, which this project's JSON
+/// reader does not accept - it wants an object at the root - so the body is
+/// wrapped in one first. The nodes point into that wrapper, so it is handed
+/// back for the caller to free once it has finished reading them.
+static parser_node_st rf_parse_listing(const char *body, char **wrapper) {
+	parser_node_st ret = { 0 };
+	*wrapper = NULL;
+	size_t len = strlen(body);
+	char *w = malloc(len + 16);
+	if (w != NULL) {
+		snprintf(w, len + 16, "{\"e\":%s}", body);
+		parser_node_st root = parser_read_buffer(w, strlen(w),
+				PARSER_FORMAT_JSON);
+		ret = parser_find_child(root, "e");
+		*wrapper = w;
+	}
+	return ret;
+}
+
+
+/// @brief: Adds the products of one fleet to the list.
+///
+/// Every path recorded here is relative to the server root and starts with the
+/// fleet, because an account may hold several and a download has to know which
+/// one a file came from.
+///
+/// @return: false only when the fleet could not be listed at all.
+static bool rf_list_fleet(const char *fleet, bool prefix_names, char *err,
+		unsigned int err_len) {
+	bool ret = false;
+	{
+		char *resp = NULL;
+		long code = rf_fetch_dir(fleet, "", &resp);
+		if (code != 200) {
+			rf_http_err(code, "listing files", err, err_len);
+		}
+		else if (resp == NULL) {
+			rf_err(err, err_len, "Empty file list response.");
+		}
+		else {
+			// The listing is a flat array per directory, so a directory becomes
+			// a product and the files inside it its versions. Files sitting
+			// directly in the fleet's folder are grouped under the fleet name,
+			// so nothing is hidden just because it was not filed away.
+			char *root_wrap = NULL;
+			parser_node_st root = rf_parse_listing(resp, &root_wrap);
+			remotefiles_product_st *loose = NULL;
+
+			if (parser_node_is_valid(root) &&
+					(parser_get_type(root) == PARSER_ARRAY)) {
+				unsigned int n = parser_array_get_size(root);
+				for (unsigned int i = 0;
+						(i < n) && (rf_product_count < REMOTEFILES_MAX_PRODUCTS);
+						i++) {
+					parser_node_st e = parser_array_at(root, i);
+					if (!parser_node_is_valid(e)) {
+						continue;
+					}
+					if (rf_entry_is_dir(e)) {
+						char dname[128] = { '\0' };
+						parser_node_st c = parser_find_child(e, "name");
+						if (parser_node_is_valid(c)) {
+							parser_get_string(c, dname, sizeof(dname));
+						}
+						// the listing marks a directory by a trailing '/' in
+						// its name, which would double up in every path built
+						// from it
+						size_t dl = strlen(dname);
+						if ((dl > 0) && (dname[dl - 1] == '/')) {
+							dname[dl - 1] = '\0';
+						}
+						remotefiles_product_st *p =
+								&rf_products[rf_product_count];
+						memset(p, 0, sizeof(*p));
+						snprintf(p->id, sizeof(p->id), "%.31s/%.31s", fleet, dname);
+						if (prefix_names) {
+							snprintf(p->name, sizeof(p->name), "%.60s / %.60s",
+									fleet, dname);
+						}
+						else {
+							strncpy(p->name, dname, sizeof(p->name) - 1);
+						}
+						rf_product_count++;
+
+						char *sub = NULL;
+						if ((rf_fetch_dir(fleet, dname, &sub) == 200) &&
+								(sub != NULL)) {
+							char *sub_wrap = NULL;
+							parser_node_st sroot = rf_parse_listing(sub,
+									&sub_wrap);
+							if (parser_node_is_valid(sroot) &&
+									(parser_get_type(sroot) == PARSER_ARRAY)) {
+								unsigned int sn = parser_array_get_size(sroot);
+								for (unsigned int j = 0; (j < sn) &&
+										(p->version_count <
+												REMOTEFILES_MAX_VERSIONS); j++) {
+									parser_node_st se = parser_array_at(sroot, j);
+									if (parser_node_is_valid(se) &&
+											!rf_entry_is_dir(se)) {
+										rf_parse_entry(se, p->id,
+												&p->versions[p->version_count]);
+										p->version_count++;
+									}
+								}
+							}
+							free(sub_wrap);
+							free(sub);
+						}
 					}
 					else {
-						rf_err(err, err_len,
-								"Login succeeded but no token was returned.");
+						if (loose == NULL) {
+							if (rf_product_count >= REMOTEFILES_MAX_PRODUCTS) {
+								continue;
+							}
+							loose = &rf_products[rf_product_count];
+							memset(loose, 0, sizeof(*loose));
+							strncpy(loose->id, fleet, sizeof(loose->id) - 1);
+							strncpy(loose->name, fleet,
+									sizeof(loose->name) - 1);
+							rf_product_count++;
+						}
+						if (loose->version_count < REMOTEFILES_MAX_VERSIONS) {
+							rf_parse_entry(e, fleet,
+									&loose->versions[loose->version_count]);
+							loose->version_count++;
+						}
 					}
-					free(resp);
 				}
+				ret = true;
 			}
-			remove(resp_path);
+			else {
+				rf_err(err, err_len,
+						"The server did not answer with a file listing.");
+			}
+			free(root_wrap);
+			free(resp);
 		}
 	}
 	return ret;
 }
 
 
-// Parses one version object from the files response into *v*.
-static void rf_parse_version(parser_node_st obj, remotefiles_version_st *v) {
-	memset(v, 0, sizeof(*v));
-	parser_node_st c;
-	if (parser_node_is_valid(c = parser_find_child(obj, "version"))) {
-		parser_get_string(c, v->version, sizeof(v->version));
-	}
-	if (parser_node_is_valid(c = parser_find_child(obj, "path"))) {
-		parser_get_string(c, v->path, sizeof(v->path));
-	}
-	if (parser_node_is_valid(c = parser_find_child(obj, "released"))) {
-		parser_get_string(c, v->released, sizeof(v->released));
-	}
-	if (parser_node_is_valid(c = parser_find_child(obj, "notes"))) {
-		parser_get_string(c, v->notes, sizeof(v->notes));
-	}
-	if (parser_node_is_valid(c = parser_find_child(obj, "sha256"))) {
-		parser_get_string(c, v->sha256, sizeof(v->sha256));
-	}
-	if (parser_node_is_valid(c = parser_find_child(obj, "modified"))) {
-		parser_get_string(c, v->modified, sizeof(v->modified));
-	}
-	if (parser_node_is_valid(c = parser_find_child(obj, "size"))) {
-		int s = parser_get_int(c);
-		v->size = (s > 0) ? (uint64_t) s : 0;
-	}
-}
-
-
-// Parses the whole files response (a {"products":[...]} object) into rf_products.
-static void rf_parse_products(parser_node_st root) {
-	rf_product_count = 0;
-	parser_node_st products = parser_find_child(root, "products");
-	if ((parser_node_is_valid(products)) &&
-			(parser_get_type(products) == PARSER_ARRAY)) {
-		unsigned int pn = parser_array_get_size(products);
-		for (unsigned int i = 0;
-				(i < pn) && (rf_product_count < REMOTEFILES_MAX_PRODUCTS); i++) {
-			parser_node_st pobj = parser_array_at(products, i);
-			if (!parser_node_is_valid(pobj)) {
-				continue;
-			}
-			remotefiles_product_st *p = &rf_products[rf_product_count];
-			memset(p, 0, sizeof(*p));
-			parser_node_st c;
-			if (parser_node_is_valid(c = parser_find_child(pobj, "id"))) {
-				parser_get_string(c, p->id, sizeof(p->id));
-			}
-			if (parser_node_is_valid(c = parser_find_child(pobj, "name"))) {
-				parser_get_string(c, p->name, sizeof(p->name));
-			}
-			parser_node_st versions = parser_find_child(pobj, "versions");
-			if ((parser_node_is_valid(versions)) &&
-					(parser_get_type(versions) == PARSER_ARRAY)) {
-				unsigned int vn = parser_array_get_size(versions);
-				for (unsigned int j = 0;
-						(j < vn) && (p->version_count < REMOTEFILES_MAX_VERSIONS);
-						j++) {
-					parser_node_st vobj = parser_array_at(versions, j);
-					if (parser_node_is_valid(vobj)) {
-						rf_parse_version(vobj, &p->versions[p->version_count]);
-						p->version_count++;
-					}
-				}
-			}
-			rf_product_count++;
-		}
-	}
-}
-
-
 bool remotefiles_list(char *err, unsigned int err_len) {
 	bool ret = false;
 	rf_product_count = 0;
-	if (strlen(rf_token) == 0) {
+	if (!rf_logged_in) {
 		rf_err(err, err_len, "Not logged in.");
 	}
+	else if (rf_fleet_count == 0) {
+		rf_err(err, err_len,
+				"This account holds no fleets yet, so it has no files.");
+	}
 	else {
-		char tok[sizeof(rf_token)];
-		rf_cfg_sanitize(tok, sizeof(tok), rf_token);
-		char resp_path[256];
-		rf_tmp_path(resp_path, sizeof(resp_path), "resp");
-		char cfg[2048];
-		snprintf(cfg, sizeof(cfg),
-				"silent\nshow-error\n"
-				"connect-timeout = 15\nmax-time = 30\n"
-				"url = \"%s/api/v1/files\"\n"
-				"header = \"Authorization: Bearer %s\"\n"
-				"output = \"%s\"\n"
-				"write-out = \"%%{http_code}\"\n",
-				rf_url, tok, resp_path);
-		long code = rf_curl_with_cfg(cfg);
-
-		if (code == 0) {
-			rf_err(err, err_len, "Could not reach the server.");
-		}
-		else if (code == 401) {
-			rf_err(err, err_len, "Session expired; please try again.");
-		}
-		else if (code != 200) {
-			char m[96];
-			snprintf(m, sizeof(m), "Server returned HTTP %ld listing files.", code);
-			rf_err(err, err_len, m);
-		}
-		else {
-			char *resp = rf_read_file(resp_path);
-			if (resp == NULL) {
-				rf_err(err, err_len, "Empty file list response.");
-			}
-			else {
-				// the server always answers in JSON
-				rf_parse_products(parser_read_buffer(resp, strlen(resp),
-						PARSER_FORMAT_JSON));
-				free(resp);
+		// One account may hold several fleets. Listing them all keeps the file
+		// view whole rather than making the user pick a fleet first; the fleet
+		// is shown in the product name only when there is more than one, so the
+		// common single-fleet account reads exactly as it did before.
+		bool prefix = (rf_fleet_count > 1);
+		char first_err[256] = { '\0' };
+		for (uint8_t i = 0; i < rf_fleet_count; i++) {
+			char one_err[256] = { '\0' };
+			if (rf_list_fleet(rf_fleets[i], prefix, one_err, sizeof(one_err))) {
+				// a single readable fleet is enough for the list to be usable
 				ret = true;
 			}
+			else if (first_err[0] == '\0') {
+				snprintf(first_err, sizeof(first_err), "%.63s: %.180s",
+						rf_fleets[i], one_err);
+			}
+			else {
+			}
 		}
-		remove(resp_path);
+		if (!ret) {
+			rf_err(err, err_len, first_err);
+		}
+		else {
+		}
+	}
+	return ret;
+}
+
+
+bool remotefiles_download(const char *path, const char *dest_path,
+		char *err, unsigned int err_len) {
+	bool ret = false;
+	if (!rf_logged_in) {
+		rf_err(err, err_len, "Not logged in.");
+	}
+	else if ((path == NULL) || (path[0] == '\0')) {
+		rf_err(err, err_len, "No file selected.");
+	}
+	else {
+		// *path* already starts with the fleet (products are listed that way),
+		// so it resolves against the server root rather than one fleet's folder.
+		char epath[1024];
+		char dest[1024];
+		rf_cfg_sanitize(epath, sizeof(epath), path);
+		rf_cfg_sanitize(dest, sizeof(dest), dest_path);
+
+		char cfg[5120];
+		int n = rf_cfg_common(cfg, sizeof(cfg), 300);
+		snprintf(&cfg[n], sizeof(cfg) - n,
+				"url = \"%s/%s\"\n"
+				"output = \"%s\"\n"
+				"write-out = \"%%{http_code}\"\n",
+				rf_url, epath, dest);
+		long code = rf_curl_with_cfg(cfg);
+
+		if (code == 200) {
+			ret = true;
+		}
+		else {
+			rf_http_err(code, "downloading the file", err, err_len);
+			remove(dest_path);
+		}
 	}
 	return ret;
 }
@@ -413,120 +640,15 @@ const remotefiles_product_st *remotefiles_get_product(uint8_t index) {
 }
 
 
-// Returns the SHA-256 (lower-case hex) of the file at *path* into *out* using the
-// sha256sum tool, or "" when it cannot be computed. *path* is refused if it
-// contains a character that could break out of the single-quoted shell argument.
-static void rf_file_sha256(const char *path, char *out, size_t out_len) {
-	out[0] = '\0';
-	for (size_t i = 0; path[i] != '\0'; i++) {
-		if ((path[i] == '\'') || (path[i] == '\n') || (path[i] == '\r')) {
-			return;
-		}
-	}
-	char sum_path[256];
-	rf_tmp_path(sum_path, sizeof(sum_path), "sum");
-	char cmd[1024];
-	snprintf(cmd, sizeof(cmd), "sha256sum '%s' > '%s' 2>/dev/null", path, sum_path);
-	if (system(cmd) != -1) {
-		char *s = rf_read_file(sum_path);
-		if (s != NULL) {
-			// output is "<hex>  <filename>"; copy the leading hex token
-			size_t d = 0;
-			for (size_t i = 0; (s[i] != '\0') && (s[i] != ' ') &&
-					(d + 1 < out_len); i++) {
-				out[d++] = s[i];
-			}
-			out[d] = '\0';
-			free(s);
-		}
-	}
-	remove(sum_path);
-}
-
-
-bool remotefiles_download(const char *path, const char *dest_path,
-		char *err, unsigned int err_len) {
-	bool ret = false;
-	if (strlen(rf_token) == 0) {
-		rf_err(err, err_len, "Not logged in.");
-	}
-	else {
-		// find the version to learn its expected checksum (and validate the path is
-		// one the server advertised)
-		const remotefiles_version_st *ver = NULL;
-		for (uint8_t i = 0; (i < rf_product_count) && (ver == NULL); i++) {
-			for (uint8_t j = 0; j < rf_products[i].version_count; j++) {
-				if (strcmp(rf_products[i].versions[j].path, path) == 0) {
-					ver = &rf_products[i].versions[j];
-					break;
-				}
-			}
-		}
-
-		char tok[sizeof(rf_token)];
-		char epath[1024];
-		char dest[1024];
-		rf_cfg_sanitize(tok, sizeof(tok), rf_token);
-		// the download path is a query parameter; keep config-safe (curl does not
-		// URL-encode config values, but the server paths are simple relative names)
-		rf_cfg_sanitize(epath, sizeof(epath), path);
-		rf_cfg_sanitize(dest, sizeof(dest), dest_path);
-
-		char cfg[5120];
-		snprintf(cfg, sizeof(cfg),
-				"silent\nshow-error\n"
-				"connect-timeout = 15\nmax-time = 300\n"
-				"url = \"%s/api/v1/files/content\"\n"
-				"data-urlencode = \"path=%s\"\n"
-				"get\n"
-				"header = \"Authorization: Bearer %s\"\n"
-				"output = \"%s\"\n"
-				"write-out = \"%%{http_code}\"\n",
-				rf_url, epath, tok, dest);
-		long code = rf_curl_with_cfg(cfg);
-
-		if (code == 0) {
-			rf_err(err, err_len, "Could not reach the server.");
-		}
-		else if (code == 401) {
-			rf_err(err, err_len, "Session expired; please try again.");
-		}
-		else if (code != 200) {
-			char m[96];
-			snprintf(m, sizeof(m), "Server returned HTTP %ld downloading the file.",
-					code);
-			rf_err(err, err_len, m);
-			remove(dest_path);
-		}
-		else if ((ver != NULL) && (strlen(ver->sha256) > 0)) {
-			// verify integrity against the manifest checksum
-			char got[72];
-			rf_file_sha256(dest_path, got, sizeof(got));
-			if ((strlen(got) > 0) && (strcasecmp(got, ver->sha256) != 0)) {
-				rf_err(err, err_len,
-						"Downloaded file failed the checksum check; it may be "
-						"corrupt. The file was not kept.");
-				remove(dest_path);
-			}
-			else {
-				ret = true;
-			}
-		}
-		else {
-			ret = true;
-		}
-	}
-	return ret;
-}
-
-
 bool remotefiles_is_logged_in(void) {
-	return rf_token[0] != '\0';
+	return rf_logged_in;
 }
 
 
 void remotefiles_logout(void) {
-	rf_token[0] = '\0';
+	rf_logged_in = false;
+	rf_user[0] = '\0';
+	rf_pass[0] = '\0';
 }
 
 
@@ -538,6 +660,15 @@ bool remotefiles_is_logged_in(void) {
 }
 
 void remotefiles_logout(void) {
+}
+
+uint8_t remotefiles_get_fleet_count(void) {
+	return 0;
+}
+
+const char *remotefiles_get_fleet(uint8_t index) {
+	(void) index;
+	return "";
 }
 
 bool remotefiles_login(const char *url, const char *username,
@@ -552,6 +683,28 @@ bool remotefiles_login(const char *url, const char *username,
 	}
 	return false;
 }
+
+/// @brief: Parses a directory listing into an array node.
+///
+/// The server answers with a bare top-level array, which this project's JSON
+/// reader does not accept - it wants an object at the root - so the body is
+/// wrapped in one first. The nodes point into that wrapper, so it is handed
+/// back for the caller to free once it has finished reading them.
+static parser_node_st rf_parse_listing(const char *body, char **wrapper) {
+	parser_node_st ret = { 0 };
+	*wrapper = NULL;
+	size_t len = strlen(body);
+	char *w = malloc(len + 16);
+	if (w != NULL) {
+		snprintf(w, len + 16, "{\"e\":%s}", body);
+		parser_node_st root = parser_read_buffer(w, strlen(w),
+				PARSER_FORMAT_JSON);
+		ret = parser_find_child(root, "e");
+		*wrapper = w;
+	}
+	return ret;
+}
+
 
 bool remotefiles_list(char *err, unsigned int err_len) {
 	(void) err;

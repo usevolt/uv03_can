@@ -388,6 +388,55 @@ static char account_err[256];
 // the change itself or it keeps showing "connecting...".
 static mqtt_state_e account_last_mqtt = MQTT_STATE_DISCONNECTED;
 
+// Whether the stored credentials have been tried yet. Reconnecting is the
+// normal case on start-up - the account was entered once and is meant to keep
+// working - so it happens by itself rather than making the user press Connect
+// every time.
+static bool account_autoconnect_tried;
+
+
+/// @brief: Opens both sessions with whatever is stored, if anything is.
+static void account_connect(void) {
+	account_err[0] = '\0';
+	printf("File server: connecting to '%s' as '%s'...\n",
+			credentials_get_url(), credentials_get_username());
+	fflush(stdout);
+	if (remotefiles_login(credentials_get_url(), credentials_get_username(),
+			credentials_get_password(), account_err, sizeof(account_err))) {
+		printf("File server: connected to '%s' as '%s', %u fleet(s):",
+				credentials_get_url(), credentials_get_username(),
+				(unsigned int) remotefiles_get_fleet_count());
+		for (uint8_t i = 0; i < remotefiles_get_fleet_count(); i++) {
+			printf(" %s", remotefiles_get_fleet(i));
+		}
+		printf("\n");
+		fflush(stdout);
+	}
+	else {
+		printf("File server: connecting to '%s' failed: %s\n",
+				credentials_get_url(), account_err);
+		fflush(stdout);
+	}
+
+	// the same account opens the fleet broker, so one action does both
+	if (!mqtt_connect(credentials_fleet_get_url(), credentials_get_username(),
+			credentials_get_password())) {
+		if (account_err[0] == '\0') {
+			strncpy(account_err, mqtt_get_error(), sizeof(account_err) - 1);
+			account_err[sizeof(account_err) - 1] = '\0';
+		}
+	}
+	else {
+		// The file server already said which fleets this account holds, so
+		// their tabs can exist before any device has published. Only the
+		// broker knows whether they are alive; only the file server knows
+		// they exist at all when they are quiet.
+		for (uint8_t i = 0; i < remotefiles_get_fleet_count(); i++) {
+			mqtt_add_fleet(remotefiles_get_fleet(i));
+		}
+	}
+}
+
 
 /// @brief: Rewrites the Account panel's status line from the current file-server
 /// session state and greys the "Connect" button out while that session is open.
@@ -403,11 +452,12 @@ static void account_refresh_status(void) {
 	// combined line could only ever be vague about which one had failed.
 	char files_line[192];
 	if (files) {
-		snprintf(files_line, sizeof(files_line), "Files: connected to %s as '%s'",
+		snprintf(files_line, sizeof(files_line),
+				"Files: connected to %.100s as '%.60s'",
 				credentials_get_url(), user);
 	}
 	else if (account_err[0] != '\0') {
-		snprintf(files_line, sizeof(files_line), "Files: %s", account_err);
+		snprintf(files_line, sizeof(files_line), "Files: %.180s", account_err);
 	}
 	else {
 		strcpy(files_line, "Files: not connected");
@@ -1411,6 +1461,20 @@ bool devicetab_step(void) {
 	// away). Polled here - before the busy early-return - so it works on every tab
 	// state; the fields exist only while the system tab is built. Editing them is
 	// equivalent to running with --user / --pwd.
+	if (!account_autoconnect_tried) {
+		account_autoconnect_tried = true;
+		// only when there is something to try with; an empty account would just
+		// produce a failure message nobody asked for
+		if ((credentials_get_username()[0] != '\0') &&
+				(credentials_get_password()[0] != '\0')) {
+			account_connect();
+		}
+		else {
+		}
+	}
+	else {
+	}
+
 	if (showing_system &&
 			(mqtt_get_state() != account_last_mqtt)) {
 		account_last_mqtt = mqtt_get_state();
@@ -1462,38 +1526,11 @@ bool devicetab_step(void) {
 		// for the round trip (curl, like the "Server files" browser does), which is
 		// short enough not to warrant its own task.
 		if (uv_uibutton_clicked(&content.account_connect_btn)) {
-			account_err[0] = '\0';
 			strcpy(content.account_status_str, "Connecting...");
 			uv_uilabel_set_color(&content.account_status,
 					uv_uistyles[0].text_color);
 			uv_ui_refresh(&content.account_status);
-			printf("File server: connecting to '%s' as '%s'...\n",
-					credentials_get_url(), credentials_get_username());
-			fflush(stdout);
-			if (remotefiles_login(credentials_get_url(),
-					credentials_get_username(), credentials_get_password(),
-					account_err, sizeof(account_err))) {
-				printf("File server: connected to '%s' as '%s'\n",
-						credentials_get_url(), credentials_get_username());
-				fflush(stdout);
-			}
-			else {
-				printf("File server: connecting to '%s' failed: %s\n",
-						credentials_get_url(), account_err);
-				fflush(stdout);
-			}
-
-			// the same account opens the fleet broker, so one button does both.
-			// The Fleet tab only displays what this connection discovers.
-			if (!mqtt_connect(credentials_fleet_get_url(),
-					credentials_get_username(), credentials_get_password(),
-					credentials_fleet_get_fleet())) {
-				if (account_err[0] == '\0') {
-					strncpy(account_err, mqtt_get_error(),
-							sizeof(account_err) - 1);
-					account_err[sizeof(account_err) - 1] = '\0';
-				}
-			}
+			account_connect();
 			account_refresh_status();
 		}
 	}

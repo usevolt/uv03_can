@@ -45,7 +45,6 @@ static char cred_url[CREDENTIALS_MAX];
 static char fleet_username[CREDENTIALS_MAX];
 static char fleet_password[CREDENTIALS_MAX];
 static char fleet_url[CREDENTIALS_MAX];
-static char fleet_name[CREDENTIALS_MAX];
 
 
 // Creates *path* and any missing parent directories (best effort, like mkdir -p).
@@ -126,7 +125,6 @@ static bool cred_write_file(void) {
 			fprintf(f, "fleet_username=%s\n", fleet_username);
 			fprintf(f, "fleet_password=%s\n", fleet_password);
 			fprintf(f, "fleet_url=%s\n", fleet_url);
-			fprintf(f, "fleet_name=%s\n", fleet_name);
 			fclose(f);
 			ret = true;
 		}
@@ -162,7 +160,6 @@ void credentials_init(void) {
 	fleet_username[0] = '\0';
 	fleet_password[0] = '\0';
 	fleet_url[0] = '\0';
-	fleet_name[0] = '\0';
 	char path[1024];
 	if (cred_path(path, sizeof(path))) {
 		FILE *f = fopen(path, "r");
@@ -188,7 +185,10 @@ void credentials_init(void) {
 					cred_parse_value(line, fleet_url, sizeof(fleet_url));
 				}
 				else if (strncmp(line, "fleet_name=", 11) == 0) {
-					cred_parse_value(line, fleet_name, sizeof(fleet_name));
+					// a fleet name used to be stored here, back when the client
+					// had to name its own fleet at login. The server decides
+					// that now, so the line is read and dropped rather than
+					// tripping the "unknown key" branch on an older file.
 				}
 				else {
 					// unknown key: ignore
@@ -271,11 +271,6 @@ const char *credentials_fleet_get_password(void) {
 }
 
 
-const char *credentials_fleet_get_fleet(void) {
-	return fleet_name;
-}
-
-
 void credentials_fleet_set_url(const char *url) {
 	fleet_set(fleet_url, url);
 }
@@ -288,9 +283,4 @@ void credentials_fleet_set_username(const char *username) {
 
 void credentials_fleet_set_password(const char *password) {
 	fleet_set(fleet_password, password);
-}
-
-
-void credentials_fleet_set_fleet(const char *fleet) {
-	fleet_set(fleet_name, fleet);
 }

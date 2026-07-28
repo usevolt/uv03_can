@@ -610,8 +610,13 @@ static void on_message(struct mosquitto *m, void *obj,
 }
 
 
-bool mqtt_connect(const char *host, const char *username, const char *password,
-		const char *fleet) {
+void mqtt_add_fleet(const char *name) {
+	(void) fleet_get(name);
+}
+
+
+bool mqtt_connect(const char *host, const char *username,
+		const char *password) {
 	bool ret = false;
 
 	mqtt_disconnect();
@@ -662,12 +667,6 @@ bool mqtt_connect(const char *host, const char *username, const char *password,
 				mosquitto_connect_callback_set(mosq, &on_connect);
 				mosquitto_disconnect_callback_set(mosq, &on_disconnect);
 				mosquitto_message_callback_set(mosq, &on_message);
-
-				// the fleet the user named is listed straight away, so its tab is
-				// there before any of its devices has published anything
-				if ((fleet != NULL) && (fleet[0] != '\0')) {
-					(void) fleet_get(fleet);
-				}
 
 				printf("MQTT: connecting to %s:%d as '%s'...\n", host_str, MQTT_PORT,
 						(conn_user[0] != '\0') ? conn_user : "(anonymous)");
@@ -836,13 +835,16 @@ bool mqtt_is_supported(void) {
 	return false;
 }
 
-bool mqtt_connect(const char *host, const char *username, const char *password,
-		const char *fleet) {
+bool mqtt_connect(const char *host, const char *username,
+		const char *password) {
 	(void) host;
 	(void) username;
 	(void) password;
-	(void) fleet;
 	return false;
+}
+
+void mqtt_add_fleet(const char *name) {
+	(void) name;
 }
 
 void mqtt_disconnect(void) {

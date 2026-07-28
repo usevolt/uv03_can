@@ -34,7 +34,7 @@
 ///  - the *file server* account (credentials_get_* / credentials_set_*), used by
 ///    the system tab's Account panel and the "Server files" browser;
 ///  - the *fleet* account (credentials_fleet_*), used by the Fleet tab to log in
-///    to the MQTT broker. It additionally carries a fleet name.
+///    to the MQTT broker.
 ///
 /// The credentials are stored in PLAIN TEXT; they are NOT encrypted. The file lives
 /// at a fixed per-user location every uvcan looks in:
@@ -86,15 +86,17 @@ void credentials_set_password(const char *password);
 void credentials_set_url(const char *url);
 
 
-/// @brief: The fleet account: the MQTT broker address, the fleet admin's
-/// username / password and the fleet name whose tab is opened even before any
-/// device has announced itself. Never NULL; the URL falls back to
-/// CREDENTIALS_FLEET_URL_DEFAULT, the rest to "". Entirely separate from the file
-/// server account above - a different server and a different set of credentials.
+/// @brief: The fleet account: the MQTT broker address and the username /
+/// password used on it. Never NULL; the URL falls back to
+/// CREDENTIALS_FLEET_URL_DEFAULT, the rest to "".
+///
+/// There is deliberately no fleet name here. Which fleets an account may see is
+/// the server's decision, asked for at login (remotefiles_get_fleet()) and
+/// enforced by the broker's ACL - so there is nothing local to keep in step
+/// with it, and nothing for the user to get wrong.
 const char *credentials_fleet_get_url(void);
 const char *credentials_fleet_get_username(void);
 const char *credentials_fleet_get_password(void);
-const char *credentials_fleet_get_fleet(void);
 
 
 /// @brief: Sets a fleet account field and persists it to the shared file, so it
@@ -103,7 +105,6 @@ const char *credentials_fleet_get_fleet(void);
 void credentials_fleet_set_url(const char *url);
 void credentials_fleet_set_username(const char *username);
 void credentials_fleet_set_password(const char *password);
-void credentials_fleet_set_fleet(const char *fleet);
 
 
 #endif /* CREDENTIALS_H_ */

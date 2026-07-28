@@ -36,6 +36,10 @@
 
 #define REMOTEFILES_MAX_PRODUCTS	24
 #define REMOTEFILES_MAX_VERSIONS	16
+/// @brief: How many fleets one account can hold, and how long a fleet name may
+/// be. Matches what the broker side tracks (MQTT_MAX_FLEETS / MQTT_NAME_MAX).
+#define REMOTEFILES_MAX_FLEETS		16
+#define REMOTEFILES_FLEET_MAX		64
 
 
 /// @brief: One downloadable version of a product, with its display metadata.
@@ -65,15 +69,32 @@ typedef struct {
 } remotefiles_product_st;
 
 
-/// @brief: Logs in to *url* (the server base address) with *username* / *password*
-/// and captures the session token for the subsequent calls. Returns true on
-/// success. On failure *err* (if non-NULL, size *err_len*) is filled with a short
-/// human-readable reason.
+/// @brief: Opens a session on *url* (the server base address) as
+/// *username* / *password*.
+///
+/// The server authenticates every request with HTTP Basic and serves each
+/// fleet's files under its own path, which is what lets one account see one set
+/// of files and another account a different one. **Which fleets those are is the
+/// server's decision**: this asks it, with GET /fleets.json, rather than being
+/// told a fleet name by the user. That request doubles as the login, there being
+/// no login endpoint to call - it is the smallest request that proves the
+/// credentials work. The credentials are then kept for the subsequent calls,
+/// since every one of them carries them again.
+///
+/// Returns true on success. On failure *err* (if non-NULL, size *err_len*) is
+/// filled with a short human-readable reason.
 bool remotefiles_login(const char *url, const char *username,
 		const char *password, char *err, unsigned int err_len);
 
 
-/// @brief: True while a session token from a successful remotefiles_login() is
+/// @brief: The fleets this account may read, as reported at login. Zero of them
+/// is a perfectly valid answer: the account exists but has not been granted
+/// anything yet.
+uint8_t remotefiles_get_fleet_count(void);
+const char *remotefiles_get_fleet(uint8_t index);
+
+
+/// @brief: True while a session opened by remotefiles_login() is
 /// held, i.e. while the tool is logged in to the file server. Used by the system
 /// tab's Account panel to show the connection status.
 bool remotefiles_is_logged_in(void);
