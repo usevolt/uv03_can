@@ -330,7 +330,7 @@ static struct {
 	// values are stored on this computer and shared by every uvcan install (see
 	// credentials.c). Edits are saved back in devicetab_step().
 	uv_uiframewindow_st account_frame;
-	uv_uiobject_st *account_frame_buf[8];
+	uv_uiobject_st *account_frame_buf[9];
 	uv_uitextedit_st account_url;
 	uv_uitextedit_st account_fleet_url;
 	uv_uitextedit_st account_user;
@@ -338,8 +338,12 @@ static struct {
 	// "Connect" button opening both sessions with the fields above, and the
 	// status line beside it (green while a session is open)
 	uv_uibutton_st account_connect_btn;
+	// One label per server rather than one with two lines: each carries its own
+	// colour, so a file server failure cannot paint a healthy broker red.
 	uv_uilabel_st account_status;
+	uv_uilabel_st account_status_fleet;
 	char account_status_str[256];
+	char account_status_fleet_str[256];
 } content;
 
 
@@ -378,6 +382,11 @@ static bool account_seeded;
 // Reason the last "Connect" attempt failed, shown in red under the fields until
 // the next attempt. "" when there was none.
 static char account_err[256];
+
+// Last broker state the Account panel drew. The connection completes
+// asynchronously, well after the button was pressed, so the panel has to notice
+// the change itself or it keeps showing "connecting...".
+static mqtt_state_e account_last_mqtt = MQTT_STATE_DISCONNECTED;
 
 
 /// @brief: Rewrites the Account panel's status line from the current file-server
@@ -423,19 +432,18 @@ static void account_refresh_status(void) {
 	}
 
 	snprintf(content.account_status_str, sizeof(content.account_status_str),
-			"%s\n%s", files_line, fleet_line);
+			"%s", files_line);
+	snprintf(content.account_status_fleet_str,
+			sizeof(content.account_status_fleet_str), "%s", fleet_line);
 
-	color_t c;
-	if (files && fleet) {
-		c = DOT_COLOR_OP;
-	}
-	else if ((account_err[0] != '\0') ||
-			(mqtt_get_state() == MQTT_STATE_ERROR)) {
-		c = WARNING_COLOR;
-	}
-	else {
-		c = uv_uistyles[0].text_color;
-	}
+	// each line is coloured by its own server, so one failing does not paint
+	// the other red
+	color_t files_c = files ? DOT_COLOR_OP :
+			((account_err[0] != '\0') ? WARNING_COLOR :
+					uv_uistyles[0].text_color);
+	color_t fleet_c = fleet ? DOT_COLOR_OP :
+			((mqtt_get_state() == MQTT_STATE_ERROR) ? WARNING_COLOR :
+					uv_uistyles[0].text_color);
 
 	// the button reconnects whatever is still down
 	if (files && fleet) {
@@ -444,8 +452,10 @@ static void account_refresh_status(void) {
 	else {
 		uv_uiobject_enable(&content.account_connect_btn);
 	}
-	uv_uilabel_set_color(&content.account_status, c);
+	uv_uilabel_set_color(&content.account_status, files_c);
+	uv_uilabel_set_color(&content.account_status_fleet, fleet_c);
 	uv_ui_refresh(&content.account_status);
+	uv_ui_refresh(&content.account_status_fleet);
 	uv_ui_refresh(&content.account_connect_btn);
 }
 
@@ -936,13 +946,21 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	uv_uiframewindow_addxy(&content.account_frame, &content.account_connect_btn,
 			acc_x, 0, ac.w - acc_x, ac.h);
 
-	// the status line sits beside the fleet URL, filling the width the user name
-	// and password fields occupy on the row above
+	// the two status lines sit beside the fleet URL, filling the width the user
+	// name and password fields occupy on the row above
+	int16_t acc_status_x = acc_url_w + acc_gap;
+	int16_t acc_status_w = acc_x - acc_gap - acc_status_x;
+	int16_t acc_status_line_h = acc_row_h / 2;
 	uv_uilabel_init(&content.account_status, style->font, ALIGN_CENTER,
 			style->text_color, content.account_status_str);
 	uv_uiframewindow_addxy(&content.account_frame, &content.account_status,
-			acc_url_w + acc_gap, acc_row_h + MARGIN,
-			acc_x - acc_gap - (acc_url_w + acc_gap), acc_row_h);
+			acc_status_x, acc_row_h + MARGIN, acc_status_w, acc_status_line_h);
+
+	uv_uilabel_init(&content.account_status_fleet, style->font, ALIGN_CENTER,
+			style->text_color, content.account_status_fleet_str);
+	uv_uiframewindow_addxy(&content.account_frame, &content.account_status_fleet,
+			acc_status_x, acc_row_h + MARGIN + acc_status_line_h,
+			acc_status_w, acc_status_line_h);
 
 	account_refresh_status();
 }
@@ -1393,6 +1411,14 @@ bool devicetab_step(void) {
 	// away). Polled here - before the busy early-return - so it works on every tab
 	// state; the fields exist only while the system tab is built. Editing them is
 	// equivalent to running with --user / --pwd.
+	if (showing_system &&
+			(mqtt_get_state() != account_last_mqtt)) {
+		account_last_mqtt = mqtt_get_state();
+		account_refresh_status();
+	}
+	else {
+	}
+
 	if (showing_system) {
 		bool account_edited = false;
 		if (uv_uitextedit_value_changed(&content.account_url)) {

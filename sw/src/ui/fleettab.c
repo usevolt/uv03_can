@@ -322,10 +322,20 @@ static void show_active_dev_tab(void) {
 		// the device tab itself: what the broker has told us about this client
 		uv_bounding_box_st dc = uv_uitabwindow_get_contentbb(&dev_tabs);
 		build_dev_info_str();
+		// the information fills the tab except for the button row at its foot
+		int16_t info_h = dc.h - 2 * MARGIN - BUTTON_H - MARGIN;
+		if (info_h < BUTTON_H) {
+			info_h = BUTTON_H;
+		}
 		uv_uilabel_init(&dev_info, &UI_MONO_FONT, ALIGN_TOP_LEFT,
 				style->text_color, dev_info_str);
 		uv_uitabwindow_addxy(&dev_tabs, &dev_info, MARGIN, MARGIN,
-				dc.w - 2 * MARGIN, dc.h - 2 * MARGIN);
+				dc.w - 2 * MARGIN, info_h);
+
+		uv_uibutton_init(&dev_ui_btn, ui_btn_text(), style);
+		uv_uitabwindow_addxy(&dev_tabs, &dev_ui_btn, MARGIN,
+				MARGIN + info_h + MARGIN, 5 * BUTTON_H, BUTTON_H);
+		refresh_ui_btn();
 
 		uv_uitabwindow_set_stepcallb(&dev_tabs, &dev_tabs_step, NULL);
 	}
