@@ -33,6 +33,14 @@
 #include "uv_ui_common.h"
 #include "uv_ui_remote.h"
 
+// PNG and JPEG in one public-domain header. The device sends the image file as
+// it is stored, and it may be either.
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
+#define STBI_ONLY_JPEG
+#define STBI_NO_STDIO
+#include "thirdparty/stb_image.h"
+
 
 // The device draws with a Y-down coordinate system and 8 bit ARGB colours, and
 // the whole command stream is relative to the display size it reported, so the
@@ -183,6 +191,16 @@ static atlas_st atlases[ATLAS_MAX];
 static uint8_t *base_frame;
 static uint32_t base_frame_len;
 
+/// @brief: The most recent frame drawn, whatever kind it was.
+///
+/// The device sends a frame only when its screen changes, so an image or a font
+/// that arrives afterwards would otherwise not be drawn until something else
+/// moved - a still screen would sit there showing outlines where its icons
+/// belong. Keeping the last frame lets it be drawn again the moment the missing
+/// piece turns up.
+static uint8_t *last_frame;
+static uint32_t last_frame_len;
+
 /// @brief: What the device told us about one of its fonts.
 ///
 /// The sink draws with faces of its own, which are not the device's, so without
@@ -215,6 +233,51 @@ static devfont_st devfonts[DEVFONT_COUNT];
 
 static remoteui_asset_req_t asset_req_callb;
 static void *asset_req_user;
+
+static void redraw_last(void);
+
+/// @brief: An image the device has sent, decoded and uploaded once and then
+/// kept for as long as the window is open.
+///
+/// Held in a list allocated as images turn up rather than in a fixed table:
+/// what a device has on screen is its business, and a cap here would mean
+/// deciding which of its images not to show.
+typedef struct devbitmap_st {
+	struct devbitmap_st *next;
+	uint32_t id;
+	GLuint tex;
+	uint16_t w;
+	uint16_t h;
+	// asked for, and either not answered yet or answered with "no such image"
+	bool missing;
+	uint16_t retry;
+} devbitmap_st;
+
+static devbitmap_st *devbitmaps;
+
+
+/// @brief: Finds a device image by id, or NULL.
+static devbitmap_st *devbitmap_find(uint32_t id) {
+	devbitmap_st *ret = devbitmaps;
+	while ((ret != NULL) && (ret->id != id)) {
+		ret = ret->next;
+	}
+	return ret;
+}
+
+
+/// @brief: Drops every cached image. The textures belong to the window's
+/// context, so this must run while that context is current.
+static void devbitmaps_free(void) {
+	while (devbitmaps != NULL) {
+		devbitmap_st *next = devbitmaps->next;
+		if (devbitmaps->tex != 0) {
+			glDeleteTextures(1, &devbitmaps->tex);
+		}
+		free(devbitmaps);
+		devbitmaps = next;
+	}
+}
 
 /// @brief: Maps a wire font_id onto a devfonts[] slot, or -1 when it is not a
 /// font this build can hold metrics for.
@@ -691,24 +754,68 @@ static void render(const uint8_t *p, uint32_t len) {
 			break;
 
 		case UV_UI_REMOTE_OP_BITMAP:
-			if (left < 19) { ok = false; break; }
+			if (left < 21) { ok = false; break; }
 			{
-				// Asset streaming is not implemented on the device side yet, so
-				// there is no image to draw. Outline where it belongs rather
-				// than leaving a hole, so the layout still reads correctly.
-				int16_t bx = rds16(&p[i + 3]);
-				int16_t by = rds16(&p[i + 5]);
-				uint16_t bw = rd16(&p[i + 7]);
-				uint16_t bh = rd16(&p[i + 9]);
-				set_color(rd32(&p[i + 15]));
-				glBegin(GL_LINE_LOOP);
-				glVertex2f(bx, by);
-				glVertex2f(bx + bw, by);
-				glVertex2f(bx + bw, by + bh);
-				glVertex2f(bx, by + bh);
-				glEnd();
+				uint32_t bid = rd32(&p[i + 1]);
+				int16_t bx = rds16(&p[i + 5]);
+				int16_t by = rds16(&p[i + 7]);
+				uint16_t bw = rd16(&p[i + 9]);
+				uint16_t bh = rd16(&p[i + 11]);
+				uint32_t bc = rd32(&p[i + 17]);
+				devbitmap_st *b = devbitmap_find(bid);
+
+				// Ask for an image we have not seen. The device is drawing it
+				// at this moment, which is the only time it can find the file
+				// the id stands for, so asking now is asking at the one moment
+				// it can be answered.
+				if ((b == NULL) && (asset_req_callb != NULL)) {
+					b = calloc(1, sizeof(*b));
+					if (b != NULL) {
+						b->id = bid;
+						b->missing = true;
+						b->next = devbitmaps;
+						devbitmaps = b;
+						asset_req_callb(UV_UI_REMOTE_ASSET_KIND_BITMAP, bid,
+								asset_req_user);
+						b->retry = DEVFONT_RETRY_STEPS;
+					}
+				}
+				else if ((b != NULL) && b->missing && (b->retry == 0) &&
+						(asset_req_callb != NULL)) {
+					asset_req_callb(UV_UI_REMOTE_ASSET_KIND_BITMAP, bid,
+							asset_req_user);
+					b->retry = DEVFONT_RETRY_STEPS;
+				}
+				else {
+				}
+
+				if ((b != NULL) && (b->tex != 0)) {
+					// the device blends the image with a colour, so the same
+					// icon can be drawn in several tints
+					set_color(bc);
+					glEnable(GL_TEXTURE_2D);
+					glBindTexture(GL_TEXTURE_2D, b->tex);
+					glBegin(GL_QUADS);
+					glTexCoord2f(0.0f, 0.0f); glVertex2f(bx, by);
+					glTexCoord2f(1.0f, 0.0f); glVertex2f(bx + bw, by);
+					glTexCoord2f(1.0f, 1.0f); glVertex2f(bx + bw, by + bh);
+					glTexCoord2f(0.0f, 1.0f); glVertex2f(bx, by + bh);
+					glEnd();
+					glDisable(GL_TEXTURE_2D);
+				}
+				else {
+					// nothing to draw yet: outline where it belongs so the
+					// layout still reads while the image is on its way
+					set_color(bc);
+					glBegin(GL_LINE_LOOP);
+					glVertex2f(bx, by);
+					glVertex2f(bx + bw, by);
+					glVertex2f(bx + bw, by + bh);
+					glVertex2f(bx, by + bh);
+					glEnd();
+				}
 			}
-			i += 19;
+			i += 21;
 			break;
 
 		case UV_UI_REMOTE_OP_FRAME_END:
@@ -803,14 +910,67 @@ void remoteui_win_asset_received(uint8_t kind, uint32_t id,
 				printf("remote UI: font %u is %u px on the device\n",
 						(unsigned int) id, (unsigned int) df->height);
 				fflush(stdout);
+				// the screen may not change again for a while, so draw it now
+				// with the metrics it was waiting for
+				redraw_last();
 			}
 			else {
 				df->have = false;
 			}
 		}
 	}
+	else if (kind == UV_UI_REMOTE_ASSET_KIND_BITMAP) {
+		devbitmap_st *b = devbitmap_find(id);
+		if (b == NULL) {
+			b = calloc(1, sizeof(*b));
+			if (b != NULL) {
+				b->id = id;
+				b->next = devbitmaps;
+				devbitmaps = b;
+			}
+		}
+		if (b != NULL) {
+			b->retry = 0;
+			int w = 0;
+			int h = 0;
+			int comp = 0;
+			unsigned char *px = ((data != NULL) && (len > 0)) ?
+					stbi_load_from_memory(data, (int) len, &w, &h, &comp, 4) :
+					NULL;
+			if (px == NULL) {
+				// either the device has no such image, or it is in a format
+				// this cannot read; either way asking again would not help
+				b->missing = true;
+				printf("remote UI: image %u could not be decoded (%u bytes)\n",
+						(unsigned int) id, (unsigned int) len);
+				fflush(stdout);
+			}
+			else {
+				GLFWwindow *prev = glfwGetCurrentContext();
+				glfwMakeContextCurrent(win);
+				if (b->tex == 0) {
+					glGenTextures(1, &b->tex);
+				}
+				glBindTexture(GL_TEXTURE_2D, b->tex);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+				glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
+						GL_RGBA, GL_UNSIGNED_BYTE, px);
+				glfwMakeContextCurrent(prev);
+				stbi_image_free(px);
+				b->w = (uint16_t) w;
+				b->h = (uint16_t) h;
+				b->missing = false;
+				printf("remote UI: image %u is %dx%d\n",
+						(unsigned int) id, w, h);
+				fflush(stdout);
+				redraw_last();
+			}
+		}
+	}
 	else {
-		// bitmaps are not collected yet
 	}
 }
 
@@ -828,6 +988,9 @@ void remoteui_win_close(void) {
 				memset(&atlases[i], 0, sizeof(atlases[i]));
 			}
 		}
+		// the device's images were uploaded into this context too, so they go
+		// while it is still current and still exists
+		devbitmaps_free();
 		glfwMakeContextCurrent((prev == win) ? NULL : prev);
 		glfwDestroyWindow(win);
 		win = NULL;
@@ -836,6 +999,9 @@ void remoteui_win_close(void) {
 		free(base_frame);
 		base_frame = NULL;
 		base_frame_len = 0;
+		free(last_frame);
+		last_frame = NULL;
+		last_frame_len = 0;
 		// a new session may be a different device, so nothing learned about the
 		// last one's fonts carries over
 		memset(devfonts, 0, sizeof(devfonts));
@@ -848,7 +1014,7 @@ bool remoteui_win_is_open(void) {
 }
 
 
-void remoteui_win_draw_frame(const uint8_t *cmds, uint32_t len) {
+static void draw_frame_impl(const uint8_t *cmds, uint32_t len, bool replay) {
 	if ((win == NULL) || (cmds == NULL) || (len == 0)) {
 		return;
 	}
@@ -902,6 +1068,38 @@ void remoteui_win_draw_frame(const uint8_t *cmds, uint32_t len) {
 
 	glfwSwapBuffers(win);
 	glfwMakeContextCurrent(prev);
+
+	if (!replay) {
+		uint8_t *copy = realloc(last_frame, len);
+		if (copy != NULL) {
+			memcpy(copy, cmds, len);
+			last_frame = copy;
+			last_frame_len = len;
+		}
+		else {
+			free(last_frame);
+			last_frame = NULL;
+			last_frame_len = 0;
+		}
+	}
+	else {
+	}
+}
+
+
+/// @brief: Draws the last frame again, for when something it needed has just
+/// arrived.
+void remoteui_win_draw_frame(const uint8_t *cmds, uint32_t len) {
+	draw_frame_impl(cmds, len, false);
+}
+
+
+static void redraw_last(void) {
+	if ((win != NULL) && (last_frame != NULL)) {
+		draw_frame_impl(last_frame, last_frame_len, true);
+	}
+	else {
+	}
 }
 
 
@@ -912,6 +1110,13 @@ void remoteui_win_step(void) {
 		for (uint16_t i = 0; i < DEVFONT_COUNT; i++) {
 			if (devfonts[i].retry > 0) {
 				devfonts[i].retry--;
+			}
+			else {
+			}
+		}
+		for (devbitmap_st *b = devbitmaps; b != NULL; b = b->next) {
+			if (b->retry > 0) {
+				b->retry--;
 			}
 			else {
 			}
