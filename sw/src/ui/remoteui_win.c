@@ -180,16 +180,65 @@ static FT_Library ft;
 static bool ft_ready;
 static atlas_st atlases[ATLAS_MAX];
 
-/// @brief: The last frame that started from a cleared screen, kept so that a
-/// FRAME_BEGIN_KEEP frame - a dialog drawn over whatever was already there -
-/// has something to be drawn over.
+/// @brief: Everything drawn so far, kept as pixels.
 ///
-/// The window is double buffered, so the previous frame's pixels are not in the
-/// buffer being drawn into and the only way to get them back is to replay the
-/// commands that produced them. A frame is just a byte run, so replaying it
-/// costs no more than receiving it did.
-static uint8_t *base_frame;
-static uint32_t base_frame_len;
+/// The device redraws only what changed - a single label, most of the time -
+/// and says so with FRAME_BEGIN_KEEP, meaning "put this on top of what you
+/// have". Replaying the last full screen underneath each one is not enough:
+/// two partial updates in a row would each be composited onto that same full
+/// screen, and the second would wipe out the first. Screens that redraw a
+/// widget at a time - the system configuration, the inputs - appeared not to
+/// update at all, while screens that redraw wholesale were fine.
+///
+/// Drawing into a texture that persists between frames makes "keep" mean what
+/// it says: the overlays accumulate, exactly as they do on the device's own
+/// display list, and nothing has to be replayed.
+static GLuint fbo;
+static GLuint fbo_tex;
+static uint16_t fbo_w;
+static uint16_t fbo_h;
+
+
+/// @brief: Makes sure the persistent framebuffer exists at the display's size.
+/// @return: false when it could not be created, in which case drawing falls
+/// back to the window itself and partial updates are all that is lost.
+static bool fbo_ensure(void) {
+	bool ret = true;
+	if ((fbo == 0) || (fbo_w != win_w) || (fbo_h != win_h)) {
+		if (fbo != 0) {
+			glDeleteFramebuffers(1, &fbo);
+			glDeleteTextures(1, &fbo_tex);
+			fbo = 0;
+			fbo_tex = 0;
+		}
+		glGenTextures(1, &fbo_tex);
+		glBindTexture(GL_TEXTURE_2D, fbo_tex);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, win_w, win_h, 0,
+				GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glGenFramebuffers(1, &fbo);
+		glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+				GL_TEXTURE_2D, fbo_tex, 0);
+		ret = (glCheckFramebufferStatus(GL_FRAMEBUFFER) ==
+				GL_FRAMEBUFFER_COMPLETE);
+		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+		if (ret) {
+			fbo_w = win_w;
+			fbo_h = win_h;
+		}
+		else {
+			printf("remote UI: no framebuffer object; partial screen updates "
+					"will not be shown\n");
+			fflush(stdout);
+			fbo = 0;
+		}
+	}
+	else {
+	}
+	return ret;
+}
 
 /// @brief: The most recent frame drawn, whatever kind it was.
 ///
@@ -1184,6 +1233,16 @@ void remoteui_win_close(void) {
 		// the device's images were uploaded into this context too, so they go
 		// while it is still current and still exists
 		devbitmaps_free();
+		if (fbo != 0) {
+			glDeleteFramebuffers(1, &fbo);
+			glDeleteTextures(1, &fbo_tex);
+			fbo = 0;
+			fbo_tex = 0;
+			fbo_w = 0;
+			fbo_h = 0;
+		}
+		else {
+		}
 		if (mouse_down) {
 			// closing mid-press would leave the device holding a touch nobody
 			// is making any more
@@ -1198,9 +1257,6 @@ void remoteui_win_close(void) {
 		win = NULL;
 		win_w = 0;
 		win_h = 0;
-		free(base_frame);
-		base_frame = NULL;
-		base_frame_len = 0;
 		free(last_frame);
 		last_frame = NULL;
 		last_frame_len = 0;
@@ -1223,10 +1279,17 @@ static void draw_frame_impl(const uint8_t *cmds, uint32_t len, bool replay) {
 	GLFWwindow *prev = glfwGetCurrentContext();
 	glfwMakeContextCurrent(win);
 
-	int fb_w;
-	int fb_h;
-	glfwGetFramebufferSize(win, &fb_w, &fb_h);
-	glViewport(0, 0, fb_w, fb_h);
+	bool have_fbo = fbo_ensure();
+	if (have_fbo) {
+		glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+		glViewport(0, 0, win_w, win_h);
+	}
+	else {
+		int fb_w;
+		int fb_h;
+		glfwGetFramebufferSize(win, &fb_w, &fb_h);
+		glViewport(0, 0, fb_w, fb_h);
+	}
 	glMatrixMode(GL_PROJECTION);
 	glLoadIdentity();
 	// y grows downwards, one unit per device pixel, so the device's coordinates
@@ -1235,37 +1298,38 @@ static void draw_frame_impl(const uint8_t *cmds, uint32_t len, bool replay) {
 	glMatrixMode(GL_MODELVIEW);
 	glLoadIdentity();
 
-	if (cmds[0] == UV_UI_REMOTE_OP_FRAME_BEGIN_KEEP) {
-		// A dialog, drawn over the screen it appeared on. Put that screen back
-		// first; without it the dialog would float on whatever the last swap
-		// happened to leave in this buffer.
-		if (base_frame != NULL) {
-			render(base_frame, base_frame_len);
-		}
-		else {
-			// mirroring started while a dialog was already up, so there is no
-			// screen to put back. The next full frame supplies one.
-			glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-			glClear(GL_COLOR_BUFFER_BIT);
-		}
-		render(cmds, len);
+	// A frame that keeps what is there draws straight on top; only a frame that
+	// begins with a clear starts afresh, and render() does that clearing itself.
+	render(cmds, len);
+
+	if (have_fbo) {
+		// put the accumulated picture on the window, scaled to whatever size it
+		// has been dragged to
+		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+		int fb_w;
+		int fb_h;
+		glfwGetFramebufferSize(win, &fb_w, &fb_h);
+		glViewport(0, 0, fb_w, fb_h);
+		glMatrixMode(GL_PROJECTION);
+		glLoadIdentity();
+		glOrtho(0.0, win_w, win_h, 0.0, -1.0, 1.0);
+		glMatrixMode(GL_MODELVIEW);
+		glLoadIdentity();
+		glDisable(GL_BLEND);
+		glColor4ub(255, 255, 255, 255);
+		glEnable(GL_TEXTURE_2D);
+		glBindTexture(GL_TEXTURE_2D, fbo_tex);
+		glBegin(GL_QUADS);
+		// the texture's origin is bottom left, the device's is top left
+		glTexCoord2f(0.0f, 1.0f); glVertex2f(0.0f, 0.0f);
+		glTexCoord2f(1.0f, 1.0f); glVertex2f(win_w, 0.0f);
+		glTexCoord2f(1.0f, 0.0f); glVertex2f(win_w, win_h);
+		glTexCoord2f(0.0f, 0.0f); glVertex2f(0.0f, win_h);
+		glEnd();
+		glDisable(GL_TEXTURE_2D);
+		glEnable(GL_BLEND);
 	}
 	else {
-		render(cmds, len);
-		// keep it as the base for any dialog that follows
-		uint8_t *copy = realloc(base_frame, len);
-		if (copy != NULL) {
-			memcpy(copy, cmds, len);
-			base_frame = copy;
-			base_frame_len = len;
-		}
-		else {
-			// out of memory: drop the base rather than leave a stale one, so a
-			// dialog draws over black instead of over the wrong screen
-			free(base_frame);
-			base_frame = NULL;
-			base_frame_len = 0;
-		}
 	}
 
 	glfwSwapBuffers(win);
