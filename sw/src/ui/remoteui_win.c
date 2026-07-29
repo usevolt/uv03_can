@@ -368,7 +368,22 @@ static atlas_st *atlas_get(bool mono, uint16_t px) {
 		fflush(stdout);
 		return NULL;
 	}
+	// *px* is a line height - what both ends call a font's char_height - and not
+	// the pixel size a face is set to. A face asked for N pixels lays its lines
+	// out somewhat taller than N, so setting the size to the line height draws
+	// visibly larger text than the device does. Ask for it, see what the face
+	// actually gives, and scale the request by the miss.
 	FT_Set_Pixel_Sizes(face, 0, px);
+	uint16_t line_h = (uint16_t) (face->size->metrics.height / 64);
+	if ((line_h > 0) && (line_h != px)) {
+		uint32_t want = ((uint32_t) px * px) / line_h;
+		if (want < 1u) {
+			want = 1u;
+		}
+		FT_Set_Pixel_Sizes(face, 0, (FT_UInt) want);
+	}
+	else {
+	}
 
 	// lay the printable ASCII range out in one row
 	uint16_t total_w = 0;
@@ -438,17 +453,36 @@ static atlas_st *atlas_get(bool mono, uint16_t px) {
 }
 
 
+/// @brief: The advance to move on by after drawing *cp*: the device's, when it
+/// has told us one.
+///
+/// The two ends number glyphs differently. This atlas is packed from 32
+/// upwards, because it holds no control characters; the device's table is
+/// indexed by uv_ui_codepoint_glyph(), which for ASCII is the code point
+/// itself. Reading one with the other's index is off by 32 and gives every
+/// letter somebody else's width.
+static uint16_t glyph_advance(atlas_st *a, const devfont_st *df,
+		uint32_t cp, int16_t gi) {
+	uint16_t ret = a->advance[gi];
+	if (df != NULL) {
+		uint8_t slot = uv_ui_codepoint_glyph(cp, true);
+		if (df->advance[slot] > 0) {
+			ret = df->advance[slot];
+		}
+	}
+	return ret;
+}
+
+
 static uint16_t text_width(atlas_st *a, const devfont_st *df,
 		const char *str, uint16_t len) {
 	uint16_t ret = 0;
 	uint16_t i = 0;
 	while (i < len) {
-		int16_t gi = glyph_index_of(utf8_next(str, len, &i));
+		uint32_t cp = utf8_next(str, len, &i);
+		int16_t gi = glyph_index_of(cp);
 		if (gi >= 0) {
-			// the device's own advance where it has given one, so the string
-			// occupies the width it occupies there
-			ret = (uint16_t) (ret + (((df != NULL) && (df->advance[gi] > 0)) ?
-					df->advance[gi] : a->advance[gi]));
+			ret = (uint16_t) (ret + glyph_advance(a, df, cp, gi));
 		}
 		else {
 			// a code point the atlas does not carry contributes nothing rather
@@ -486,7 +520,8 @@ static void draw_text(atlas_st *a, const devfont_st *df,
 	int16_t pen = x;
 	uint16_t i = 0;
 	while (i < len) {
-		int16_t g = glyph_index_of(utf8_next(str, len, &i));
+		uint32_t cp = utf8_next(str, len, &i);
+		int16_t g = glyph_index_of(cp);
 		if (g < 0) {
 			continue;
 		}
@@ -502,8 +537,7 @@ static void draw_text(atlas_st *a, const devfont_st *df,
 		glTexCoord2f(u1, 0.0f);  glVertex2f(gx + gw, gy);
 		glTexCoord2f(u1, v1);    glVertex2f(gx + gw, gy + gh);
 		glTexCoord2f(u0, v1);    glVertex2f(gx, gy + gh);
-		pen = (int16_t) (pen + (((df != NULL) && (df->advance[gi] > 0)) ?
-				df->advance[gi] : a->advance[gi]));
+		pen = (int16_t) (pen + glyph_advance(a, df, cp, (int16_t) gi));
 	}
 	glEnd();
 	glDisable(GL_TEXTURE_2D);
