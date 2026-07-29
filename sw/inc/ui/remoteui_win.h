@@ -62,6 +62,22 @@ bool remoteui_win_is_open(void);
 void remoteui_win_draw_frame(const uint8_t *cmds, uint32_t len);
 
 
+/// @brief: Called when the mirrored view needs an asset - so far only a font -
+/// that it does not have. The device is drawing with it at that moment, so it
+/// can answer; the reply comes back through remoteui_win_asset_received().
+typedef void (*remoteui_asset_req_t)(uint8_t kind, uint32_t id, void *user);
+
+/// @brief: Registers who carries an asset request to the device. Without one,
+/// the mirrored view falls back to the fonts compiled into uvcan.
+void remoteui_win_set_asset_request_callb(remoteui_asset_req_t callb,
+		void *user);
+
+/// @brief: Hands over an asset the device sent. A *len* of zero is the device
+/// saying it has no such asset, which stops it being asked for again.
+void remoteui_win_asset_received(uint8_t kind, uint32_t id,
+		const uint8_t *data, uint32_t len);
+
+
 /// @brief: Pumps the window. Must be called every UI cycle; it is what notices
 /// the user closing the window from its title bar.
 void remoteui_win_step(void);

@@ -183,6 +183,51 @@ static atlas_st atlases[ATLAS_MAX];
 static uint8_t *base_frame;
 static uint32_t base_frame_len;
 
+/// @brief: What the device told us about one of its fonts.
+///
+/// The sink draws with faces of its own, which are not the device's, so without
+/// this it guessed the size from a font table compiled into uvcan and hoped the
+/// two matched. They need not: the device's fonts differ between hardware
+/// revisions, and two of its slots are custom fonts loaded from external flash.
+/// Asking it for the height and the per-glyph advances makes the mirrored text
+/// break and align where the device breaks and aligns it, whatever face draws
+/// the glyphs.
+typedef struct {
+	// the device answered, one way or the other; stop asking
+	bool known;
+	// ...and it had metrics for this font (false = no such font there)
+	bool have;
+	uint16_t height;
+	uint8_t advance[UV_UI_REMOTE_FONT_WIDTHS];
+	// steps until the request is made again, 0 when not waiting for an answer
+	uint16_t retry;
+} devfont_st;
+
+// font_id is an index plus a mono flag in bit 7, so both tables fit here
+#define DEVFONT_COUNT		(2 * UI_MAX_FONT_COUNT)
+static devfont_st devfonts[DEVFONT_COUNT];
+
+/// @brief: How many steps to wait for an answer before asking again. The device
+/// serves one asset per frame, so an answer that is coming has arrived long
+/// before this; 150 steps is the three seconds after which we assume it was
+/// lost.
+#define DEVFONT_RETRY_STEPS	150
+
+static remoteui_asset_req_t asset_req_callb;
+static void *asset_req_user;
+
+/// @brief: Maps a wire font_id onto a devfonts[] slot, or -1 when it is not a
+/// font this build can hold metrics for.
+static int16_t devfont_slot(uint8_t font_id) {
+	int16_t ret = -1;
+	uint8_t idx = (uint8_t) (font_id & 0x7Fu);
+	if ((font_id != UV_UI_REMOTE_FONT_UNKNOWN) && (idx < UI_MAX_FONT_COUNT)) {
+		ret = (int16_t) (((font_id & 0x80u) != 0u) ?
+				(UI_MAX_FONT_COUNT + idx) : idx);
+	}
+	return ret;
+}
+
 
 // --- colours ----------------------------------------------------------------
 
@@ -330,13 +375,17 @@ static atlas_st *atlas_get(bool mono, uint16_t px) {
 }
 
 
-static uint16_t text_width(atlas_st *a, const char *str, uint16_t len) {
+static uint16_t text_width(atlas_st *a, const devfont_st *df,
+		const char *str, uint16_t len) {
 	uint16_t ret = 0;
 	uint16_t i = 0;
 	while (i < len) {
 		int16_t gi = glyph_index_of(utf8_next(str, len, &i));
 		if (gi >= 0) {
-			ret = (uint16_t) (ret + a->advance[gi]);
+			// the device's own advance where it has given one, so the string
+			// occupies the width it occupies there
+			ret = (uint16_t) (ret + (((df != NULL) && (df->advance[gi] > 0)) ?
+					df->advance[gi] : a->advance[gi]));
 		}
 		else {
 			// a code point the atlas does not carry contributes nothing rather
@@ -347,9 +396,10 @@ static uint16_t text_width(atlas_st *a, const char *str, uint16_t len) {
 }
 
 
-static void draw_text(atlas_st *a, int16_t x, int16_t y, uint16_t align,
+static void draw_text(atlas_st *a, const devfont_st *df,
+		int16_t x, int16_t y, uint16_t align,
 		uint32_t color, const char *str, uint16_t len) {
-	uint16_t w = text_width(a, str, len);
+	uint16_t w = text_width(a, df, str, len);
 
 	// the device's alignment is about the anchor point, not a box
 	if ((align & UI_HALIGN_MASK) == UI_HALIGN_CENTER) {
@@ -389,7 +439,8 @@ static void draw_text(atlas_st *a, int16_t x, int16_t y, uint16_t align,
 		glTexCoord2f(u1, 0.0f);  glVertex2f(gx + gw, gy);
 		glTexCoord2f(u1, v1);    glVertex2f(gx + gw, gy + gh);
 		glTexCoord2f(u0, v1);    glVertex2f(gx, gy + gh);
-		pen = (int16_t) (pen + a->advance[gi]);
+		pen = (int16_t) (pen + (((df != NULL) && (df->advance[gi] > 0)) ?
+				df->advance[gi] : a->advance[gi]));
 	}
 	glEnd();
 	glDisable(GL_TEXTURE_2D);
@@ -583,18 +634,40 @@ static void render(const uint8_t *p, uint32_t len) {
 			if (font_id != UV_UI_REMOTE_FONT_UNKNOWN) {
 				bool mono = ((font_id & 0x80) != 0);
 				uint8_t idx = (uint8_t) (font_id & 0x7F);
-				// the font table is the same on both ends, so the index gives
-				// the pixel size the device drew with
-				uint16_t px = (idx < UI_MAX_FONT_COUNT) ?
-						(mono ? ui_mono_fonts[idx].char_height :
-								ui_fonts[idx].char_height) : 0;
+				int16_t slot = devfont_slot(font_id);
+				devfont_st *df = (slot >= 0) ? &devfonts[slot] : NULL;
+
+				// Ask the device about a font we have not been told about. It
+				// is drawing with it right now, so it can answer; until it
+				// does, fall back to the font table compiled in here, which is
+				// a guess that happens to be right when both ends were built
+				// for the same hardware.
+				if ((df != NULL) && !df->known && (df->retry == 0) &&
+						(asset_req_callb != NULL)) {
+					asset_req_callb(UV_UI_REMOTE_ASSET_KIND_FONT,
+							font_id, asset_req_user);
+					df->retry = DEVFONT_RETRY_STEPS;
+				}
+				else {
+				}
+
+				uint16_t px = 0;
+				if ((df != NULL) && df->have) {
+					px = df->height;
+				}
+				else if (idx < UI_MAX_FONT_COUNT) {
+					px = mono ? ui_mono_fonts[idx].char_height :
+							ui_fonts[idx].char_height;
+				}
+				else {
+				}
 				if (px == 0) {
 					px = 16;
 				}
 				atlas_st *a = atlas_get(mono, px);
 				if (a != NULL) {
-					draw_text(a, x, y, align, c,
-							(const char *) &p[i + 14], slen);
+					draw_text(a, ((df != NULL) && df->have) ? df : NULL,
+							x, y, align, c, (const char *) &p[i + 14], slen);
 				}
 			}
 			i += 14u + slen;
@@ -706,6 +779,42 @@ bool remoteui_win_open(const char *title, uint16_t width, uint16_t height) {
 }
 
 
+void remoteui_win_set_asset_request_callb(remoteui_asset_req_t callb,
+		void *user) {
+	asset_req_callb = callb;
+	asset_req_user = user;
+}
+
+
+void remoteui_win_asset_received(uint8_t kind, uint32_t id,
+		const uint8_t *data, uint32_t len) {
+	if (kind == UV_UI_REMOTE_ASSET_KIND_FONT) {
+		int16_t slot = devfont_slot((uint8_t) id);
+		if (slot >= 0) {
+			devfont_st *df = &devfonts[slot];
+			// answered either way: an empty answer means the device has no such
+			// font, and asking again would only get the same reply
+			df->known = true;
+			df->retry = 0;
+			if ((data != NULL) && (len >= UV_UI_REMOTE_FONT_BODY_HDR_LEN)) {
+				df->height = (uint16_t) (data[0] | (data[1] << 8));
+				memcpy(df->advance, &data[7], UV_UI_REMOTE_FONT_WIDTHS);
+				df->have = (df->height > 0);
+				printf("remote UI: font %u is %u px on the device\n",
+						(unsigned int) id, (unsigned int) df->height);
+				fflush(stdout);
+			}
+			else {
+				df->have = false;
+			}
+		}
+	}
+	else {
+		// bitmaps are not collected yet
+	}
+}
+
+
 void remoteui_win_close(void) {
 	if (win != NULL) {
 		GLFWwindow *prev = glfwGetCurrentContext();
@@ -727,6 +836,9 @@ void remoteui_win_close(void) {
 		free(base_frame);
 		base_frame = NULL;
 		base_frame_len = 0;
+		// a new session may be a different device, so nothing learned about the
+		// last one's fonts carries over
+		memset(devfonts, 0, sizeof(devfonts));
 	}
 }
 
@@ -795,6 +907,15 @@ void remoteui_win_draw_frame(const uint8_t *cmds, uint32_t len) {
 
 void remoteui_win_step(void) {
 	if (win != NULL) {
+		// count down the wait for an answer about a font, so a request that was
+		// lost is made again rather than leaving that font guessed at forever
+		for (uint16_t i = 0; i < DEVFONT_COUNT; i++) {
+			if (devfonts[i].retry > 0) {
+				devfonts[i].retry--;
+			}
+			else {
+			}
+		}
 		// glfwPollEvents is global, and the main UI loop already calls it; what
 		// matters here is noticing the user closing this window
 		if (glfwWindowShouldClose(win)) {

@@ -53,6 +53,7 @@
 
 // Topic prefix every fleet topic starts with.
 #include "uv_remote_stream.h"
+#include "uv_ui_remote.h"
 
 #define TOPIC_ROOT			"fleets/"
 #define TOPIC_ROOT_LEN		(sizeof(TOPIC_ROOT) - 1)
@@ -94,6 +95,15 @@ typedef struct {
 	uint8_t *ui_buf;
 	uint32_t ui_len;
 	bool ui_dropping;
+
+	// An asset (a font, or an image) being reassembled. Allocated to whatever
+	// size the device says the asset is, since that is not known until its
+	// first chunk arrives, and freed as soon as it has been handed on.
+	uint8_t *asset_buf;
+	uint32_t asset_len;
+	uint32_t asset_total;
+	uint8_t asset_kind;
+	uint32_t asset_id;
 } mqtt_dev_st;
 
 // One fleet, with the devices seen in it.
@@ -126,6 +136,13 @@ static uint8_t fleet_count;
 static bool changed;
 
 // Sink for reassembled mirrored UI frames.
+/// @brief: Largest asset that will be collected. A font's metrics are a few
+/// hundred bytes and an image a few tens of kilobytes; anything beyond this is
+/// a stream out of step, not an asset.
+#define ASSET_MAX			(512u * 1024u)
+
+static mqtt_asset_callb_t asset_callb;
+static void *asset_user;
 static mqtt_ui_frame_callb_t ui_frame_callb;
 static void *ui_frame_user;
 
@@ -407,6 +424,64 @@ static void announce_parse(const char *fleet, const char *payload,
 
 /// @brief: Appends a mirrored UI chunk to the frame being reassembled, and
 /// hands the finished frame to the sink on FRAME_END.
+/// @brief: Collects an asset the device is sending in answer to a request.
+///
+/// The first chunk says what it is and how long, so the buffer is allocated
+/// then; a length of zero is the device saying it cannot serve it, which is
+/// passed on so the caller stops asking rather than waiting forever.
+static void asset_chunk(mqtt_dev_st *d, const uint8_t *msg, uint8_t len,
+		uint8_t fleet_index, uint8_t dev_index) {
+	uint8_t chunk_len = msg[2];
+	uint8_t flags = msg[3];
+	const uint8_t *p = &msg[4];
+	if (chunk_len > (uint8_t) (len - 4)) {
+		chunk_len = (uint8_t) (len - 4);
+	}
+
+	if ((flags & REMOTE_UI_FLAG_FRAME_START) != 0) {
+		free(d->asset_buf);
+		d->asset_buf = NULL;
+		d->asset_len = 0;
+		d->asset_total = 0;
+		if (chunk_len >= UV_UI_REMOTE_ASSET_HDR_LEN) {
+			d->asset_kind = p[0];
+			d->asset_id = (uint32_t) p[1] | ((uint32_t) p[2] << 8) |
+					((uint32_t) p[3] << 16) | ((uint32_t) p[4] << 24);
+			d->asset_total = (uint32_t) p[5] | ((uint32_t) p[6] << 8) |
+					((uint32_t) p[7] << 16) | ((uint32_t) p[8] << 24);
+			if ((d->asset_total > 0) && (d->asset_total <= ASSET_MAX)) {
+				d->asset_buf = malloc(d->asset_total);
+			}
+			p += UV_UI_REMOTE_ASSET_HDR_LEN;
+			chunk_len = (uint8_t) (chunk_len - UV_UI_REMOTE_ASSET_HDR_LEN);
+		}
+		else {
+			// a start chunk too short to hold the header: nothing to collect
+			d->asset_total = 0;
+		}
+	}
+
+	if ((d->asset_buf != NULL) &&
+			((d->asset_len + chunk_len) <= d->asset_total)) {
+		memcpy(&d->asset_buf[d->asset_len], p, chunk_len);
+		d->asset_len += chunk_len;
+	}
+
+	if ((flags & REMOTE_UI_FLAG_FRAME_END) != 0) {
+		if (asset_callb != NULL) {
+			// a zero length is the "cannot serve it" answer, and is reported as
+			// such rather than swallowed
+			asset_callb(fleet_index, dev_index, d->asset_kind, d->asset_id,
+					d->asset_buf, d->asset_len, asset_user);
+		}
+		free(d->asset_buf);
+		d->asset_buf = NULL;
+		d->asset_len = 0;
+		d->asset_total = 0;
+	}
+}
+
+
 static void ui_chunk(mqtt_dev_st *d, const uint8_t *msg, uint8_t len,
 		uint8_t fleet_index, uint8_t dev_index) {
 	uint8_t chunk_len = msg[2];
@@ -491,6 +566,10 @@ static void dev_frame_callb(void *user, remote_msg_types_e type,
 		}
 		break;
 	}
+
+	case REMOTE_MSG_TYPE_UI_ASSET:
+		asset_chunk(d, data, len, ctx->fleet_index, ctx->dev_index);
+		break;
 
 	case REMOTE_MSG_TYPE_UI:
 		ui_chunk(d, data, len, ctx->fleet_index, ctx->dev_index);
@@ -986,6 +1065,36 @@ bool mqtt_dev_set_features(uint8_t fleet_index, uint8_t dev_index,
 					d->name, (unsigned int) features, mosquitto_strerror(rc));
 			fflush(stdout);
 		}
+	}
+	return ret;
+}
+
+
+void mqtt_set_asset_callb(mqtt_asset_callb_t callb, void *user) {
+	asset_callb = callb;
+	asset_user = user;
+}
+
+
+bool mqtt_dev_request_asset(uint8_t fleet_index, uint8_t dev_index,
+		uint8_t kind, uint32_t id) {
+	mqtt_dev_st *d = dev_at(fleet_index, dev_index);
+	bool ret = false;
+	if ((d != NULL) && (mosq != NULL) && (state == MQTT_STATE_CONNECTED)) {
+		char topic[MQTT_NAME_MAX * 2 + 32];
+		snprintf(topic, sizeof(topic), "%s%s/clients/%s/to_dev",
+				TOPIC_ROOT, fleets[fleet_index].name, d->name);
+		uint8_t frame[REMOTE_MSG_TYPE_UI_ASSET_REQ_LEN] = {
+				REMOTE_MSG_START_BYTE,
+				REMOTE_MSG_TYPE_UI_ASSET_REQ,
+				kind,
+				(uint8_t) (id & 0xFFu),
+				(uint8_t) ((id >> 8) & 0xFFu),
+				(uint8_t) ((id >> 16) & 0xFFu),
+				(uint8_t) ((id >> 24) & 0xFFu)
+		};
+		ret = (mosquitto_publish(mosq, NULL, topic, (int) sizeof(frame),
+				frame, 0, false) == MOSQ_ERR_SUCCESS);
 	}
 	return ret;
 }

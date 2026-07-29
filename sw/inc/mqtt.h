@@ -201,6 +201,27 @@ typedef void (*mqtt_ui_frame_callb_t)(uint8_t fleet_index, uint8_t dev_index,
 /// @brief: Registers the sink for mirrored UI frames. Pass NULL to clear.
 void mqtt_set_ui_frame_callb(mqtt_ui_frame_callb_t callb, void *user);
 
+
+/// @brief: Called with a complete asset - a font, or an image - that a device
+/// sent in answer to mqtt_dev_request_asset(). *data* is owned by the client
+/// and only valid for the duration of the call.
+///
+/// A *len* of zero means the device cannot serve that asset: it is reported
+/// rather than swallowed, so the caller stops asking for it.
+typedef void (*mqtt_asset_callb_t)(uint8_t fleet_index, uint8_t dev_index,
+		uint8_t kind, uint32_t id, const uint8_t *data, uint32_t len,
+		void *user);
+
+/// @brief: Registers the sink for assets. Pass NULL to clear.
+void mqtt_set_asset_callb(mqtt_asset_callb_t callb, void *user);
+
+/// @brief: Asks a device for the asset (*kind*, *id*) it is drawing with but
+/// this end does not have. The answer arrives at the callback above.
+///
+/// @return: false when not connected or the publish was refused.
+bool mqtt_dev_request_asset(uint8_t fleet_index, uint8_t dev_index,
+		uint8_t kind, uint32_t id);
+
 /// @brief: Starts or stops collecting mirrored UI frames from a device. While
 /// collecting, complete frames go to the callback above. Enabling also asks the
 /// device to start mirroring, and disabling asks it to stop.

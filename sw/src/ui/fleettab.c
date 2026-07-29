@@ -186,6 +186,31 @@ static void ui_frame_callb(uint8_t fleet_index, uint8_t dev_index,
 }
 
 
+/// @brief: Carries the mirrored view's request for an asset to the device it is
+/// mirroring. Only that device can answer: the id means nothing anywhere else.
+static void ui_asset_req_callb(uint8_t kind, uint32_t id, void *user) {
+	(void) user;
+	if ((ui_fleet >= 0) && (ui_dev >= 0)) {
+		(void) mqtt_dev_request_asset((uint8_t) ui_fleet, (uint8_t) ui_dev,
+				kind, id);
+	}
+}
+
+
+/// @brief: Hands an asset the device sent to the mirrored view, provided it is
+/// still the device being mirrored.
+static void ui_asset_callb(uint8_t fleet_index, uint8_t dev_index,
+		uint8_t kind, uint32_t id, const uint8_t *data, uint32_t len,
+		void *user) {
+	(void) user;
+	if (remoteui_win_is_open() &&
+			(fleet_index == ui_fleet) &&
+			(dev_index == ui_dev)) {
+		remoteui_win_asset_received(kind, id, data, len);
+	}
+}
+
+
 /// @brief: Starts mirroring the selected device. The window can only be sized
 /// once the device has said how big its display is, so this asks first and the
 /// window opens from fleettab_step() when the answer arrives.
@@ -194,6 +219,8 @@ static void ui_start(void) {
 	ui_fleet = selected_fleet;
 	ui_dev = selected_dev;
 	mqtt_set_ui_frame_callb(&ui_frame_callb, NULL);
+	mqtt_set_asset_callb(&ui_asset_callb, NULL);
+	remoteui_win_set_asset_request_callb(&ui_asset_req_callb, NULL);
 	if (!mqtt_dev_set_ui_active((uint8_t) ui_fleet, (uint8_t) ui_dev, true)) {
 		ui_fleet = -1;
 		ui_dev = -1;
