@@ -595,6 +595,7 @@ static uint16_t text_width(atlas_st *a, const devfont_st *df,
 }
 
 
+/// @brief: Draws one line. The caller has already placed it vertically.
 static void draw_text(atlas_st *a, const devfont_st *df,
 		int16_t x, int16_t y, uint16_t align,
 		uint32_t color, const char *str, uint16_t len) {
@@ -606,11 +607,6 @@ static void draw_text(atlas_st *a, const devfont_st *df,
 	}
 	else if ((align & UI_HALIGN_MASK) == UI_HALIGN_RIGHT) {
 		x = (int16_t) (x - w);
-	}
-	else {
-	}
-	if ((align & UI_VALIGN_MASK) == UI_VALIGN_CENTER) {
-		y = (int16_t) (y - a->px / 2);
 	}
 	else {
 	}
@@ -725,6 +721,55 @@ static void fill_line(float x0, float y0, float x1, float y1, float width) {
 		if (width > 2.0f) {
 			fill_circle(x0, y0, half);
 			fill_circle(x1, y1, half);
+		}
+	}
+}
+
+
+/// @brief: Draws a string that may hold line breaks, the way the device does.
+///
+/// A string arrives as the device stores it, newlines and all - the wire never
+/// splits it - and every one of them is a line the device drew separately. Left
+/// as they were, the lines ran together into one and its width was the sum of
+/// them all, so a centred block of text sat far off to one side.
+///
+/// The rules are the device's, quirks included: each line is aligned
+/// horizontally on its own width, a drawn line advances the baseline by the
+/// font's height, an empty line advances nothing at all, and a vertically
+/// centred string is lifted by half the height of all its lines together.
+static void draw_string(atlas_st *a, const devfont_st *df,
+		int16_t x, int16_t y, uint16_t align,
+		uint32_t color, const char *str, uint16_t len) {
+	uint16_t lines = 1;
+	for (uint16_t i = 0; i < len; i++) {
+		if (str[i] == '\n') {
+			lines++;
+		}
+		else {
+		}
+	}
+
+	int16_t line_h = (int16_t) a->px;
+	if ((align & UI_VALIGN_MASK) == UI_VALIGN_CENTER) {
+		y = (int16_t) (y - ((int16_t) lines * line_h) / 2);
+	}
+	else {
+	}
+
+	uint16_t start = 0;
+	for (uint16_t i = 0; i <= len; i++) {
+		if ((i == len) || (str[i] == '\n') || (str[i] == '\r')) {
+			uint16_t line_len = (uint16_t) (i - start);
+			if (line_len > 0) {
+				draw_text(a, df, x, y, align, color, &str[start], line_len);
+				y = (int16_t) (y + line_h);
+			}
+			else {
+				// an empty line draws nothing and moves nothing
+			}
+			start = (uint16_t) (i + 1);
+		}
+		else {
 		}
 	}
 }
@@ -865,7 +910,7 @@ static void render(const uint8_t *p, uint32_t len) {
 				}
 				atlas_st *a = atlas_get(mono, px);
 				if (a != NULL) {
-					draw_text(a, ((df != NULL) && df->have) ? df : NULL,
+					draw_string(a, ((df != NULL) && df->have) ? df : NULL,
 							x, y, align, c, (const char *) &p[i + 14], slen);
 				}
 			}
