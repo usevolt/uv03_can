@@ -172,6 +172,17 @@ static FT_Library ft;
 static bool ft_ready;
 static atlas_st atlases[ATLAS_MAX];
 
+/// @brief: The last frame that started from a cleared screen, kept so that a
+/// FRAME_BEGIN_KEEP frame - a dialog drawn over whatever was already there -
+/// has something to be drawn over.
+///
+/// The window is double buffered, so the previous frame's pixels are not in the
+/// buffer being drawn into and the only way to get them back is to replay the
+/// commands that produced them. A frame is just a byte run, so replaying it
+/// costs no more than receiving it did.
+static uint8_t *base_frame;
+static uint32_t base_frame_len;
+
 
 // --- colours ----------------------------------------------------------------
 
@@ -495,6 +506,12 @@ static void render(const uint8_t *p, uint32_t len) {
 			i += 5;
 			break;
 
+		case UV_UI_REMOTE_OP_FRAME_BEGIN_KEEP:
+			// deliberately no clear: the caller has already replayed the frame
+			// this one is drawn over
+			i += 1;
+			break;
+
 		case UV_UI_REMOTE_OP_POINT:
 			if (left < 11) { ok = false; break; }
 			set_color(rd32(&p[i + 7]));
@@ -707,6 +724,9 @@ void remoteui_win_close(void) {
 		win = NULL;
 		win_w = 0;
 		win_h = 0;
+		free(base_frame);
+		base_frame = NULL;
+		base_frame_len = 0;
 	}
 }
 
@@ -735,7 +755,38 @@ void remoteui_win_draw_frame(const uint8_t *cmds, uint32_t len) {
 	glMatrixMode(GL_MODELVIEW);
 	glLoadIdentity();
 
-	render(cmds, len);
+	if (cmds[0] == UV_UI_REMOTE_OP_FRAME_BEGIN_KEEP) {
+		// A dialog, drawn over the screen it appeared on. Put that screen back
+		// first; without it the dialog would float on whatever the last swap
+		// happened to leave in this buffer.
+		if (base_frame != NULL) {
+			render(base_frame, base_frame_len);
+		}
+		else {
+			// mirroring started while a dialog was already up, so there is no
+			// screen to put back. The next full frame supplies one.
+			glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+			glClear(GL_COLOR_BUFFER_BIT);
+		}
+		render(cmds, len);
+	}
+	else {
+		render(cmds, len);
+		// keep it as the base for any dialog that follows
+		uint8_t *copy = realloc(base_frame, len);
+		if (copy != NULL) {
+			memcpy(copy, cmds, len);
+			base_frame = copy;
+			base_frame_len = len;
+		}
+		else {
+			// out of memory: drop the base rather than leave a stale one, so a
+			// dialog draws over black instead of over the wrong screen
+			free(base_frame);
+			base_frame = NULL;
+			base_frame_len = 0;
+		}
+	}
 
 	glfwSwapBuffers(win);
 	glfwMakeContextCurrent(prev);
