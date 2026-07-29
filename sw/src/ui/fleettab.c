@@ -175,13 +175,58 @@ static void ui_stop(void) {
 /// @brief: Receives one mirrored frame. Frames for a device other than the one
 /// on screen are ignored: the device may still be finishing a frame that was in
 /// flight when mirroring was switched off.
+static void ui_open_window(uint16_t w, uint16_t h);
+
+
 static void ui_frame_callb(uint8_t fleet_index, uint8_t dev_index,
 		const uint8_t *cmds, uint32_t len, void *user) {
 	(void) user;
-	if (remoteui_win_is_open() &&
-			(fleet_index == ui_fleet) &&
-			(dev_index == ui_dev)) {
-		remoteui_win_draw_frame(cmds, len);
+	if ((fleet_index == ui_fleet) && (dev_index == ui_dev)) {
+		if (!remoteui_win_is_open()) {
+			// The first frame can arrive in the same batch as the size that
+			// the window is opened from, before the step that opens it has
+			// run. Opening here rather than dropping it matters because the
+			// device sends a frame when it has something new to show, and a
+			// display sitting still may not have anything new for a long time.
+			uint16_t w = 0;
+			uint16_t h = 0;
+			if (mqtt_get_dev_ui_size((uint8_t) ui_fleet, (uint8_t) ui_dev,
+					&w, &h)) {
+				ui_open_window(w, h);
+			}
+			else {
+			}
+		}
+		else {
+		}
+		if (remoteui_win_is_open()) {
+			remoteui_win_draw_frame(cmds, len);
+		}
+		else {
+		}
+	}
+	else {
+	}
+}
+
+
+/// @brief: Opens the mirror window for the device being mirrored, sized and
+/// titled from what it has told us. Safe to call when one is already open.
+static void ui_open_window(uint16_t w, uint16_t h) {
+	if (!remoteui_win_is_open() && (ui_fleet >= 0) && (ui_dev >= 0)) {
+		char title[160];
+		const char *devname = mqtt_get_dev_devname((uint8_t) ui_fleet,
+				(uint8_t) ui_dev);
+		snprintf(title, sizeof(title), "%s - %s",
+				(devname[0] != '\0') ? devname : "remote device",
+				mqtt_get_dev_name((uint8_t) ui_fleet, (uint8_t) ui_dev));
+		if (!remoteui_win_open(title, w, h)) {
+			ui_stop();
+		}
+		else {
+		}
+	}
+	else {
 	}
 }
 
@@ -451,15 +496,7 @@ bool fleettab_step(void) {
 		uint16_t h;
 		if (mqtt_get_dev_ui_size((uint8_t) ui_fleet, (uint8_t) ui_dev,
 				&w, &h)) {
-			char title[160];
-			const char *devname = mqtt_get_dev_devname((uint8_t) ui_fleet,
-					(uint8_t) ui_dev);
-			snprintf(title, sizeof(title), "%s - %s",
-					(devname[0] != '\0') ? devname : "remote device",
-					mqtt_get_dev_name((uint8_t) ui_fleet, (uint8_t) ui_dev));
-			if (!remoteui_win_open(title, w, h)) {
-				ui_stop();
-			}
+			ui_open_window(w, h);
 			if (shown) {
 				refresh_ui_btn();
 			}
