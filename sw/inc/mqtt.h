@@ -212,6 +212,18 @@ typedef void (*mqtt_asset_callb_t)(uint8_t fleet_index, uint8_t dev_index,
 		uint8_t kind, uint32_t id, const uint8_t *data, uint32_t len,
 		void *user);
 
+/// @brief: Sends a press, release, drag or scroll to a device, as if its own
+/// screen had been touched. The coordinates are on the device's display.
+///
+/// The device is given raw presses and releases and derives clicks and drags
+/// from them itself, so a drag is a press repeated at new coordinates and a
+/// click is a press followed by a release.
+///
+/// @return: false when not connected or the publish was refused.
+bool mqtt_dev_send_input(uint8_t fleet_index, uint8_t dev_index,
+		uint8_t action, int16_t x, int16_t y, int16_t scroll, char key);
+
+
 /// @brief: Registers the sink for assets. Pass NULL to clear.
 void mqtt_set_asset_callb(mqtt_asset_callb_t callb, void *user);
 

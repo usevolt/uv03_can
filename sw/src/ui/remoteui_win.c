@@ -234,6 +234,108 @@ static devfont_st devfonts[DEVFONT_COUNT];
 static remoteui_asset_req_t asset_req_callb;
 static void *asset_req_user;
 
+static remoteui_input_t input_callb;
+static void *input_user;
+
+/// @brief: Whether the mouse button is down over the mirrored view, and where
+/// it was last reported to be.
+///
+/// The device wants raw presses and releases: its own uv_uidisplay_step turns a
+/// run of them into a press, a drag or a click, exactly as it does for its own
+/// touch screen. So a press is repeated as the pointer moves - that is what a
+/// drag looks like from here - and released once.
+static bool mouse_down;
+static int16_t last_x;
+static int16_t last_y;
+static double last_move_t;
+
+/// @brief: Turns a position in this window into one on the device's display.
+///
+/// The window opens at the device's size but the user may resize it, and the
+/// device knows nothing of that: it is told where its own screen was touched.
+static void win_to_device(double cx, double cy, int16_t *dx, int16_t *dy) {
+	int cw = win_w;
+	int ch = win_h;
+	glfwGetWindowSize(win, &cw, &ch);
+	if (cw <= 0) {
+		cw = (int) win_w;
+	}
+	if (ch <= 0) {
+		ch = (int) win_h;
+	}
+	*dx = (int16_t) ((cx * (double) win_w) / (double) cw);
+	*dy = (int16_t) ((cy * (double) win_h) / (double) ch);
+}
+
+
+static void send_input(uint8_t action, int16_t x, int16_t y,
+		int16_t scroll, char key) {
+	if (input_callb != NULL) {
+		input_callb(action, x, y, scroll, key, input_user);
+	}
+	else {
+	}
+}
+
+
+static void mirror_mouse_button_callb(GLFWwindow *w, int button, int action,
+		int mods) {
+	(void) mods;
+	if (button == GLFW_MOUSE_BUTTON_LEFT) {
+		double cx = 0.0;
+		double cy = 0.0;
+		glfwGetCursorPos(w, &cx, &cy);
+		win_to_device(cx, cy, &last_x, &last_y);
+		mouse_down = (action == GLFW_PRESS);
+		send_input(mouse_down ? (uint8_t) UV_UI_REMOTE_INPUT_PRESS :
+				(uint8_t) UV_UI_REMOTE_INPUT_RELEASE, last_x, last_y, 0, '\0');
+	}
+	else {
+	}
+}
+
+
+static void mirror_cursor_pos_callb(GLFWwindow *w, double cx, double cy) {
+	(void) w;
+	// Hovering is not touching: only a held button is going anywhere. The
+	// device latches the last press position, so a moved press is a drag.
+	if (mouse_down) {
+		int16_t dx;
+		int16_t dy;
+		win_to_device(cx, cy, &dx, &dy);
+		double now = glfwGetTime();
+		// A mouse reports far more often than the device redraws, and every
+		// report costs a message on the link. One per display step is all it
+		// can act on; the release carries the exact final position.
+		if (((dx != last_x) || (dy != last_y)) &&
+				((now - last_move_t) >= 0.02)) {
+			last_x = dx;
+			last_y = dy;
+			last_move_t = now;
+			send_input((uint8_t) UV_UI_REMOTE_INPUT_PRESS, dx, dy, 0, '\0');
+		}
+		else {
+		}
+	}
+	else {
+	}
+}
+
+
+static void mirror_scroll_callb(GLFWwindow *w, double xoffset, double yoffset) {
+	(void) w;
+	(void) xoffset;
+	if ((int16_t) yoffset != 0) {
+		// keep whatever press state is current: a scroll must not be read as a
+		// release and let go of a drag in progress
+		send_input(mouse_down ? (uint8_t) UV_UI_REMOTE_INPUT_PRESS :
+				(uint8_t) UV_UI_REMOTE_INPUT_RELEASE,
+				last_x, last_y, (int16_t) yoffset, '\0');
+	}
+	else {
+	}
+}
+
 static void redraw_last(void);
 
 /// @brief: An image the device has sent, decoded and uploaded once and then
@@ -903,6 +1005,12 @@ bool remoteui_win_open(const char *title, uint16_t width, uint16_t height) {
 	win_w = width;
 	win_h = height;
 
+	// the device is driven from this window: a press here is a touch there
+	glfwSetMouseButtonCallback(win, &mirror_mouse_button_callb);
+	glfwSetCursorPosCallback(win, &mirror_cursor_pos_callb);
+	glfwSetScrollCallback(win, &mirror_scroll_callb);
+	mouse_down = false;
+
 	glfwMakeContextCurrent(win);
 	glewInit();
 	glEnable(GL_BLEND);
@@ -917,6 +1025,12 @@ bool remoteui_win_open(const char *title, uint16_t width, uint16_t height) {
 			(unsigned int) width, (unsigned int) height);
 	fflush(stdout);
 	return true;
+}
+
+
+void remoteui_win_set_input_callb(remoteui_input_t callb, void *user) {
+	input_callb = callb;
+	input_user = user;
 }
 
 
@@ -1025,6 +1139,15 @@ void remoteui_win_close(void) {
 		// the device's images were uploaded into this context too, so they go
 		// while it is still current and still exists
 		devbitmaps_free();
+		if (mouse_down) {
+			// closing mid-press would leave the device holding a touch nobody
+			// is making any more
+			send_input((uint8_t) UV_UI_REMOTE_INPUT_RELEASE, last_x, last_y,
+					0, '\0');
+			mouse_down = false;
+		}
+		else {
+		}
 		glfwMakeContextCurrent((prev == win) ? NULL : prev);
 		glfwDestroyWindow(win);
 		win = NULL;

@@ -62,6 +62,21 @@ bool remoteui_win_is_open(void);
 void remoteui_win_draw_frame(const uint8_t *cmds, uint32_t len);
 
 
+/// @brief: Called for every press, release, drag and scroll the user makes on
+/// the mirrored view, to be carried to the device as if its own screen had been
+/// touched. *action* is a uv_ui_remote_input_action_e and the coordinates are on
+/// the device's display, whatever size this window has been dragged to.
+///
+/// The device is sent raw presses and releases and derives clicks and drags
+/// from them itself, the same way it does for its own touch screen.
+typedef void (*remoteui_input_t)(uint8_t action, int16_t x, int16_t y,
+		int16_t scroll, char key, void *user);
+
+/// @brief: Registers who carries input back to the device. Without one, the
+/// mirrored view is only something to look at.
+void remoteui_win_set_input_callb(remoteui_input_t callb, void *user);
+
+
 /// @brief: Called when the mirrored view needs an asset - so far only a font -
 /// that it does not have. The device is drawing with it at that moment, so it
 /// can answer; the reply comes back through remoteui_win_asset_received().

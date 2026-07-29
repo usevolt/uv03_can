@@ -1100,6 +1100,32 @@ bool mqtt_dev_request_asset(uint8_t fleet_index, uint8_t dev_index,
 }
 
 
+bool mqtt_dev_send_input(uint8_t fleet_index, uint8_t dev_index,
+		uint8_t action, int16_t x, int16_t y, int16_t scroll, char key) {
+	mqtt_dev_st *d = dev_at(fleet_index, dev_index);
+	bool ret = false;
+	if ((d != NULL) && (mosq != NULL) && (state == MQTT_STATE_CONNECTED)) {
+		char topic[MQTT_NAME_MAX * 2 + 32];
+		snprintf(topic, sizeof(topic), "%s%s/clients/%s/to_dev",
+				TOPIC_ROOT, fleets[fleet_index].name, d->name);
+		uint8_t frame[REMOTE_MSG_TYPE_UI_INPUT_LEN] = {
+				REMOTE_MSG_START_BYTE,
+				REMOTE_MSG_TYPE_UI_INPUT,
+				action,
+				(uint8_t) (x & 0xFFu),
+				(uint8_t) ((x >> 8) & 0xFFu),
+				(uint8_t) (y & 0xFFu),
+				(uint8_t) ((y >> 8) & 0xFFu),
+				(uint8_t) (int8_t) scroll,
+				(uint8_t) key
+		};
+		ret = (mosquitto_publish(mosq, NULL, topic, (int) sizeof(frame),
+				frame, 0, false) == MOSQ_ERR_SUCCESS);
+	}
+	return ret;
+}
+
+
 void mqtt_set_ui_frame_callb(mqtt_ui_frame_callb_t callb, void *user) {
 	ui_frame_callb = callb;
 	ui_frame_user = user;

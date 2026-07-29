@@ -186,6 +186,20 @@ static void ui_frame_callb(uint8_t fleet_index, uint8_t dev_index,
 }
 
 
+/// @brief: Carries what the user does on the mirrored view to the device, which
+/// treats it as its own screen being touched.
+static void ui_input_callb(uint8_t action, int16_t x, int16_t y,
+		int16_t scroll, char key, void *user) {
+	(void) user;
+	if ((ui_fleet >= 0) && (ui_dev >= 0)) {
+		(void) mqtt_dev_send_input((uint8_t) ui_fleet, (uint8_t) ui_dev,
+				action, x, y, scroll, key);
+	}
+	else {
+	}
+}
+
+
 /// @brief: Carries the mirrored view's request for an asset to the device it is
 /// mirroring. Only that device can answer: the id means nothing anywhere else.
 static void ui_asset_req_callb(uint8_t kind, uint32_t id, void *user) {
@@ -221,6 +235,7 @@ static void ui_start(void) {
 	mqtt_set_ui_frame_callb(&ui_frame_callb, NULL);
 	mqtt_set_asset_callb(&ui_asset_callb, NULL);
 	remoteui_win_set_asset_request_callb(&ui_asset_req_callb, NULL);
+	remoteui_win_set_input_callb(&ui_input_callb, NULL);
 	if (!mqtt_dev_set_ui_active((uint8_t) ui_fleet, (uint8_t) ui_dev, true)) {
 		ui_fleet = -1;
 		ui_dev = -1;
