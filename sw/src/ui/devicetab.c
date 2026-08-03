@@ -683,9 +683,16 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	// shorter status row below. The status row is only a text label, so it gets a
 	// label's height (TITLE_H) rather than a full button's - keeping the panel
 	// compact.
-	// two field rows; the status shares the second one with the fleet URL
-	int16_t account_frame_h = 2 * BUTTON_H + MARGIN + TITLE_H +
-			BUTTON_H + TITLE_H + MARGIN;
+	// Two field rows; the status shares the second one with the fleet URL.
+	//
+	// Sized to what a row actually draws rather than to button heights: a text
+	// field is one line of text with a little padding, and its title is another
+	// line under it (see uv_uitextedit_draw). Rows the height of a button were
+	// half empty, and the panel wore a band of nothing between the fields and
+	// the status lines below them.
+	int16_t acc_row_h = 2 * uv_ui_get_font_height(style->font) + 4 * MARGIN / 2;
+	// plus the frame's own title bar, which get_content_bb takes off the top
+	int16_t account_frame_h = 2 * acc_row_h + MARGIN + TITLE_H;
 	int16_t account_frame_y = cbb.h - MARGIN - account_frame_h;
 #if !CONFIG_TARGET_WIN
 	// the configuration panel needs room for the double-height source row plus the
@@ -936,7 +943,9 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	// full height on the right. The status shares the second row with the fleet
 	// URL rather than taking one of its own, which keeps the panel a row
 	// shorter and leaves the space above it for the device list.
-	int16_t acc_row_h = (ac.h - MARGIN) / 2;
+	// the frame was sized from acc_row_h above; share out whatever rounding is
+	// left rather than letting the two drift apart
+	acc_row_h = (ac.h - MARGIN) / 2;
 
 	int16_t acc_gap = MARGIN;
 	int16_t acc_conn_w = 3 * 2 * BUTTON_H;
