@@ -22,6 +22,9 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <uv_can.h>
+// the CAN forwarding API below speaks the REMOTE protocol's own types
+#include <uv_remote_proto.h>
 
 
 /// @brief: MQTT client for the Usevolt IoT broker (see the uv3b_iotbrkr project),
@@ -151,6 +154,19 @@ uint32_t mqtt_get_dev_age_s(uint8_t fleet_index, uint8_t dev_index);
 bool mqtt_poll_changed(void);
 
 
+/// @brief: Drops device *dev_index* of fleet *fleet_index* from the view.
+///
+/// The devices after it move down a slot, so whatever indexes them has to be
+/// rebuilt. The device is also ignored for the rest of this broker session:
+/// nothing here can stop it publishing, so without that it would be back on its
+/// next heartbeat and the removal would look like it had not worked. Connecting
+/// again starts from a clean slate, which is this view's equivalent of the
+/// System tab's manual re-search.
+///
+/// @return: false when the indices name no device.
+bool mqtt_remove_dev(uint8_t fleet_index, uint8_t dev_index);
+
+
 // --- what a device tells us about itself ------------------------------------
 //
 // Devices publish a JSON heartbeat on their fleet's announce topic every few
@@ -226,6 +242,71 @@ bool mqtt_dev_send_input(uint8_t fleet_index, uint8_t dev_index,
 
 /// @brief: Registers the sink for assets. Pass NULL to clear.
 void mqtt_set_asset_callb(mqtt_asset_callb_t callb, void *user);
+
+
+/// @brief: Called when a device ends the remote session from its own end, i.e.
+/// when the machine operator closed it on the device's screen. Runs inside
+/// mqtt_step().
+///
+/// The device has already switched its features off by the time this arrives,
+/// so it is not a request to be granted or refused: it is what makes the
+/// difference between a session that was closed and one that merely went quiet.
+typedef void (*mqtt_close_callb_t)(uint8_t fleet_index, uint8_t dev_index,
+		void *user);
+
+/// @brief: Registers the sink for device-initiated closes. Pass NULL to clear.
+void mqtt_set_close_callb(mqtt_close_callb_t callb, void *user);
+
+
+// --- CAN forwarding ---------------------------------------------------------
+//
+// A device forwards the traffic on its own CAN bus once the CAN feature is
+// switched on and it has been told which messages are wanted. What arrives is
+// whole CAN frames; what goes the other way is injected onto that bus.
+
+/// @brief: Called with one CAN frame received from a device. Runs inside
+/// mqtt_step(), on the caller's thread.
+typedef void (*mqtt_can_callb_t)(uint8_t fleet_index, uint8_t dev_index,
+		const uv_can_msg_st *msg, void *user);
+
+/// @brief: Registers the sink for forwarded CAN frames. Pass NULL to clear.
+void mqtt_set_can_callb(mqtt_can_callb_t callb, void *user);
+
+
+/// @brief: Starts or stops CAN forwarding on a device. Leaves the UI feature
+/// alone: the two are switched independently and neither owns the other.
+bool mqtt_dev_set_can_active(uint8_t fleet_index, uint8_t dev_index,
+		bool active);
+
+/// @brief: True while the CAN feature is in effect on a device, as the device
+/// itself last reported it.
+bool mqtt_dev_get_can_active(uint8_t fleet_index, uint8_t dev_index);
+
+
+/// @brief: The rxconf negotiation: what the device should forward.
+///
+/// Sent as a round — clear, then one message per filter, then done — because
+/// the device applies each filter as it arrives and has no other way of knowing
+/// when the set is complete. A mask of zero means every id of that type, which
+/// is the only way to ask for a whole bus.
+bool mqtt_dev_send_rxclear(uint8_t fleet_index, uint8_t dev_index);
+bool mqtt_dev_send_rxconf(uint8_t fleet_index, uint8_t dev_index,
+		uint32_t id, uint32_t mask, uv_can_msg_types_e type);
+bool mqtt_dev_send_rxdone(uint8_t fleet_index, uint8_t dev_index);
+
+
+/// @brief: Sends one CAN frame to a device, which puts it on its own bus.
+bool mqtt_dev_send_can(uint8_t fleet_index, uint8_t dev_index,
+		const uv_can_msg_st *msg);
+
+
+/// @brief: The device's own account of what it has forwarded and dropped, per
+/// traffic class. Only the device can know this: a frame it dropped looks from
+/// here exactly like one that was never sent.
+///
+/// @return: false when the device has not reported any yet.
+bool mqtt_get_dev_can_stats(uint8_t fleet_index, uint8_t dev_index,
+		remote_can_stats_st *dest);
 
 /// @brief: Asks a device for the asset (*kind*, *id*) it is drawing with but
 /// this end does not have. The answer arrives at the callback above.

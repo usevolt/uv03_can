@@ -24,6 +24,8 @@
 
 #if CONFIG_UI
 
+#include <uv_ui.h>
+
 /// @brief: Opens uvcan's main graphical display and blocks until the window is
 /// closed.
 ///
@@ -47,6 +49,16 @@ void uvui_set_log_title(const char *title);
 
 /// @brief: Resets the log view's frame title back to the default "Log".
 void uvui_reset_log_title(void);
+
+
+/// @brief: The image on every "Remove" button, decoded from the PNG embedded in
+/// the binary on the first call.
+///
+/// It lives here rather than in either tab because both the System tab's device
+/// tabs and the Fleet tab's device tabs carry that button, and the byte array is
+/// a definition: the generated header can only be included once in the whole
+/// program.
+uv_uimedia_st *uvui_get_remove_media(void);
 
 
 /// @brief: Returns true while the bottom log view is expanded to full screen.

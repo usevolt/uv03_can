@@ -20,6 +20,7 @@
 #include "commands.h"
 #include "credentials.h"
 #include "simrun.h"
+#include "remotecan.h"
 
 
 struct _dev_st dev;
@@ -132,6 +133,9 @@ static void cleanup_signal_callb(int signum) {
 	}
 	simrun_kill_all();
 	system_remove_tmpdirs();
+	// the remote CAN bridge's network interface is on this machine, not in a
+	// temporary directory, but it is ours to take away just the same
+	remotecan_shutdown();
 	// Deliberately do NOT call uv_deinit()/uv_ui_destroy() here: it makes Xlib and
 	// GLFW calls, which are not async-signal-safe and — because Xlib is not thread
 	// safe — can deadlock against the UI thread that may be mid-render, leaving the

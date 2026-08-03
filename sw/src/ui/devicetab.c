@@ -23,10 +23,6 @@
 #include <string.h>
 #include <uv_canopen.h>
 #include "main.h"
-// PNG image for the "Remove" button, compiled into the binary as a byte array
-// (minus_hd_png / minus_hd_png_len). Generated from media/minus_hd.png by the
-// makefile via xxd.
-#include "media_minus_hd.h"
 #include "find.h"
 #include "saveparam.h"
 #include "loadparam.h"
@@ -346,11 +342,6 @@ static struct {
 	char account_status_fleet_str[256];
 } content;
 
-
-// Decoded image shown on the Remove button. Loaded once from the embedded PNG
-// (the renderer caches it by name, so a single load serves every device tab).
-static uv_uimedia_st remove_media;
-static bool remove_media_loaded;
 
 
 // The device whose tab is currently shown, or NULL when the active tab is the
@@ -1340,15 +1331,11 @@ static void build_device_view(uv_uitabwindow_st *tabwin, device_st *device) {
 		}
 
 		// "Remove" button: drops this device from the system. Polled in
-		// devicetab_step(). The image is loaded from the embedded PNG once. It
-		// sits below both frames, centered with 25% margins on each side, and is
-		// added straight to the tab window (not either frame).
-		if (!remove_media_loaded) {
-			uv_uimedia_newbitmapexmem_mem(&remove_media, "minus_hd",
-					minus_hd_png, minus_hd_png_len);
-			remove_media_loaded = true;
-		}
-		uv_uimediabutton_init(&content.remove_btn, "Remove Device", &remove_media, style);
+		// devicetab_step(). It sits below both frames, centered with 25% margins
+		// on each side, and is added straight to the tab window (not either
+		// frame).
+		uv_uimediabutton_init(&content.remove_btn, "Remove Device",
+				uvui_get_remove_media(), style);
 		uv_uitabwindow_addxy(tabwin, &content.remove_btn,
 				cbb.w / 4, frame_y + frame_h + MARGIN,
 				cbb.w / 2, BUTTON_H);

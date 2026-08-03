@@ -23,8 +23,11 @@
 #include <stdio.h>
 #include <string.h>
 #include "mqtt.h"
+#include "remotecan.h"
 #include "ui/remoteui_win.h"
 #include "uv_remote_proto.h"
+// for the "Remove" button image, the same one the System tab's device tabs use
+#include "ui/uvui.h"
 
 
 // Margin in pixels around the tab content, height of a button / field row and of
@@ -49,7 +52,10 @@ static char *fleet_names[MQTT_MAX_FLEETS];
 static uint8_t fleet_tab_count;
 
 static uv_uitabwindow_st dev_tabs;
-static uv_uiobject_st *dev_tabs_buf[4];
+// the device tab holds its information label and the row of buttons below it;
+// uv_uiwindow_add() does not bounds check, so this has to have room for all of
+// them
+static uv_uiobject_st *dev_tabs_buf[8];
 static char dev_name_buf[MQTT_MAX_DEVS][MQTT_NAME_MAX];
 static char *dev_names[MQTT_MAX_DEVS];
 static uint8_t dev_tab_count;
@@ -62,9 +68,16 @@ static int16_t selected_dev;
 // Content of a device tab, and the placeholder shown when there is nothing to
 // show yet (not connected, no fleets, or a fleet with no devices).
 static uv_uilabel_st dev_info;
-static char dev_info_str[512];
+static char dev_info_str[1024];
 // "Open remote UI" / "Kill remote UI" for the active device tab
 static uv_uibutton_st dev_ui_btn;
+// "Remove Device": takes the active device tab out of the view
+static uv_uimediabutton_st dev_remove_btn;
+// "Remote CAN": bridges this device's CAN bus to a netdev of its own, and the
+// two boxes that decide which kinds of frame are carried over it.
+static uv_uitogglebutton_st dev_can_btn;
+static uv_uicheckbox_st dev_std_cb;
+static uv_uicheckbox_st dev_ext_cb;
 // Which device the mirror window is showing, so the button on every other tab
 // reads "Open" and closing it targets the right device.
 static int16_t ui_fleet = -1;
@@ -76,6 +89,7 @@ static char placeholder_str[320];
 static bool shown;
 
 static void build_dev_info_str(void);
+static void refresh_can_btn(void);
 static void build_fleet_tabs(uv_uitabwindow_st *tabwin, int16_t y, int16_t h);
 static void show_active_dev_tab(void);
 static uv_uiobject_ret_e fleet_tabs_step(void *me, const uint16_t step_ms);
@@ -105,6 +119,70 @@ static void build_dev_info_str(void) {
 	}
 	uint32_t up = mqtt_get_dev_uptime_s(f, d);
 
+	// What the device says about the CAN traffic it is forwarding. The dropped
+	// counts are the reason this is shown at all: from here a frame the device
+	// threw away is indistinguishable from one that was never sent, so without
+	// them a bridge that is quietly losing half the bus looks perfectly healthy.
+	char can_str[512];
+	can_str[0] = '\0';
+	if (remotecan_shows(f, d)) {
+		remote_can_stats_st st;
+		char classes[320];
+		classes[0] = '\0';
+		if (mqtt_get_dev_can_stats(f, d, &st)) {
+			for (uint8_t i = 0; i < REMOTE_CAN_CLASS_COUNT; i++) {
+				char line[80];
+				snprintf(line, sizeof(line),
+						"  %-5s %8u fwd %8u drop  q %u\n",
+						remote_can_class_to_str((remote_can_class_e) i),
+						(unsigned int) st.forwarded[i],
+						(unsigned int) st.dropped[i],
+						(unsigned int) st.queued[i]);
+				strncat(classes, line, sizeof(classes) - strlen(classes) - 1);
+			}
+			char line[96];
+			snprintf(line, sizeof(line), "  injected %u   filters %u%s\n",
+					(unsigned int) st.injected,
+					(unsigned int) st.rxconf_count,
+					((st.flags & REMOTE_CAN_STATS_FLAG_RX_ALL) != 0) ?
+							" (whole bus)" : "");
+			strncat(classes, line, sizeof(classes) - strlen(classes) - 1);
+		}
+		else {
+			strcpy(classes, "  (waiting for the device's first report)\n");
+		}
+		const char *carried;
+		if (remotecan_get_allow_std() && remotecan_get_allow_ext()) {
+			carried = "STD and EXT";
+		}
+		else if (remotecan_get_allow_std()) {
+			carried = "STD";
+		}
+		else if (remotecan_get_allow_ext()) {
+			carried = "EXT";
+		}
+		else {
+			carried = "no";
+		}
+		snprintf(can_str, sizeof(can_str),
+				"\nRemote CAN: netdev %s, %s messages%s\n"
+				"%s"
+				"  to netdev %u   from netdev %u   filtered %u   failed %u\n",
+				remotecan_get_ifname(),
+				carried,
+				// the device is the one that decides; while it says no, the
+				// interface is there but nothing is coming through it
+				mqtt_dev_get_can_active(f, d) ? "" :
+						"   (device reports CAN off)",
+				classes,
+				(unsigned int) remotecan_get_rx_count(),
+				(unsigned int) remotecan_get_tx_count(),
+				(unsigned int) remotecan_get_filtered_count(),
+				(unsigned int) remotecan_get_error_count());
+	}
+	else {
+	}
+
 	snprintf(dev_info_str, sizeof(dev_info_str),
 			"Name:       %s\n"
 			"Fleet:      %s\n"
@@ -114,7 +192,8 @@ static void build_dev_info_str(void) {
 			"Remote:     UI %s, CAN %s\n"
 			"Display:    %s\n"
 			"Messages:   %u\n"
-			"Last seen:  %u s ago\n",
+			"Last seen:  %u s ago\n"
+			"%s",
 			(devname[0] != '\0') ? devname : "(not heard from yet)",
 			mqtt_get_fleet_name(f),
 			mqtt_get_dev_name(f, d),
@@ -124,7 +203,8 @@ static void build_dev_info_str(void) {
 			((feat & REMOTE_IOT_FEATURE_CAN) != 0) ? "on" : "off",
 			size_str,
 			(unsigned int) mqtt_get_dev_msg_count(f, d),
-			(unsigned int) mqtt_get_dev_age_s(f, d));
+			(unsigned int) mqtt_get_dev_age_s(f, d),
+			can_str);
 }
 
 
@@ -159,6 +239,27 @@ static void refresh_ui_btn(void) {
 }
 
 
+/// @brief: Puts the CAN buttons back in step with what is actually happening.
+///
+/// The toggle follows the bridge rather than the click: starting one can fail
+/// (no privileges for the interface) and a device can refuse the feature, and
+/// in both cases the button has to come back off by itself.
+static void refresh_can_btn(void) {
+	uv_uitogglebutton_set_state(&dev_can_btn,
+			remotecan_shows((uint8_t) selected_fleet,
+					(uint8_t) selected_dev));
+	bool can = mqtt_is_connected() &&
+			(mqtt_get_dev_msg_count((uint8_t) selected_fleet,
+					(uint8_t) selected_dev) > 0);
+	uv_ui_set_enabled(&dev_can_btn, can || remotecan_is_active());
+	uv_uicheckbox_set_state(&dev_std_cb, remotecan_get_allow_std());
+	uv_uicheckbox_set_state(&dev_ext_cb, remotecan_get_allow_ext());
+	uv_ui_refresh(&dev_can_btn);
+	uv_ui_refresh(&dev_std_cb);
+	uv_ui_refresh(&dev_ext_cb);
+}
+
+
 /// @brief: Stops mirroring whoever is being mirrored, closing the window and
 /// telling the device to stop sending.
 static void ui_stop(void) {
@@ -169,6 +270,41 @@ static void ui_stop(void) {
 	ui_fleet = -1;
 	ui_dev = -1;
 	remoteui_win_close();
+}
+
+
+/// @brief: The device has ended the session from its own screen — the machine
+/// operator touched the notification bar that said remote access was on.
+///
+/// The window goes now rather than sitting there showing a screen that has
+/// stopped moving, and the reason is logged: a view that vanishes on its own is
+/// otherwise indistinguishable from one that broke.
+static void ui_close_callb(uint8_t fleet_index, uint8_t dev_index, void *user) {
+	(void) user;
+	if (remotecan_shows(fleet_index, dev_index)) {
+		// the same close ends the CAN bridge, and with it the netdev: the
+		// device has switched every feature off at its end
+		printf("remote CAN: closing the bridge - the device sent a close "
+				"request\n");
+		fflush(stdout);
+		remotecan_stop();
+	}
+	else {
+	}
+	if ((fleet_index == ui_fleet) && (dev_index == ui_dev)) {
+		printf("remote UI: closing the mirrored view - the device sent a close "
+				"request\n");
+		fflush(stdout);
+		ui_stop();
+		if (shown) {
+			refresh_ui_btn();
+		}
+		else {
+		}
+	}
+	else {
+		// a device we are not mirroring; it has no view of ours to close
+	}
 }
 
 
@@ -279,6 +415,7 @@ static void ui_start(void) {
 	ui_dev = selected_dev;
 	mqtt_set_ui_frame_callb(&ui_frame_callb, NULL);
 	mqtt_set_asset_callb(&ui_asset_callb, NULL);
+	mqtt_set_close_callb(&ui_close_callb, NULL);
 	remoteui_win_set_asset_request_callb(&ui_asset_req_callb, NULL);
 	remoteui_win_set_input_callb(&ui_input_callb, NULL);
 	if (!mqtt_dev_set_ui_active((uint8_t) ui_fleet, (uint8_t) ui_dev, true)) {
@@ -419,10 +556,47 @@ static void show_active_dev_tab(void) {
 		uv_uitabwindow_addxy(&dev_tabs, &dev_info, MARGIN, MARGIN,
 				dc.w - 2 * MARGIN, info_h);
 
+		int16_t btn_y = MARGIN + info_h + MARGIN;
 		uv_uibutton_init(&dev_ui_btn, ui_btn_text(), style);
 		uv_uitabwindow_addxy(&dev_tabs, &dev_ui_btn, MARGIN,
-				MARGIN + info_h + MARGIN, 5 * BUTTON_H, BUTTON_H);
+				btn_y, 5 * BUTTON_H, BUTTON_H);
 		refresh_ui_btn();
+
+		// "Remove Device": drops this device from the view, the same way the
+		// System tab's device tabs drop a CAN device. Polled in fleettab_step().
+		uv_uimediabutton_init(&dev_remove_btn, "Remove Device",
+				uvui_get_remove_media(), style);
+		uv_uitabwindow_addxy(&dev_tabs, &dev_remove_btn,
+				MARGIN + 5 * BUTTON_H + MARGIN, btn_y, 5 * BUTTON_H, BUTTON_H);
+
+		// "Remote CAN": the device's bus on a netdev of this machine's own.
+		// The toggle shows what is actually in effect, which is what the device
+		// last reported — a device configured to refuse remote CAN
+		// (`remote allowcan 0`) leaves it springing straight back off.
+		uv_uitogglebutton_init(&dev_can_btn,
+				remotecan_shows((uint8_t) selected_fleet,
+						(uint8_t) selected_dev),
+				"Remote CAN", style);
+		uv_uitabwindow_addxy(&dev_tabs, &dev_can_btn,
+				MARGIN + 2 * (5 * BUTTON_H + MARGIN), btn_y,
+				5 * BUTTON_H, BUTTON_H);
+
+		// which frames the bridge carries, both ways. Standard on, extended
+		// off is what a CANopen machine wants; the boxes are here rather than
+		// behind a settings page because they are the difference between a
+		// usable link and one drowning in J1939 broadcasts.
+		uv_uicheckbox_init(&dev_std_cb, remotecan_get_allow_std(),
+				"STD messages", style);
+		uv_uitabwindow_addxy(&dev_tabs, &dev_std_cb,
+				MARGIN + 3 * (5 * BUTTON_H + MARGIN), btn_y,
+				4 * BUTTON_H, BUTTON_H);
+
+		uv_uicheckbox_init(&dev_ext_cb, remotecan_get_allow_ext(),
+				"EXT messages", style);
+		uv_uitabwindow_addxy(&dev_tabs, &dev_ext_cb,
+				MARGIN + 3 * (5 * BUTTON_H + MARGIN) + 4 * BUTTON_H + MARGIN,
+				btn_y, 4 * BUTTON_H, BUTTON_H);
+		refresh_can_btn();
 
 		uv_uitabwindow_set_stepcallb(&dev_tabs, &dev_tabs_step, NULL);
 	}
@@ -463,6 +637,26 @@ bool fleettab_step(void) {
 	// keep the client running whichever main tab is shown, so the connection
 	// survives a visit to the System tab and the fleet list keeps filling in
 	mqtt_step();
+	// and with it the bridge: what is written to the netdev has to reach the
+	// device whether or not anybody is looking at this tab
+	remotecan_step();
+
+	// A bridge cannot outlive the connection that carries it. The device stops
+	// forwarding on its own when the broker session drops, and an interface
+	// with nothing behind it is worse than no interface at all.
+	if (remotecan_is_active() && !mqtt_is_connected()) {
+		printf("remote CAN: closing the bridge - the broker connection is "
+				"gone\n");
+		fflush(stdout);
+		remotecan_stop();
+		if (shown) {
+			refresh_can_btn();
+		}
+		else {
+		}
+	}
+	else {
+	}
 
 	if (shown) {
 		if ((dev_tab_count > 0) && uv_uibutton_clicked(&dev_ui_btn)) {
@@ -473,6 +667,101 @@ bool fleettab_step(void) {
 				ui_start();
 			}
 			refresh_ui_btn();
+		}
+
+		// "Remote CAN": put this device's bus on a netdev, or take it off
+		// again. One bus at a time — there is one interface.
+		//
+		// What the toggle shows is compared against what is actually happening
+		// rather than watching for a click: a togglebutton clears its clicked
+		// flag in its own step, which has already run by the time this main
+		// loop gets here, and only a window step callback would ever see it.
+		// Comparing states is also self-correcting — a bridge that stops on its
+		// own puts the button back by itself.
+		bool can_wanted = uv_uitogglebutton_get_state(&dev_can_btn);
+		bool can_is = remotecan_shows((uint8_t) selected_fleet,
+				(uint8_t) selected_dev);
+		if ((dev_tab_count > 0) && (can_wanted != can_is)) {
+			if (can_is) {
+				remotecan_stop();
+			}
+			else if (!remotecan_start((uint8_t) selected_fleet,
+					(uint8_t) selected_dev)) {
+				// the reason is already in the log; the toggle goes back off
+				// below, which is what says it did not take
+			}
+			else {
+			}
+			refresh_can_btn();
+			ret = true;
+		}
+		else {
+		}
+
+		// the frame kinds to carry. Compared rather than watched for a click,
+		// for the same reason as the toggle above: a checkbox is a
+		// togglebutton, and it clears its clicked flag in its own step.
+		if ((dev_tab_count > 0) &&
+				(uv_uicheckbox_get_state(&dev_std_cb) !=
+						remotecan_get_allow_std())) {
+			// re-negotiates with the device on its own if a bridge is up
+			remotecan_set_allow_std(uv_uicheckbox_get_state(&dev_std_cb));
+			refresh_can_btn();
+			ret = true;
+		}
+		else {
+		}
+
+		if ((dev_tab_count > 0) &&
+				(uv_uicheckbox_get_state(&dev_ext_cb) !=
+						remotecan_get_allow_ext())) {
+			remotecan_set_allow_ext(uv_uicheckbox_get_state(&dev_ext_cb));
+			refresh_can_btn();
+			ret = true;
+		}
+		else {
+		}
+
+		// "Remove Device": take this device out of the view. The tabs are
+		// rebuilt from the client's device list, so the removal shows up as the
+		// tab disappearing.
+		if ((dev_tab_count > 0) && uv_uimediabutton_clicked(&dev_remove_btn)) {
+			if (remotecan_shows((uint8_t) selected_fleet,
+					(uint8_t) selected_dev)) {
+				// a bridge to a device that is no longer in the view would have
+				// nothing to show it through
+				remotecan_stop();
+			}
+			else {
+			}
+			if (ui_shows_selected()) {
+				// mirroring a device that is being taken out of the view cannot
+				// outlive it
+				ui_stop();
+			}
+			else if ((ui_fleet == selected_fleet) &&
+					(ui_dev > selected_dev)) {
+				// the mirrored device is addressed by index, and everything
+				// after the removed one moves down a slot
+				ui_dev--;
+			}
+			else {
+			}
+			if (mqtt_remove_dev((uint8_t) selected_fleet,
+					(uint8_t) selected_dev)) {
+				// land on the tab before the removed one rather than on
+				// whichever device shifted into its place
+				if (selected_dev > 0) {
+					selected_dev--;
+				}
+				else {
+				}
+				ret = true;
+			}
+			else {
+			}
+		}
+		else {
 		}
 
 		// the message count and the "last seen" age tick on with every message
@@ -501,6 +790,17 @@ bool fleettab_step(void) {
 				refresh_ui_btn();
 			}
 		}
+	}
+
+	// The mirrored view cannot tell a still screen from a dead link by itself -
+	// the device only sends a frame when something changes - so it is told how
+	// long ago the device was last heard from at all. The heartbeat counts, so
+	// this keeps ticking over even while the display sits still.
+	if (remoteui_win_is_open() && (ui_fleet >= 0) && (ui_dev >= 0)) {
+		remoteui_win_set_link_age(mqtt_get_dev_age_s((uint8_t) ui_fleet,
+				(uint8_t) ui_dev));
+	}
+	else {
 	}
 
 	// the user can close the mirror window from its own title bar, which leaves

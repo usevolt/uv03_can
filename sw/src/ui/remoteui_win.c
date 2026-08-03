@@ -240,6 +240,20 @@ static bool fbo_ensure(void) {
 	return ret;
 }
 
+/// @brief: How long the device may go unheard from before the view is dimmed.
+/// Comfortably over the 5 s heartbeat, so a single lost one is not enough, and
+/// short enough that a link that has really gone is obvious while the operator
+/// is still looking at the screen.
+#define STALE_AGE_S			12
+
+/// @brief: Seconds since anything was last heard from the device, as the caller
+/// last reported it, and whether that has passed STALE_AGE_S.
+static uint32_t link_age_s;
+static bool link_stale;
+/// @brief: The age the dimmed view currently reads, so it is repainted once a
+/// second rather than on every step.
+static uint32_t stale_shown_s;
+
 /// @brief: The most recent frame drawn, whatever kind it was.
 ///
 /// The device sends a frame only when its screen changes, so an image or a font
@@ -1098,6 +1112,10 @@ bool remoteui_win_open(const char *title, uint16_t width, uint16_t height) {
 	}
 	win_w = width;
 	win_h = height;
+	// a fresh session starts live; the caller reports the link age from here on
+	link_stale = false;
+	link_age_s = 0;
+	stale_shown_s = 0;
 
 	// the device is driven from this window: a press here is a touch there
 	glfwSetMouseButtonCallback(win, &mirror_mouse_button_callb);
@@ -1257,6 +1275,9 @@ void remoteui_win_close(void) {
 		win = NULL;
 		win_w = 0;
 		win_h = 0;
+		link_stale = false;
+		link_age_s = 0;
+		stale_shown_s = 0;
 		free(last_frame);
 		last_frame = NULL;
 		last_frame_len = 0;
@@ -1272,8 +1293,57 @@ bool remoteui_win_is_open(void) {
 }
 
 
+/// @brief: Darkens the view and says the device has gone quiet.
+///
+/// Drawn onto the window and never into the persistent framebuffer, so the
+/// frame underneath is left intact and comes back undimmed the moment the
+/// device is heard from again.
+static void draw_stale_overlay(void) {
+	glDisable(GL_SCISSOR_TEST);
+	set_color(0xC0000000);
+	glBegin(GL_QUADS);
+	glVertex2f(0.0f, 0.0f);
+	glVertex2f(win_w, 0.0f);
+	glVertex2f(win_w, win_h);
+	glVertex2f(0.0f, win_h);
+	glEnd();
+
+	// sized off the display rather than fixed: a device's screen may be a
+	// quarter of the size of another's
+	uint16_t px = (uint16_t) (win_h / 16u);
+	if (px < 14u) {
+		px = 14u;
+	}
+	else if (px > 40u) {
+		px = 40u;
+	}
+	else {
+	}
+
+	atlas_st *a = atlas_get(false, px);
+	if (a != NULL) {
+		const char *msg = "Waiting for the connection to come back online...";
+		char age[64];
+		snprintf(age, sizeof(age), "nothing heard from the device for %u s",
+				(unsigned int) link_age_s);
+		int16_t cx = (int16_t) (win_w / 2);
+		int16_t cy = (int16_t) (win_h / 2);
+		draw_text(a, NULL, cx, (int16_t) (cy - px), UI_HALIGN_CENTER,
+				0xFFFFFFFF, msg, (uint16_t) strlen(msg));
+		draw_text(a, NULL, cx, (int16_t) (cy + px / 4), UI_HALIGN_CENTER,
+				0xFFB0B0B0, age, (uint16_t) strlen(age));
+	}
+	else {
+		// no text to be had; the dimming alone still says the view is not live
+	}
+}
+
+
 static void draw_frame_impl(const uint8_t *cmds, uint32_t len, bool replay) {
-	if ((win == NULL) || (cmds == NULL) || (len == 0)) {
+	// A NULL frame is a repaint of what is already there - what the dimming
+	// needs, and it may be asked for before the device has sent anything at all.
+	bool have_cmds = ((cmds != NULL) && (len > 0));
+	if (win == NULL) {
 		return;
 	}
 	GLFWwindow *prev = glfwGetCurrentContext();
@@ -1300,7 +1370,18 @@ static void draw_frame_impl(const uint8_t *cmds, uint32_t len, bool replay) {
 
 	// A frame that keeps what is there draws straight on top; only a frame that
 	// begins with a clear starts afresh, and render() does that clearing itself.
-	render(cmds, len);
+	if (have_cmds) {
+		render(cmds, len);
+	}
+	else if (!have_fbo) {
+		// nothing is being kept between frames, so there is nothing to repaint
+		// under the dimming: start from black rather than from an undefined
+		// back buffer
+		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+		glClear(GL_COLOR_BUFFER_BIT);
+	}
+	else {
+	}
 
 	if (have_fbo) {
 		// put the accumulated picture on the window, scaled to whatever size it
@@ -1332,10 +1413,16 @@ static void draw_frame_impl(const uint8_t *cmds, uint32_t len, bool replay) {
 	else {
 	}
 
+	if (link_stale) {
+		draw_stale_overlay();
+	}
+	else {
+	}
+
 	glfwSwapBuffers(win);
 	glfwMakeContextCurrent(prev);
 
-	if (!replay) {
+	if (!replay && have_cmds) {
 		uint8_t *copy = realloc(last_frame, len);
 		if (copy != NULL) {
 			memcpy(copy, cmds, len);
@@ -1356,6 +1443,11 @@ static void draw_frame_impl(const uint8_t *cmds, uint32_t len, bool replay) {
 /// @brief: Draws the last frame again, for when something it needed has just
 /// arrived.
 void remoteui_win_draw_frame(const uint8_t *cmds, uint32_t len) {
+	// a frame is the device speaking: the view is live again whatever the link
+	// age last reported said, and the frame must not be drawn dimmed
+	link_stale = false;
+	link_age_s = 0;
+	stale_shown_s = 0;
 	draw_frame_impl(cmds, len, false);
 }
 
@@ -1365,6 +1457,37 @@ static void redraw_last(void) {
 		draw_frame_impl(last_frame, last_frame_len, true);
 	}
 	else {
+	}
+}
+
+
+void remoteui_win_set_link_age(uint32_t seconds) {
+	link_age_s = seconds;
+	if (win == NULL) {
+		link_stale = false;
+	}
+	else {
+		bool stale = (seconds >= STALE_AGE_S);
+		// The seconds are part of what is drawn, so a repaint is due whenever
+		// they move on as well as when the view goes stale or comes back.
+		if ((stale != link_stale) ||
+				(stale && (seconds != stale_shown_s))) {
+			link_stale = stale;
+			stale_shown_s = seconds;
+			// Nothing else is going to repaint this: a device that has gone
+			// quiet is exactly one that sends no frames, which is the case
+			// being drawn for.
+			if (last_frame != NULL) {
+				redraw_last();
+			}
+			else {
+				// nothing has ever been drawn; the dimming and its message are
+				// the whole picture
+				draw_frame_impl(NULL, 0, true);
+			}
+		}
+		else {
+		}
 	}
 }
 

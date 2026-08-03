@@ -83,6 +83,10 @@ typedef struct {
 	// device needs its own framer: the streams are independent.
 	remote_stream_st rx;
 
+	// what the device last said about its CAN forwarding
+	remote_can_stats_st can_stats;
+	bool can_stats_known;
+
 	// geometry of the mirrored display, from REMOTE_MSG_TYPE_UI_INFO
 	uint16_t ui_w;
 	uint16_t ui_h;
@@ -135,6 +139,30 @@ static uint8_t fleet_count;
 // Set whenever the state or the tree changed, cleared by mqtt_poll_changed().
 static bool changed;
 
+// Devices the user has removed from the view. A removed device is still out
+// there publishing, so without this it would be back in the tree on its next
+// heartbeat. Session scoped: cleared on every connect (see mqtt_remove_dev()).
+typedef struct {
+	char fleet[MQTT_NAME_MAX];
+	char dev[MQTT_NAME_MAX];
+} mqtt_ignored_st;
+
+static mqtt_ignored_st ignored[MQTT_MAX_DEVS];
+static uint8_t ignored_count;
+
+
+/// @brief: True while (*fleet*, *dev*) is one the user has removed.
+static bool dev_is_ignored(const char *fleet, const char *dev) {
+	bool ret = false;
+	for (uint8_t i = 0; (i < ignored_count) && !ret; i++) {
+		if ((strcmp(ignored[i].fleet, fleet) == 0) &&
+				(strcmp(ignored[i].dev, dev) == 0)) {
+			ret = true;
+		}
+	}
+	return ret;
+}
+
 // Sink for reassembled mirrored UI frames.
 /// @brief: Largest asset that will be collected. A font's metrics are a few
 /// hundred bytes and an image a few tens of kilobytes; anything beyond this is
@@ -145,6 +173,10 @@ static mqtt_asset_callb_t asset_callb;
 static void *asset_user;
 static mqtt_ui_frame_callb_t ui_frame_callb;
 static void *ui_frame_user;
+static mqtt_close_callb_t close_callb;
+static void *close_user;
+static mqtt_can_callb_t can_callb;
+static void *can_user;
 
 
 // Connection parameters, copied here so the connect task can use them after
@@ -227,7 +259,8 @@ static mqtt_fleet_st *fleet_get(const char *name) {
 /// either to the tree when they are new.
 static void dev_seen(const char *fleet, const char *dev) {
 	mqtt_fleet_st *f = fleet_get(fleet);
-	if ((f != NULL) && (dev[0] != '\0')) {
+	if ((f != NULL) && (dev[0] != '\0') &&
+			!dev_is_ignored(fleet, dev)) {
 		mqtt_dev_st *d = NULL;
 		for (uint8_t i = 0; (i < f->dev_count) && (d == NULL); i++) {
 			if (strcmp(f->devs[i].name, dev) == 0) {
@@ -575,6 +608,44 @@ static void dev_frame_callb(void *user, remote_msg_types_e type,
 		ui_chunk(d, data, len, ctx->fleet_index, ctx->dev_index);
 		break;
 
+	case REMOTE_MSG_TYPE_CAN:
+	{
+		if (can_callb != NULL) {
+			uv_can_msg_st msg;
+			remote_can_msg_decode(data, &msg);
+			can_callb(ctx->fleet_index, ctx->dev_index, &msg, can_user);
+		}
+		else {
+			// nothing is bridging this device's bus; the device stops sending
+			// on its own once the feature is switched off
+		}
+		break;
+	}
+
+	case REMOTE_MSG_TYPE_CAN_STATS:
+		if (len >= REMOTE_MSG_TYPE_CAN_STATS_LEN) {
+			memcpy(&d->can_stats, &data[2], sizeof(d->can_stats));
+			d->can_stats_known = true;
+			changed = true;
+		}
+		else {
+		}
+		break;
+
+	case REMOTE_MSG_TYPE_CLOSE:
+		// The device has switched everything off at its end already, so the
+		// features it last reported are stale; showing them as still on would
+		// invite a "Kill remote UI" that has nothing left to kill.
+		d->features = 0;
+		changed = true;
+		printf("MQTT: device '%s' closed the remote session from its own end\n",
+				d->name);
+		fflush(stdout);
+		if (close_callb != NULL) {
+			close_callb(ctx->fleet_index, ctx->dev_index, close_user);
+		}
+		break;
+
 	default:
 		// CAN traffic and the rest are not consumed by the fleet view yet
 		break;
@@ -588,6 +659,9 @@ static void on_connect(struct mosquitto *m, void *obj, int rc) {
 		state = MQTT_STATE_CONNECTED;
 		err_str[0] = '\0';
 		changed = true;
+		// a new session lists the fleet as it really is; what the user hid in
+		// the last one is not carried over
+		ignored_count = 0;
 		printf("MQTT: connected to %s as '%s', subscribing to the fleet topics\n",
 				host_str, (conn_user[0] != '\0') ? conn_user : "(anonymous)");
 		fflush(stdout);
@@ -808,21 +882,46 @@ void mqtt_disconnect(void) {
 }
 
 
+/// @brief: How many times the client is pumped per call.
+///
+/// One pass handles one read, and this is called once per UI cycle — about 50
+/// times a second. A device forwarding its CAN bus sends far more messages than
+/// that, and everything the client cannot take in time is thrown away by the
+/// broker, since fleet traffic is QoS 0. The symptom is ugly: whole frames
+/// missing from the middle of a bridged bus with every counter at both ends
+/// insisting nothing was dropped. Draining what has arrived, rather than one
+/// message per cycle, is what makes the sink keep up; the bound is what keeps
+/// a flood from holding the UI.
+#define MQTT_LOOP_MAX_PASSES	64
+
 void mqtt_step(void) {
 	// pump from the moment the async connect was started: the loop is what
 	// carries it through the handshake and then delivers the CONNACK
 	if (mosq != NULL) {
-		int rc = mosquitto_loop(mosq, 0, 1);
-		if ((rc != MOSQ_ERR_SUCCESS) &&
-				(rc != MOSQ_ERR_NO_CONN) &&
-				(state == MQTT_STATE_CONNECTED)) {
-			// EINTR is expected here: the FreeRTOS POSIX port drives its scheduler
-			// with signals, so the loop's select() is interrupted regularly. Only a
-			// real transport failure ends the session.
-			if (!((rc == MOSQ_ERR_ERRNO) && (errno == EINTR))) {
-				mqtt_fail(mosquitto_strerror(rc));
+		for (uint8_t i = 0; i < MQTT_LOOP_MAX_PASSES; i++) {
+			int rc = mosquitto_loop(mosq, 0, 1);
+			if (rc == MOSQ_ERR_SUCCESS) {
+				// there may be more waiting; keep going until the bound
+			}
+			else if (rc == MOSQ_ERR_NO_CONN) {
+				break;
+			}
+			else if ((rc == MOSQ_ERR_ERRNO) && (errno == EINTR)) {
+				// Expected: the FreeRTOS POSIX port drives its scheduler with
+				// signals, so the loop's select() is interrupted regularly.
+				// Not a transport failure, and not a reason to stop draining.
+			}
+			else {
+				if (state == MQTT_STATE_CONNECTED) {
+					mqtt_fail(mosquitto_strerror(rc));
+				}
+				else {
+				}
+				break;
 			}
 		}
+	}
+	else {
 	}
 }
 
@@ -1001,6 +1100,54 @@ static mqtt_dev_st *dev_at(uint8_t fleet_index, uint8_t dev_index) {
 }
 
 
+bool mqtt_remove_dev(uint8_t fleet_index, uint8_t dev_index) {
+	mqtt_dev_st *d = dev_at(fleet_index, dev_index);
+	bool ret = false;
+	if (d != NULL) {
+		mqtt_fleet_st *f = &fleets[fleet_index];
+		printf("MQTT: removing device '%s' from the view of fleet '%s'\n",
+				d->name, f->name);
+		fflush(stdout);
+
+		if (ignored_count < MQTT_MAX_DEVS) {
+			strncpy(ignored[ignored_count].fleet, f->name,
+					sizeof(ignored[ignored_count].fleet) - 1);
+			ignored[ignored_count].fleet[
+					sizeof(ignored[ignored_count].fleet) - 1] = '\0';
+			strncpy(ignored[ignored_count].dev, d->name,
+					sizeof(ignored[ignored_count].dev) - 1);
+			ignored[ignored_count].dev[
+					sizeof(ignored[ignored_count].dev) - 1] = '\0';
+			ignored_count++;
+		}
+		else {
+			// there are as many ignore slots as device slots, so this cannot
+			// happen without the fleet having been emptied and refilled several
+			// times over; say so rather than let the device quietly come back
+			printf("MQTT: no room to remember '%s' as removed; it will reappear "
+					"when it next publishes\n", d->name);
+			fflush(stdout);
+		}
+
+		free(d->ui_buf);
+		free(d->asset_buf);
+		// close the gap: everything after the removed device moves down a slot,
+		// which is why the caller has to rebuild whatever indexes them
+		for (uint8_t i = dev_index; (i + 1) < f->dev_count; i++) {
+			f->devs[i] = f->devs[i + 1];
+		}
+		f->dev_count--;
+		memset(&f->devs[f->dev_count], 0, sizeof(f->devs[f->dev_count]));
+		changed = true;
+		ret = true;
+	}
+	else {
+		// no such device; nothing to remove
+	}
+	return ret;
+}
+
+
 const char *mqtt_get_dev_devname(uint8_t fleet_index, uint8_t dev_index) {
 	mqtt_dev_st *d = dev_at(fleet_index, dev_index);
 	return (d != NULL) ? d->devname : "";
@@ -1073,6 +1220,128 @@ bool mqtt_dev_set_features(uint8_t fleet_index, uint8_t dev_index,
 void mqtt_set_asset_callb(mqtt_asset_callb_t callb, void *user) {
 	asset_callb = callb;
 	asset_user = user;
+}
+
+
+void mqtt_set_close_callb(mqtt_close_callb_t callb, void *user) {
+	close_callb = callb;
+	close_user = user;
+}
+
+
+void mqtt_set_can_callb(mqtt_can_callb_t callb, void *user) {
+	can_callb = callb;
+	can_user = user;
+}
+
+
+/// @brief: Publishes one REMOTE frame on a device's to_dev topic. Everything
+/// this end sends a device goes out this way.
+static bool dev_publish(uint8_t fleet_index, uint8_t dev_index,
+		const uint8_t *frame, uint16_t len) {
+	mqtt_dev_st *d = dev_at(fleet_index, dev_index);
+	bool ret = false;
+	if ((d != NULL) && (mosq != NULL) && (state == MQTT_STATE_CONNECTED)) {
+		char topic[MQTT_NAME_MAX * 2 + 32];
+		snprintf(topic, sizeof(topic), "%s%s/clients/%s/to_dev",
+				TOPIC_ROOT, fleets[fleet_index].name, d->name);
+		ret = (mosquitto_publish(mosq, NULL, topic, (int) len,
+				frame, 0, false) == MOSQ_ERR_SUCCESS);
+	}
+	else {
+	}
+	return ret;
+}
+
+
+bool mqtt_dev_set_can_active(uint8_t fleet_index, uint8_t dev_index,
+		bool active) {
+	mqtt_dev_st *d = dev_at(fleet_index, dev_index);
+	bool ret = false;
+	if (d != NULL) {
+		// the UI feature is left as it is: the two are switched independently
+		// and neither owns the other
+		uint8_t mask = d->features;
+		if (active) {
+			mask |= REMOTE_IOT_FEATURE_CAN;
+		}
+		else {
+			mask &= (uint8_t) ~REMOTE_IOT_FEATURE_CAN;
+			d->can_stats_known = false;
+		}
+		ret = mqtt_dev_set_features(fleet_index, dev_index, mask);
+		changed = true;
+	}
+	else {
+	}
+	return ret;
+}
+
+
+bool mqtt_dev_get_can_active(uint8_t fleet_index, uint8_t dev_index) {
+	return ((mqtt_get_dev_features(fleet_index, dev_index) &
+			REMOTE_IOT_FEATURE_CAN) != 0);
+}
+
+
+bool mqtt_dev_send_rxclear(uint8_t fleet_index, uint8_t dev_index) {
+	uint8_t frame[REMOTE_MSG_TYPE_RXCLEAR_LEN] = {
+			REMOTE_MSG_START_BYTE,
+			REMOTE_MSG_TYPE_RXCLEAR
+	};
+	return dev_publish(fleet_index, dev_index, frame, sizeof(frame));
+}
+
+
+bool mqtt_dev_send_rxconf(uint8_t fleet_index, uint8_t dev_index,
+		uint32_t id, uint32_t mask, uv_can_msg_types_e type) {
+	uint8_t frame[REMOTE_MSG_TYPE_RXCONF_LEN] = {
+			REMOTE_MSG_START_BYTE,
+			REMOTE_MSG_TYPE_RXCONF
+	};
+	remote_can_rxconf_st rxconf = {
+			.id = id,
+			.mask = mask,
+			.type = type
+	};
+	memcpy(&frame[2], &rxconf, sizeof(rxconf));
+	return dev_publish(fleet_index, dev_index, frame, sizeof(frame));
+}
+
+
+bool mqtt_dev_send_rxdone(uint8_t fleet_index, uint8_t dev_index) {
+	uint8_t frame[REMOTE_MSG_TYPE_RXDONE_LEN] = {
+			REMOTE_MSG_START_BYTE,
+			REMOTE_MSG_TYPE_RXDONE
+	};
+	return dev_publish(fleet_index, dev_index, frame, sizeof(frame));
+}
+
+
+bool mqtt_dev_send_can(uint8_t fleet_index, uint8_t dev_index,
+		const uv_can_msg_st *msg) {
+	uint8_t frame[REMOTE_MSG_TYPE_CAN_MAX_LEN] = { };
+	remote_can_msg_encode(msg, frame);
+	return dev_publish(fleet_index, dev_index, frame,
+			(uint16_t) REMOTE_MSG_TYPE_CAN_LEN(msg->data_length));
+}
+
+
+bool mqtt_get_dev_can_stats(uint8_t fleet_index, uint8_t dev_index,
+		remote_can_stats_st *dest) {
+	mqtt_dev_st *d = dev_at(fleet_index, dev_index);
+	bool ret = false;
+	if ((d != NULL) && d->can_stats_known) {
+		if (dest != NULL) {
+			*dest = d->can_stats;
+		}
+		else {
+		}
+		ret = true;
+	}
+	else {
+	}
+	return ret;
 }
 
 

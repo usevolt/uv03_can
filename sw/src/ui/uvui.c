@@ -32,12 +32,17 @@
 #include "uvstdin.h"
 #include "ui/devicetab.h"
 #include "ui/fleettab.h"
+#include "remotecan.h"
 #include "ui/uv_uitextedit.h"
 #include "ui/uv_uiimage.h"
 // The Usevolt logo, compiled into the binary as a byte array (usevolt_bg_png /
 // usevolt_bg_png_len). Generated from media/usevolt_bg.png by the makefile and
 // drawn as a faint background watermark.
 #include "media_usevolt_bg.h"
+// The image on the "Remove" buttons (minus_hd_png / minus_hd_png_len), served to
+// the tabs that carry one by uvui_get_remove_media(). Both generated headers
+// define their arrays, so each may be included in exactly one source file.
+#include "media_minus_hd.h"
 
 
 // Maximum number of device-tab-window tabs: "Overview" + one per device +
@@ -202,6 +207,22 @@ void uvui_set_log_title(const char *title) {
 
 void uvui_reset_log_title(void) {
 	uvui_set_log_title("Log");
+}
+
+
+uv_uimedia_st *uvui_get_remove_media(void) {
+	// Decoded once and kept: the renderer caches decoded images by name anyway,
+	// so the cost is a pointer either way, and every caller gets the same one.
+	static uv_uimedia_st media;
+	static bool loaded;
+	if (!loaded) {
+		uv_uimedia_newbitmapexmem_mem(&media, "minus_hd",
+				minus_hd_png, minus_hd_png_len);
+		loaded = true;
+	}
+	else {
+	}
+	return &media;
 }
 
 
@@ -583,6 +604,11 @@ void uvui_exec(void) {
 
 		uv_rtos_task_delay(STEP_MS);
 	}
+
+	// The remote CAN bridge owns a network interface on this machine. It has to
+	// go with the window that opened it: an interface left behind advertises a
+	// bus that nothing is carrying any more.
+	remotecan_stop();
 
 	uv_ui_destroy();
 }

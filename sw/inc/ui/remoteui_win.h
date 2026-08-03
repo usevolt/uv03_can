@@ -93,6 +93,18 @@ void remoteui_win_asset_received(uint8_t kind, uint32_t id,
 		const uint8_t *data, uint32_t len);
 
 
+/// @brief: Tells the window how long ago anything at all was last heard from
+/// the device, in seconds.
+///
+/// Frames are no measure of that: a device only sends one when its screen
+/// changes, so a still display and a dead link look alike from here. The caller
+/// knows better - it also sees the device's heartbeat - and once too long has
+/// passed the view is dimmed and says it is waiting for the link to come back,
+/// rather than showing a screen that may be minutes out of date as if it were
+/// live.
+void remoteui_win_set_link_age(uint32_t seconds);
+
+
 /// @brief: Pumps the window. Must be called every UI cycle; it is what notices
 /// the user closing the window from its title bar.
 void remoteui_win_step(void);
