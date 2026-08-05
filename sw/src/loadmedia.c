@@ -130,13 +130,16 @@ static const char *media_devname(const char *fullpath, const char *strip_prefix)
 // Loads a single media file onto the device. *filename* is the local path used
 // to open and read the file; *devname* is the name stored on the device (kept
 // relative to the package root, e.g. "media/test.png", so no host-side
-// /tmp/... extraction path leaks onto the device).
+// /tmp/... extraction path leaks onto the device). All progress and error
+// messages name the file by *devname* as well: the local path of a file
+// extracted from a package is a temporary directory the user never sees, so
+// printing it only obscures which media file is meant.
 static void load(char *filename, const char *devname, uint32_t count, uint32_t index) {
 	FILE *fptr = fopen(filename, "rb");
 
 	if (fptr == NULL) {
 		// failed to open the file, exit this task
-		PRINT("Failed to open media file %s.\n", filename);
+		PRINT("Failed to open media file %s.\n", devname);
 		fflush(stderr);
 	}
 	else {
@@ -147,11 +150,11 @@ static void load(char *filename, const char *devname, uint32_t count, uint32_t i
 		rewind(fptr);
 		bool success = true;
 		uint8_t data[size];
-		printf("Opened file %s. Size: %i bytes.\n", filename, size);
+		printf("Opened file %s. Size: %i bytes.\n", devname, size);
 		size_t ret = fread(data, size, 1, fptr);
 		if (!ret) {
 			printf("ERROR: Reading media file '%s' failed. "
-					"Firmware download cancelled.\n", filename);
+					"Firmware download cancelled.\n", devname);
 			fflush(stdout);
 		}
 		else {
@@ -233,7 +236,7 @@ static void load(char *filename, const char *devname, uint32_t count, uint32_t i
 		fclose(fptr);
 		if (!success) {
 			printf("*** ERROR ***:\n"
-					"    Media file %s loading failed\n", filename);
+					"    Media file %s loading failed\n", devname);
 			fflush(stdout);
 		}
 	}
@@ -292,7 +295,8 @@ static void load_media_path(const char *path, const char *strip_prefix,
 	const char *str = path;
 	struct stat path_stat;
 	if (stat(str, &path_stat) != 0) {
-		printf("Unknown file '%s' given to *loadmedia*\n", str);
+		printf("Unknown file '%s' given to *loadmedia*\n",
+				media_devname(str, strip_prefix));
 	}
 	else if (S_ISDIR(path_stat.st_mode)) {
 		DIR *dirp = opendir(str);
@@ -324,7 +328,8 @@ static void load_media_path(const char *path, const char *strip_prefix,
 		(*index)++;
 	}
 	else {
-		printf("Unknown file '%s' given to *loadmedia*\n", str);
+		printf("Unknown file '%s' given to *loadmedia*\n",
+				media_devname(str, strip_prefix));
 	}
 }
 
