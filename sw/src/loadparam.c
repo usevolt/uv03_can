@@ -871,10 +871,17 @@ static bool is_empty_line(const char *str) {
 // Object dictionary location and type of the "suppress emcy messages" object in
 // the loaded database, found by emcy_suppress_find(). When mindex is 0 the
 // database has no such object.
+//
+// *guessed* marks a location which was not read from a database at all but taken
+// from the standard EMCY_SUPPRESS_INDEX / EMCY_SUPPRESS_SUBINDEX location because
+// there was no database to look it up in (see emcy_suppress_begin). A device
+// without the object then answers the write with an SDO abort, which is an
+// expected answer there rather than a failure.
 typedef struct {
 	uint16_t mindex;
 	uint8_t sindex;
 	canopen_object_type_e type;
+	bool guessed;
 } emcy_suppress_st;
 
 
@@ -883,6 +890,7 @@ static void emcy_suppress_set(emcy_suppress_st *out, const db_obj_st *o) {
 	out->mindex = o->obj.main_index;
 	out->sindex = o->obj.sub_index;
 	out->type = o->obj.type;
+	out->guessed = false;
 }
 
 
@@ -922,8 +930,10 @@ static bool emcy_suppress_find(emcy_suppress_st *out) {
 }
 
 
-// Writes *value* (0 or 1) to the "suppress emcy messages" object on *node*.
-static void emcy_suppress_write(const emcy_suppress_st *s, uint8_t node,
+// Writes *value* (0 or 1) to the "suppress emcy messages" object on *node* and
+// returns how the transfer went, so the caller remembers only the nodes which
+// really were silenced.
+static uv_errors_e emcy_suppress_write(const emcy_suppress_st *s, uint8_t node,
 		uint32_t value) {
 	uint32_t v = value;
 	uv_errors_e e = loadparam_sdo_write(node, s->mindex, s->sindex,
@@ -932,19 +942,28 @@ static void emcy_suppress_write(const emcy_suppress_st *s, uint8_t node,
 		printf("%s EMCY messages on node 0x%x\n",
 				value ? "Suppressing" : "Re-enabling", (unsigned int) node);
 	}
+	else if (s->guessed) {
+		// the location was a guess, so the device refusing it just means its
+		// firmware predates the parameter. Its parameters load exactly as before;
+		// they are only written with the EMCY messages left live.
+		printf("Node 0x%x has no \"suppress emcy messages\" parameter; loading "
+				"with EMCY messages enabled.\n", (unsigned int) node);
+	}
 	else {
 		WARNING("Failed to %s EMCY messages on node 0x%x\n",
 				value ? "suppress" : "re-enable", (unsigned int) node);
 	}
 	fflush(stdout);
+	return e;
 }
 
 
-// The "suppress emcy messages" object of the database this load writes with,
-// looked up once by emcy_suppress_begin(); mindex 0 when the database defines no
-// such object. Held for the whole load so every device can be suppressed before
-// its own parameters are written (emcy_suppress_node, called from parse_dev) and
-// so exactly the suppressed devices are re-enabled at the end
+// The "suppress emcy messages" object this load writes with, looked up once by
+// emcy_suppress_begin() in the loaded database or, with no database loaded, taken
+// from its standard location. mindex is 0 only when a database was loaded and it
+// defines no such object. Held for the whole load so every device can be
+// suppressed before its own parameters are written (emcy_suppress_node, called
+// from parse_dev) and so exactly the suppressed devices are re-enabled at the end
 // (emcy_suppress_end). One load runs at a time, so a single set is enough.
 static emcy_suppress_st load_emcy_suppress;
 static bool emcy_suppressed[EMCY_SUPPRESS_NODE_COUNT];
@@ -955,21 +974,35 @@ static bool emcy_suppress_warned;
 
 // Starts the EMCY handling of one load: looks the object up and forgets the nodes
 // the previous load suppressed.
+//
+// Not every load has a database to look the object up in: the raw parameter file
+// path (loadparam_run_files) loads no object dictionary at all, since the file
+// carries every index it writes and the node id it writes them to. Leaving those
+// loads unsuppressed would mean the suppress never happens outside the .uvdev
+// path, so the object is addressed where can_common.json puts it and the device
+// itself gets to say whether it has it.
 static void emcy_suppress_begin(void) {
 	memset(emcy_suppressed, 0, sizeof(emcy_suppressed));
 	memset(&load_emcy_suppress, 0, sizeof(load_emcy_suppress));
 	emcy_suppress_warned = false;
-	(void) emcy_suppress_find(&load_emcy_suppress);
+	if (!emcy_suppress_find(&load_emcy_suppress) && !db_is_loaded(&dev.db)) {
+		load_emcy_suppress.mindex = EMCY_SUPPRESS_INDEX;
+		load_emcy_suppress.sindex = EMCY_SUPPRESS_SUBINDEX;
+		load_emcy_suppress.type = CANOPEN_UNSIGNED8;
+		load_emcy_suppress.guessed = true;
+	}
 }
 
 
 // Suppresses the EMCY messages of *node*, unless this load already did so.
 //
-// A database which defines no such object is only worth a warning, given once per
-// load and here rather than in emcy_suppress_begin() so it is printed where it
-// matters: right before the first device's parameters go in. The device cannot be
-// silenced, but its parameters are perfectly loadable; the load just gets the
-// device's EMCY warnings mixed into its output.
+// mindex 0 means a database was loaded and it defines no such object (a database
+// which was never loaded is covered by the standard location emcy_suppress_begin
+// falls back to). That is only worth a warning, given once per load and here
+// rather than in emcy_suppress_begin() so it is printed where it matters: right
+// before the first device's parameters go in. The device cannot be silenced, but
+// its parameters are perfectly loadable; the load just gets the device's EMCY
+// warnings mixed into its output.
 static void emcy_suppress_node(uint8_t node) {
 	if (load_emcy_suppress.mindex == 0) {
 		if (!emcy_suppress_warned) {
@@ -983,8 +1016,11 @@ static void emcy_suppress_node(uint8_t node) {
 	}
 	else if ((node != 0) && (node < EMCY_SUPPRESS_NODE_COUNT) &&
 			!emcy_suppressed[node]) {
-		emcy_suppress_write(&load_emcy_suppress, node, 1);
-		emcy_suppressed[node] = true;
+		// only a node which really was silenced is re-enabled at the end: a device
+		// which refused the write was never suppressed, so clearing the flag on it
+		// afterwards would write an object it has already said it does not have
+		emcy_suppressed[node] =
+				(emcy_suppress_write(&load_emcy_suppress, node, 1) == ERR_NONE);
 	}
 	else {
 		// already suppressed, or there is no node to address
@@ -998,7 +1034,7 @@ static void emcy_suppress_node(uint8_t node) {
 static void emcy_suppress_end(void) {
 	for (uint16_t node = 0; node < EMCY_SUPPRESS_NODE_COUNT; node++) {
 		if (emcy_suppressed[node]) {
-			emcy_suppress_write(&load_emcy_suppress, (uint8_t) node, 0);
+			(void) emcy_suppress_write(&load_emcy_suppress, (uint8_t) node, 0);
 			emcy_suppressed[node] = false;
 		}
 	}
@@ -1747,7 +1783,7 @@ static bool loadparam_emcy_suppress_device(device_st *device, uint32_t value,
 			(device->nodeid != 0) && load_device_db(device)) {
 		emcy_suppress_st s = { };
 		if (emcy_suppress_find(&s)) {
-			emcy_suppress_write(&s, device->nodeid, value);
+			(void) emcy_suppress_write(&s, device->nodeid, value);
 			if (out != NULL) {
 				*out = s;
 			}
@@ -1873,7 +1909,7 @@ void loadparam_system(device_st **devices, uint8_t count) {
 	for (uint8_t i = 0; i < n; i++) {
 		device_st *d = devices[i];
 		if ((d != NULL) && has_emcy[i]) {
-			emcy_suppress_write(&emcy[i], d->nodeid, 0);
+			(void) emcy_suppress_write(&emcy[i], d->nodeid, 0);
 		}
 	}
 
