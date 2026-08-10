@@ -150,16 +150,26 @@ void loadparam_load_params_async(device_st **devices, uint8_t count);
 bool loadparam_load_params_is_finished(void);
 
 
-/// @brief: Loads the parameters bundled with a loaded system configuration onto
-/// every given device, on its own task so the UI stays live. Each device's own
-/// param_file is the source; devices with no param_file are skipped.
+/// @brief: Loads the parameters bundled with a system configuration onto every
+/// given device, sequencing the load across all of them in five phases: EMCY
+/// messages are suppressed on every device first, then each device's parameters
+/// are written in turn, and finally every device is stored and reset together. So
+/// a device does not emit EMCY warnings while another device is being written, and
+/// the devices come back up together instead of one at a time.
 ///
-/// Unlike loadparam_load_params_async() (which runs the full per-device cycle one
-/// device at a time), the load is sequenced across all devices: EMCY messages are
-/// suppressed on every device first, then each device's parameters are written in
-/// turn, and finally every device is stored and reset simultaneously, so a device
-/// does not emit EMCY warnings while another device is being written. Poll
-/// loadparam_load_system_is_finished().
+/// Each device's own param_file is the source; a device with no param_file is
+/// skipped with a warning. A device which refuses its parameters lets the user
+/// choose whether the remaining devices are still loaded; either way only the
+/// devices written so far are stored and reset.
+///
+/// Blocks until the whole load is done, so the caller has to be a task of its own
+/// (see loadparam_load_system_async) or a command already running as one (the
+/// --loadparam command).
+void loadparam_system(device_st **devices, uint8_t count);
+
+
+/// @brief: Runs loadparam_system() on its own task, so the caller (the UI) is not
+/// blocked while the system is loaded. Poll loadparam_load_system_is_finished().
 void loadparam_load_system_async(device_st **devices, uint8_t count);
 
 

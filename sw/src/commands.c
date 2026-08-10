@@ -335,7 +335,12 @@ commands_st commands[] = {
 						"a .uvsys package (each device's bundled parameters are written to it). If the\n"
 						"argument is omitted, the bundled parameters of the devices loaded earlier with\n"
 						"--sys / --dev are written. .uvdev packages are not accepted (they carry no\n"
-						"parameters).",
+						"parameters).\n"
+						"EMCY messages are suppressed on every target device before the first parameter\n"
+						"is written, so no device warns about another one being configured. A device\n"
+						"which does not have the parameter is loaded anyway, with a warning. For a\n"
+						"whole system the devices are stored and reset together once all of them have\n"
+						"been written.",
 				.args = ARG_OPTIONAL,
 				.callback = &cmd_loadparam
 		},

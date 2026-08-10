@@ -246,39 +246,18 @@ static bool loadparam_ask_continue(uint8_t nodeid, uint8_t remaining) {
 // Loads bundled parameters onto each system device in the index range [start,
 // end). Each device's own PARAM file (recorded when the system package was loaded)
 // is the source; a device with no bundled parameters is skipped with a warning.
-// Runs the full per-device cycle (suppress EMCY, write, store, reset) for each.
+//
+// The devices are loaded as one system (loadparam_system), so EMCY messages are
+// suppressed on all of them before the first parameter is written and they are
+// reset together at the end, instead of each device running its own
+// suppress/write/store/reset cycle while the others are still live.
 static void loadparam_devices(uint8_t start, uint8_t end) {
-	uint8_t total = 0;
-	uint8_t ok = 0;
-	bool aborted = false;
-	for (uint8_t i = start; (i < end) && !aborted; i++) {
-		device_st *d = &dev.system.devs[i];
-		if (strlen(d->param_file) == 0) {
-			WARNING("Device '%s' (node 0x%x) has no bundled parameters; "
-					"skipping.\n", d->name, (unsigned int) d->nodeid);
-			continue;
-		}
-		total++;
-		printf("\nLoading parameters to node 0x%x from '%s'\n",
-				(unsigned int) d->nodeid, d->param_file);
-		fflush(stdout);
-		if (loadparam_load_device(d, d->param_file)) {
-			ok++;
-		}
-		else {
-			ERROR("Parameter loading to node 0x%x failed.\n",
-					(unsigned int) d->nodeid);
-			// let the user stop the batch here, as long as there is still
-			// something left to stop
-			uint8_t remaining = (uint8_t) (end - i - 1);
-			if ((remaining > 0) && !loadparam_ask_continue(d->nodeid, remaining)) {
-				aborted = true;
-			}
-		}
+	device_st *devices[SYSTEM_DEV_MAX_COUNT];
+	uint8_t count = 0;
+	for (uint8_t i = start; (i < end) && (count < SYSTEM_DEV_MAX_COUNT); i++) {
+		devices[count++] = &dev.system.devs[i];
 	}
-	printf("\nLoaded parameters to %u/%u device(s).%s\n",
-			(unsigned int) ok, (unsigned int) total,
-			aborted ? " The load was aborted by the user." : "");
+	loadparam_system(devices, count);
 }
 
 
@@ -874,6 +853,158 @@ static bool is_empty_line(const char *str) {
 }
 
 
+// Standard object-dictionary location of the "suppress EMCY messages" object,
+// defined in the shared can_common.json. Writing 1 to it stops the device from
+// emitting EMCY warning messages while its parameters are being changed.
+//
+// The subindex is part of the location: the main index holds more than one object
+// ("HAL calibration request" at subindex 0), so an object matched by its main
+// index alone is the wrong one -- and writing 1 to that one asks the device to
+// calibrate instead of silencing it.
+#define EMCY_SUPPRESS_INDEX		0x2020
+#define EMCY_SUPPRESS_SUBINDEX	1
+
+// Node ids are 7 bit, so this covers every node the suppress state is tracked for.
+#define EMCY_SUPPRESS_NODE_COUNT	128
+
+
+// Object dictionary location and type of the "suppress emcy messages" object in
+// the loaded database, found by emcy_suppress_find(). When mindex is 0 the
+// database has no such object.
+typedef struct {
+	uint16_t mindex;
+	uint8_t sindex;
+	canopen_object_type_e type;
+} emcy_suppress_st;
+
+
+// Copies *o*'s location and type into *out*.
+static void emcy_suppress_set(emcy_suppress_st *out, const db_obj_st *o) {
+	out->mindex = o->obj.main_index;
+	out->sindex = o->obj.sub_index;
+	out->type = o->obj.type;
+}
+
+
+// Searches the loaded database (dev.db) for the "suppress emcy messages" object.
+// It is matched first at its standard location (EMCY_SUPPRESS_INDEX /
+// EMCY_SUPPRESS_SUBINDEX, from can_common.json) and, failing that, loosely by
+// name (case-insensitive, must mention both "suppress" and "emcy") so databases
+// which keep it elsewhere still work. Fills *out* and returns true when found.
+static bool emcy_suppress_find(emcy_suppress_st *out) {
+	bool found = false;
+	for (int32_t i = 0; (i < db_get_object_count(&dev.db)) && !found; i++) {
+		db_obj_st *o = db_get_obj(&dev.db, i);
+		if ((o->obj.main_index == EMCY_SUPPRESS_INDEX) &&
+				(o->obj.sub_index == EMCY_SUPPRESS_SUBINDEX)) {
+			emcy_suppress_set(out, o);
+			found = true;
+		}
+	}
+	for (int32_t i = 0; (i < db_get_object_count(&dev.db)) && !found; i++) {
+		db_obj_st *o = db_get_obj(&dev.db, i);
+		char *name = dbvalue_get_string(&o->name);
+		if (name != NULL) {
+			char low[128];
+			uint16_t k = 0;
+			for (; (name[k] != '\0') && (k < sizeof(low) - 1); k++) {
+				low[k] = (char) tolower((unsigned char) name[k]);
+			}
+			low[k] = '\0';
+			if ((strstr(low, "suppress") != NULL) &&
+					(strstr(low, "emcy") != NULL)) {
+				emcy_suppress_set(out, o);
+				found = true;
+			}
+		}
+	}
+	return found;
+}
+
+
+// Writes *value* (0 or 1) to the "suppress emcy messages" object on *node*.
+static void emcy_suppress_write(const emcy_suppress_st *s, uint8_t node,
+		uint32_t value) {
+	uint32_t v = value;
+	uv_errors_e e = loadparam_sdo_write(node, s->mindex, s->sindex,
+			CANOPEN_SIZEOF(s->type), &v);
+	if (e == ERR_NONE) {
+		printf("%s EMCY messages on node 0x%x\n",
+				value ? "Suppressing" : "Re-enabling", (unsigned int) node);
+	}
+	else {
+		WARNING("Failed to %s EMCY messages on node 0x%x\n",
+				value ? "suppress" : "re-enable", (unsigned int) node);
+	}
+	fflush(stdout);
+}
+
+
+// The "suppress emcy messages" object of the database this load writes with,
+// looked up once by emcy_suppress_begin(); mindex 0 when the database defines no
+// such object. Held for the whole load so every device can be suppressed before
+// its own parameters are written (emcy_suppress_node, called from parse_dev) and
+// so exactly the suppressed devices are re-enabled at the end
+// (emcy_suppress_end). One load runs at a time, so a single set is enough.
+static emcy_suppress_st load_emcy_suppress;
+static bool emcy_suppressed[EMCY_SUPPRESS_NODE_COUNT];
+// true once this load has told the user that the database has no such object, so
+// a multi-device load says it once instead of per device
+static bool emcy_suppress_warned;
+
+
+// Starts the EMCY handling of one load: looks the object up and forgets the nodes
+// the previous load suppressed.
+static void emcy_suppress_begin(void) {
+	memset(emcy_suppressed, 0, sizeof(emcy_suppressed));
+	memset(&load_emcy_suppress, 0, sizeof(load_emcy_suppress));
+	emcy_suppress_warned = false;
+	(void) emcy_suppress_find(&load_emcy_suppress);
+}
+
+
+// Suppresses the EMCY messages of *node*, unless this load already did so.
+//
+// A database which defines no such object is only worth a warning, given once per
+// load and here rather than in emcy_suppress_begin() so it is printed where it
+// matters: right before the first device's parameters go in. The device cannot be
+// silenced, but its parameters are perfectly loadable; the load just gets the
+// device's EMCY warnings mixed into its output.
+static void emcy_suppress_node(uint8_t node) {
+	if (load_emcy_suppress.mindex == 0) {
+		if (!emcy_suppress_warned) {
+			WARNINGSTR("The device defines no \"suppress emcy messages\" parameter.\n"
+					"Loading the parameters without suppressing EMCY messages: the "
+					"device\n"
+					"may emit EMCY warnings while its parameters are written.\n");
+			fflush(stdout);
+			emcy_suppress_warned = true;
+		}
+	}
+	else if ((node != 0) && (node < EMCY_SUPPRESS_NODE_COUNT) &&
+			!emcy_suppressed[node]) {
+		emcy_suppress_write(&load_emcy_suppress, node, 1);
+		emcy_suppressed[node] = true;
+	}
+	else {
+		// already suppressed, or there is no node to address
+	}
+}
+
+
+// Re-enables the EMCY messages on every node this load suppressed them on. Called
+// once all the parameters are written and before they are stored, so that the
+// suppressed state is not what gets saved into the devices.
+static void emcy_suppress_end(void) {
+	for (uint16_t node = 0; node < EMCY_SUPPRESS_NODE_COUNT; node++) {
+		if (emcy_suppressed[node]) {
+			emcy_suppress_write(&load_emcy_suppress, (uint8_t) node, 0);
+			emcy_suppressed[node] = false;
+		}
+	}
+}
+
+
 static uv_errors_e parse_dev(parser_node_st devnode) {
 	uv_errors_e ret = ERR_NONE;
 	parser_node_st obj = parser_find_child(devnode, "NODEID");
@@ -1096,6 +1227,18 @@ static uv_errors_e parse_dev(parser_node_st devnode) {
 				this->modified_dev_nodeids[this->dev_count++] = db_get_nodeid(&dev.db);
 			}
 
+			// Suppress this device's EMCY messages before the first parameter is
+			// written to it, so changing the parameters does not make it emit EMCY
+			// warnings. The node id is only known here: the parameter file selects
+			// it (see above), so the load cannot address the right device from
+			// loadparam_step, before the file has been read. Every suppressed device
+			// is re-enabled once the whole load is done (loadparam_step).
+			// In system-load mode the caller suppresses (and later clears) EMCY on
+			// every device of the system itself, so skip it here.
+			if (!this->sys_load_mode) {
+				emcy_suppress_node(db_get_nodeid(&dev.db));
+			}
+
 			obj = parser_find_child(devnode, "PARAMS");
 			if (parser_node_is_valid(obj) && parser_get_type(obj) == PARSER_ARRAY) {
 				parser_node_st arr = obj;
@@ -1249,77 +1392,6 @@ static uv_errors_e parse_dev(parser_node_st devnode) {
 }
 
 
-// Standard object-dictionary index of the "suppress EMCY messages" object,
-// defined in the shared can_common.json. Writing 1 to it stops the device from
-// emitting EMCY warning messages while its parameters are being changed.
-#define EMCY_SUPPRESS_INDEX		0x2020
-
-
-// Object dictionary location and type of the "suppress emcy messages" object in
-// the loaded database, found by emcy_suppress_find(). When mindex is 0 the
-// database has no such object.
-typedef struct {
-	uint16_t mindex;
-	uint8_t sindex;
-	canopen_object_type_e type;
-} emcy_suppress_st;
-
-
-// Searches the loaded database (dev.db) for the "suppress emcy messages" object.
-// It is matched first by its standard index (EMCY_SUPPRESS_INDEX, from
-// can_common.json) and, failing that, loosely by name (case-insensitive, must
-// mention both "suppress" and "emcy") so older databases still work. Fills *out*
-// and returns true when found.
-static bool emcy_suppress_find(emcy_suppress_st *out) {
-	bool found = false;
-	for (int32_t i = 0; (i < db_get_object_count(&dev.db)) && !found; i++) {
-		db_obj_st *o = db_get_obj(&dev.db, i);
-		if (o->obj.main_index == EMCY_SUPPRESS_INDEX) {
-			out->mindex = o->obj.main_index;
-			out->sindex = o->obj.sub_index;
-			out->type = o->obj.type;
-			found = true;
-			break;
-		}
-		char *name = dbvalue_get_string(&o->name);
-		if (name != NULL) {
-			char low[128];
-			uint16_t k = 0;
-			for (; (name[k] != '\0') && (k < sizeof(low) - 1); k++) {
-				low[k] = (char) tolower((unsigned char) name[k]);
-			}
-			low[k] = '\0';
-			if ((strstr(low, "suppress") != NULL) &&
-					(strstr(low, "emcy") != NULL)) {
-				out->mindex = o->obj.main_index;
-				out->sindex = o->obj.sub_index;
-				out->type = o->obj.type;
-				found = true;
-			}
-		}
-	}
-	return found;
-}
-
-
-// Writes *value* (0 or 1) to the "suppress emcy messages" object on *node*.
-static void emcy_suppress_write(const emcy_suppress_st *s, uint8_t node,
-		uint32_t value) {
-	uint32_t v = value;
-	uv_errors_e e = loadparam_sdo_write(node, s->mindex, s->sindex,
-			CANOPEN_SIZEOF(s->type), &v);
-	if (e == ERR_NONE) {
-		printf("%s EMCY messages on node 0x%x\n",
-				value ? "Suppressing" : "Re-enabling", (unsigned int) node);
-	}
-	else {
-		WARNING("Failed to %s EMCY messages on node 0x%x\n",
-				value ? "suppress" : "re-enable", (unsigned int) node);
-	}
-	fflush(stdout);
-}
-
-
 void loadparam_step(void *ptr) {
 	this->finished = false;
 	this->success = false;
@@ -1331,17 +1403,14 @@ void loadparam_step(void *ptr) {
 
 	uv_errors_e e = ERR_NONE;
 
-	// If the database defines a "suppress emcy messages" object, set it on the
-	// target device before any parameters are written, so changing parameters
-	// does not make the device emit EMCY warning messages. It is cleared again
-	// once all parameters have been loaded (below).
+	// Look up the "suppress emcy messages" object of the database now, so each
+	// device can be silenced before its own parameters are written (parse_dev
+	// does that once it knows which node the file addresses). A database without
+	// the object only gets a warning there; the parameters are loaded either way.
 	// In system-load mode the caller suppresses (and later clears) EMCY on every
 	// device itself, so skip the per-device suppress here.
-	emcy_suppress_st emcy_suppress = { };
-	bool has_emcy_suppress = !this->sys_load_mode && emcy_suppress_find(&emcy_suppress);
-	uint8_t emcy_suppress_node = db_get_nodeid(&dev.db);
-	if (has_emcy_suppress && (emcy_suppress_node != 0)) {
-		emcy_suppress_write(&emcy_suppress, emcy_suppress_node, 1);
+	if (!this->sys_load_mode) {
+		emcy_suppress_begin();
 	}
 
 	while (strlen(this->files[this->current_file]) != 0) {
@@ -1527,22 +1596,9 @@ void loadparam_step(void *ptr) {
 	}
 
 	// all parameters have been written: clear the "suppress emcy messages" flag
-	// again on every device it could have been set on. Done before the parameters
-	// are stored and the devices reset, so the flag is not persisted as suppressed.
-	if (has_emcy_suppress) {
-		bool cleared[128] = { };
-		if (emcy_suppress_node != 0) {
-			emcy_suppress_write(&emcy_suppress, emcy_suppress_node, 0);
-			cleared[emcy_suppress_node] = true;
-		}
-		for (uint8_t i = 0; i < this->dev_count; i++) {
-			uint8_t nodeid = this->modified_dev_nodeids[i];
-			if ((nodeid != 0) && !cleared[nodeid]) {
-				emcy_suppress_write(&emcy_suppress, nodeid, 0);
-				cleared[nodeid] = true;
-			}
-		}
-	}
+	// again on every device it was set on. Done before the parameters are stored
+	// and the devices reset, so the flag is not persisted as suppressed.
+	emcy_suppress_end();
 
 	uv_errors_e ret = ERR_NONE;
 	if (this->file_invalid) {
@@ -1697,6 +1753,15 @@ static bool loadparam_emcy_suppress_device(device_st *device, uint32_t value,
 			}
 			ret = true;
 		}
+		else {
+			// nothing to suppress with: say so and let the load go on, the device's
+			// parameters are loadable regardless
+			WARNING("Device '%s' (node 0x%x) defines no \"suppress emcy messages\" "
+					"parameter.\nIts parameters are loaded without suppressing EMCY "
+					"messages.\n",
+					device->name, (unsigned int) device->nodeid);
+			fflush(stdout);
+		}
 		db_deinit();
 	}
 	return ret;
@@ -1730,25 +1795,35 @@ bool loadparam_load_system_is_finished(void) {
 }
 
 
-/// @brief: Task body loading a whole system's parameters in five phases, so the
-/// global ordering is: suppress EMCY everywhere, write each device, re-enable
-/// EMCY, store, then reset every device together.
-static void loadparam_system_task(void *ptr) {
-	uint8_t n = async_sys_count;
+void loadparam_system(device_st **devices, uint8_t count) {
+	uint8_t n = (count < SYSTEM_DEV_MAX_COUNT) ? count : SYSTEM_DEV_MAX_COUNT;
 	emcy_suppress_st emcy[SYSTEM_DEV_MAX_COUNT] = { };
 	bool has_emcy[SYSTEM_DEV_MAX_COUNT] = { };
 	bool written[SYSTEM_DEV_MAX_COUNT] = { };
+	bool load[SYSTEM_DEV_MAX_COUNT] = { };
+	uint8_t total = 0;
 
 	uv_can_set_up(false);
 
 	// Phase 1: suppress EMCY messages on every device before any parameter is
 	// written, so no device emits EMCY warnings while another is being changed.
+	// This is also where a device without bundled parameters drops out of the load.
 	loadparam_set_title("Loading system: suppressing EMCY messages...");
 	printf("Suppressing EMCY messages on all devices...\n");
 	fflush(stdout);
 	for (uint8_t i = 0; i < n; i++) {
-		device_st *d = async_sys_devs[i];
-		if ((d != NULL) && (strlen(d->param_file) != 0)) {
+		device_st *d = devices[i];
+		if (d == NULL) {
+			// nothing to load
+		}
+		else if (strlen(d->param_file) == 0) {
+			WARNING("Device '%s' (node 0x%x) has no bundled parameters; "
+					"skipping.\n", d->name, (unsigned int) d->nodeid);
+			fflush(stdout);
+		}
+		else {
+			load[i] = true;
+			total++;
 			has_emcy[i] = loadparam_emcy_suppress_device(d, 1, &emcy[i]);
 		}
 	}
@@ -1758,20 +1833,24 @@ static void loadparam_system_task(void *ptr) {
 	// device fails the user chooses whether the remaining devices are still loaded;
 	// either way only the devices written so far are stored/reset below.
 	bool aborted = false;
+	uint8_t ok = 0;
 	for (uint8_t i = 0; (i < n) && !aborted; i++) {
-		device_st *d = async_sys_devs[i];
-		if ((d != NULL) && (strlen(d->param_file) != 0)) {
+		device_st *d = devices[i];
+		if (load[i]) {
 			char title[256];
 			const char *dname = (strlen(d->devname) > 0) ? d->devname : d->name;
 			snprintf(title, sizeof(title),
 					"Loading system: parameters to device %u/%u (%s)",
 					(unsigned int) (i + 1), (unsigned int) n, dname);
 			loadparam_set_title(title);
-			printf("Loading parameters to node 0x%x from '%s'\n",
+			printf("\nLoading parameters to node 0x%x from '%s'\n",
 					(unsigned int) d->nodeid, d->param_file);
 			fflush(stdout);
 			written[i] = loadparam_load_device_ex(d, d->param_file, true);
-			if (!written[i]) {
+			if (written[i]) {
+				ok++;
+			}
+			else {
 				ERROR("Loading the parameters to node 0x%x failed.\n",
 						(unsigned int) d->nodeid);
 				fflush(stdout);
@@ -1792,7 +1871,7 @@ static void loadparam_system_task(void *ptr) {
 	// Phase 3: re-enable EMCY messages now that all parameters are written, so the
 	// suppressed state is not stored persistently in the next phase.
 	for (uint8_t i = 0; i < n; i++) {
-		device_st *d = async_sys_devs[i];
+		device_st *d = devices[i];
 		if ((d != NULL) && has_emcy[i]) {
 			emcy_suppress_write(&emcy[i], d->nodeid, 0);
 		}
@@ -1801,7 +1880,7 @@ static void loadparam_system_task(void *ptr) {
 	// Phase 4: store the parameters on every written device.
 	loadparam_set_title("Loading system: storing parameters...");
 	for (uint8_t i = 0; i < n; i++) {
-		device_st *d = async_sys_devs[i];
+		device_st *d = devices[i];
 		if ((d != NULL) && written[i]) {
 			printf("Saving the parameters to dev 0x%x...\n",
 					(unsigned int) d->nodeid);
@@ -1817,13 +1896,24 @@ static void loadparam_system_task(void *ptr) {
 	printf("Resetting all devices...\n");
 	fflush(stdout);
 	for (uint8_t i = 0; i < n; i++) {
-		device_st *d = async_sys_devs[i];
+		device_st *d = devices[i];
 		if ((d != NULL) && written[i]) {
 			uv_canopen_nmt_master_send_cmd(d->nodeid, CANOPEN_NMT_CMD_RESET_NODE);
 		}
 	}
 
+	printf("\nLoaded parameters to %u/%u device(s).%s\n",
+			(unsigned int) ok, (unsigned int) total,
+			aborted ? " The load was aborted by the user." : "");
+	fflush(stdout);
+
 	loadparam_reset_title();
+}
+
+
+/// @brief: Task body running loadparam_system() off the UI thread.
+static void loadparam_system_task(void *ptr) {
+	loadparam_system(async_sys_devs, async_sys_count);
 	async_sys_finished = true;
 	uv_rtos_task_delete(NULL);
 }
