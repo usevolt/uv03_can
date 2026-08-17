@@ -270,6 +270,16 @@ static void dev_seen(const char *fleet, const char *dev) {
 		if ((d == NULL) && (f->dev_count < MQTT_MAX_DEVS)) {
 			d = &f->devs[f->dev_count];
 			memset(d, 0, sizeof(*d));
+			// A zeroed framer is not an idle one: zero is CONNECT_REQ, not the
+			// "hunting for a start byte" sentinel, and its length is patched in
+			// only once a type has been read. Fed from that state the framer
+			// answers the very first byte with a bogus zero-length message and
+			// then eats the rest of the payload hunting for a start byte it has
+			// already passed - so the first REMOTE message a device ever sends
+			// is lost. That message is UI_INFO, the geometry the mirror window
+			// is sized from, which is why "Open remote UI" did nothing until it
+			// was clicked a second time.
+			remote_stream_reset(&d->rx);
 			strncpy(d->name, dev, sizeof(d->name) - 1);
 			d->name[sizeof(d->name) - 1] = '\0';
 			f->dev_count++;

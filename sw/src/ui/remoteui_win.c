@@ -33,6 +33,18 @@
 #include "uv_ui_common.h"
 #include "uv_ui_remote.h"
 
+// The faces compiled into the binary, used when no font file is found. An
+// installed uvcan is started from wherever the user happens to be, so the
+// "fonts/" directory next to the sources is not there to open - and the whole
+// mirrored view is text. The main window carries the same two faces for the
+// same reason; they are a header of static data, so this is a second copy
+// rather than a shared one.
+#include "ui/embedded_font.h"
+#include "ui/embedded_mono_font.h"
+
+#define SANS_FONT_FILE		"fonts/LiberationSans-Regular.ttf"
+#define MONO_FONT_FILE		"fonts/LiberationMono-Regular.ttf"
+
 // PNG and JPEG in one public-domain header. The device sends the image file as
 // it is stored, and it may be either.
 #define STB_IMAGE_IMPLEMENTATION
@@ -294,6 +306,19 @@ static devfont_st devfonts[DEVFONT_COUNT];
 /// lost.
 #define DEVFONT_RETRY_STEPS	150
 
+/// @brief: How long the link has to have been quiet before an image is asked
+/// for on our own initiative, in steps of the UI cycle.
+///
+/// Half a second: long enough that a screen still arriving in chunks, or a view
+/// being dragged about, is left alone, and short enough that the images of a
+/// screen that has settled fill in while the operator is still looking at it.
+#define ASSET_IDLE_STEPS	25
+
+/// @brief: Steps since anything was last heard from the device. The idle fetch
+/// below is the one thing here that speaks without being spoken to, so it waits
+/// for a gap rather than adding to whatever is already in flight.
+static uint16_t quiet_steps;
+
 static remoteui_asset_req_t asset_req_callb;
 static void *asset_req_user;
 
@@ -413,8 +438,13 @@ typedef struct devbitmap_st {
 	GLuint tex;
 	uint16_t w;
 	uint16_t h;
-	// asked for, and either not answered yet or answered with "no such image"
+	// asked for and not drawable yet: no answer so far, or one that carried
+	// nothing we could turn into a texture
 	bool missing;
+	// ...and the device has answered, so there is nothing more to wait for:
+	// either it has no such image or it is in a format this cannot read. Asking
+	// again would get the same answer, so the idle fetch leaves it alone.
+	bool refused;
 	uint16_t retry;
 } devbitmap_st;
 
@@ -525,13 +555,20 @@ static atlas_st *atlas_get(bool mono, uint16_t px) {
 	}
 
 	FT_Face face;
-	const char *path = mono ? "fonts/LiberationMono-Regular.ttf" :
-			"fonts/LiberationSans-Regular.ttf";
+	const char *path = mono ? MONO_FONT_FILE : SANS_FONT_FILE;
 	if (FT_New_Face(ft, path, 0, &face) != 0) {
-		printf("remote UI: could not open '%s', the mirrored view will have "
-				"no text\n", path);
-		fflush(stdout);
-		return NULL;
+		// no font file where we were started from; the compiled-in face draws
+		// the same glyphs
+		const unsigned char *mem = mono ?
+				embedded_mono_font_ttf : embedded_font_ttf;
+		unsigned int mem_len = mono ?
+				embedded_mono_font_ttf_len : embedded_font_ttf_len;
+		if (FT_New_Memory_Face(ft, mem, mem_len, 0, &face) != 0) {
+			printf("remote UI: neither '%s' nor the embedded font could be "
+					"loaded, the mirrored view will have no text\n", path);
+			fflush(stdout);
+			return NULL;
+		}
 	}
 	// *px* is a line height - what both ends call a font's char_height - and not
 	// the pixel size a face is set to. A face asked for N pixels lays its lines
@@ -1008,10 +1045,13 @@ static void render(const uint8_t *p, uint32_t len) {
 				uint32_t bc = rd32(&p[i + 17]);
 				devbitmap_st *b = devbitmap_find(bid);
 
-				// Ask for an image we have not seen. The device is drawing it
-				// at this moment, which is the only time it can find the file
-				// the id stands for, so asking now is asking at the one moment
-				// it can be answered.
+				// Ask for an image we have not seen. Asking while it is being
+				// drawn is asking at the best moment there is: the device can
+				// only turn the id back into a file name while it has the
+				// bitmap in hand. What comes of a request made at any other
+				// time is up to the device - it redraws to serve it - so the
+				// idle fetch in remoteui_win_step() carries on from here for
+				// whatever this screen did not get.
 				if ((b == NULL) && (asset_req_callb != NULL)) {
 					b = calloc(1, sizeof(*b));
 					if (b != NULL) {
@@ -1024,8 +1064,8 @@ static void render(const uint8_t *p, uint32_t len) {
 						b->retry = DEVFONT_RETRY_STEPS;
 					}
 				}
-				else if ((b != NULL) && b->missing && (b->retry == 0) &&
-						(asset_req_callb != NULL)) {
+				else if ((b != NULL) && b->missing && !b->refused &&
+						(b->retry == 0) && (asset_req_callb != NULL)) {
 					asset_req_callb(UV_UI_REMOTE_ASSET_KIND_BITMAP, bid,
 							asset_req_user);
 					b->retry = DEVFONT_RETRY_STEPS;
@@ -1116,6 +1156,8 @@ bool remoteui_win_open(const char *title, uint16_t width, uint16_t height) {
 	link_stale = false;
 	link_age_s = 0;
 	stale_shown_s = 0;
+	// the first screen is on its way: nothing to fetch behind its back yet
+	quiet_steps = 0;
 
 	// the device is driven from this window: a press here is a touch there
 	glfwSetMouseButtonCallback(win, &mirror_mouse_button_callb);
@@ -1155,6 +1197,8 @@ void remoteui_win_set_asset_request_callb(remoteui_asset_req_t callb,
 
 void remoteui_win_asset_received(uint8_t kind, uint32_t id,
 		const uint8_t *data, uint32_t len) {
+	// an asset is the link working; leave it to finish before asking for more
+	quiet_steps = 0;
 	if (kind == UV_UI_REMOTE_ASSET_KIND_FONT) {
 		int16_t slot = devfont_slot((uint8_t) id);
 		if (slot >= 0) {
@@ -1201,6 +1245,7 @@ void remoteui_win_asset_received(uint8_t kind, uint32_t id,
 				// either the device has no such image, or it is in a format
 				// this cannot read; either way asking again would not help
 				b->missing = true;
+				b->refused = true;
 				printf("remote UI: image %u could not be decoded (%u bytes)\n",
 						(unsigned int) id, (unsigned int) len);
 				fflush(stdout);
@@ -1448,6 +1493,7 @@ void remoteui_win_draw_frame(const uint8_t *cmds, uint32_t len) {
 	link_stale = false;
 	link_age_s = 0;
 	stale_shown_s = 0;
+	quiet_steps = 0;
 	draw_frame_impl(cmds, len, false);
 }
 
@@ -1492,6 +1538,48 @@ void remoteui_win_set_link_age(uint32_t seconds) {
 }
 
 
+/// @brief: Asks the device for one image the view is still missing, when the
+/// link has been quiet long enough to spare it.
+///
+/// Requests made while a screen is being drawn are the cheap ones - the device
+/// has the bitmap in hand - but the device serves one asset at a time and
+/// remembers only a handful of requests, so a screen with more images than that
+/// loses the rest. Nothing then asks for them again until that screen is drawn
+/// once more, which on a display that has settled may be never: the operator
+/// sits looking at outlines where the icons belong.
+///
+/// So they are picked up here instead, one per quiet gap. Each ask sets the
+/// image's retry, so the next gap moves on to another one and the screen fills
+/// in a piece at a time. One at a time is what the device can serve anyway, and
+/// the gap is what keeps this off the back of a link that is busy carrying the
+/// screen itself.
+static void assets_fetch_idle(void) {
+	devbitmap_st *want = NULL;
+	if (link_stale) {
+		// nothing has been heard from the device for a while; asking it for
+		// pictures is not what will bring it back
+		return;
+	}
+	for (devbitmap_st *b = devbitmaps; (b != NULL) && (want == NULL);
+			b = b->next) {
+		if (b->missing && !b->refused && (b->retry == 0)) {
+			want = b;
+		}
+		else {
+		}
+	}
+	if ((want != NULL) && (asset_req_callb != NULL)) {
+		asset_req_callb(UV_UI_REMOTE_ASSET_KIND_BITMAP, want->id,
+				asset_req_user);
+		want->retry = DEVFONT_RETRY_STEPS;
+		// the request itself is traffic: wait out another gap before the next
+		quiet_steps = 0;
+	}
+	else {
+	}
+}
+
+
 void remoteui_win_step(void) {
 	if (win != NULL) {
 		// count down the wait for an answer about a font, so a request that was
@@ -1509,6 +1597,12 @@ void remoteui_win_step(void) {
 			}
 			else {
 			}
+		}
+		if (quiet_steps < ASSET_IDLE_STEPS) {
+			quiet_steps++;
+		}
+		else {
+			assets_fetch_idle();
 		}
 		// glfwPollEvents is global, and the main UI loop already calls it; what
 		// matters here is noticing the user closing this window
