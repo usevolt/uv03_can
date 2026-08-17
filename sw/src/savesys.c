@@ -26,6 +26,7 @@
 #include "main.h"
 #include "system.h"
 #include "saveparam.h"
+#include "uvstdin.h"
 #include "ui/uvui.h"
 
 
@@ -90,6 +91,121 @@ static void sanitize(const char *src, char *dst, size_t len) {
 }
 
 
+// True when *str* holds nothing but an empty line, i.e. the user only pressed
+// enter.
+static bool is_empty_line(const char *str) {
+	return str[strspn(str, " \t\r\n")] == '\0';
+}
+
+
+// True when device *index* of *sys* ends up in the saved package. Kept next to
+// the manifest loop below, which skips exactly the same devices.
+static bool is_saved_device(system_st *sys, uint8_t index) {
+	device_st *d = system_get_dev(sys, index);
+	return (d != NULL) && (d->nodeid != 0) && !d->thirdparty &&
+			(d->state != DEV_STATE_OFFLINE) && (strlen(d->filepath) != 0);
+}
+
+
+// Name to identify a device by in the messages below.
+static const char *devname_of(device_st *d) {
+	return (strlen(d->devname) > 0) ? d->devname :
+			((strlen(d->name) > 0) ? d->name : "unnamed");
+}
+
+
+/// @brief: Warns about node ids used by more than one of the devices about to be
+/// written into the system package, and asks whether to save anyway.
+///
+/// Two devices sharing a node id is always a configuration error, but it is one
+/// that survives the save silently and only shows up much later: every consumer
+/// of the package addresses its devices by node id, so the duplicates cannot be
+/// told apart afterwards. Running the package's simulators is the clearest
+/// example - two simulators are started on the same node id, see each other
+/// transmitting with it, and each keeps taking the next node id, saving and
+/// resetting, so neither ever comes up.
+///
+/// The answer is read with uv_stdin_getline(), which blocks without halting the
+/// scheduler, so the UI stays live and offers its log command line for it (see
+/// uv_stdin_is_waiting).
+///
+/// @return: true to go on with the save, false to cancel it
+static bool savesys_ask_duplicates(system_st *sys) {
+	bool ret = true;
+	uint8_t dup_count = 0;
+
+	for (uint8_t i = 0; i < system_get_dev_count(sys); i++) {
+		if (!is_saved_device(sys, i)) {
+			continue;
+		}
+		device_st *d = system_get_dev(sys, i);
+		// report each node id once: only from its first occurrence
+		bool first = true;
+		for (uint8_t j = 0; (j < i) && first; j++) {
+			if (is_saved_device(sys, j) &&
+					(system_get_dev(sys, j)->nodeid == d->nodeid)) {
+				first = false;
+			}
+		}
+		if (!first) {
+			continue;
+		}
+		// count how many devices share this node id
+		uint8_t same = 0;
+		for (uint8_t j = i; j < system_get_dev_count(sys); j++) {
+			if (is_saved_device(sys, j) &&
+					(system_get_dev(sys, j)->nodeid == d->nodeid)) {
+				same++;
+			}
+		}
+		if (same < 2) {
+			continue;
+		}
+
+		dup_count++;
+		WARNING("WARNING: node id 0x%x is used by %u devices of this system:\n",
+				(unsigned int) d->nodeid, (unsigned int) same);
+		for (uint8_t j = i; j < system_get_dev_count(sys); j++) {
+			if (is_saved_device(sys, j) &&
+					(system_get_dev(sys, j)->nodeid == d->nodeid)) {
+				device_st *dup = system_get_dev(sys, j);
+				WARNING("    device %u: '%s' (%s)\n",
+						(unsigned int) (j + 1), devname_of(dup), dup->name);
+			}
+		}
+		fflush(stdout);
+	}
+
+	if (dup_count > 0) {
+		PROMPT("\n\n"
+				"%u node id(s) of this system are used by more than one device (listed "
+				"above).\n"
+				"Two devices cannot share a node id: the saved system configuration "
+				"would hold\n"
+				"the same device twice, and running its simulators leaves those "
+				"devices\n"
+				"restarting endlessly instead of coming online.\n\n"
+				"Remove the extra devices from the system and save again, or press "
+				"ENTER (empty\n"
+				"line) to save the system configuration as it is.\n\n",
+				(unsigned int) dup_count);
+		char str[128] = {};
+		uv_stdin_getline(str, sizeof(str) - 1);
+		if (!is_empty_line(str)) {
+			printf("User selected: cancel the save\n");
+			ret = false;
+		}
+		else {
+			printf("User selected: save the system configuration with duplicate "
+					"node ids\n");
+		}
+		fflush(stdout);
+	}
+
+	return ret;
+}
+
+
 bool savesys_save(const char *file) {
 	bool ret = false;
 	if ((file == NULL) || (strlen(file) == 0)) {
@@ -110,6 +226,16 @@ bool savesys_save(const char *file) {
 	}
 
 	system_st *sys = &dev.system;
+
+	// refuse to write a system whose devices share a node id without the user
+	// having seen it. Asked before anything is created or touched, so cancelling
+	// leaves no temp directory behind and the previous package intact
+	if (!savesys_ask_duplicates(sys)) {
+		printf("The system configuration was not saved.\n");
+		fflush(stdout);
+		return false;
+	}
+
 	uv_can_set_up(false);
 
 	// staging directory the package contents are assembled in before zipping
