@@ -35,9 +35,20 @@ static int feed_fd = -1;
 // task, read on the UI task.
 static volatile bool input_waiting = false;
 
+// Number of prompts (uv_stdin_getline / uv_stdin_getchar calls) started so far.
+// Polled by the GUI, which opens its log command line whenever this changes, so
+// every prompt is seen even if it never blocks. Volatile: incremented on the
+// reading task, read on the UI task.
+static volatile unsigned long prompt_count = 0;
+
 
 bool uv_stdin_is_waiting(void) {
 	return input_waiting;
+}
+
+
+unsigned long uv_stdin_get_prompt_count(void) {
+	return prompt_count;
 }
 
 
@@ -69,6 +80,10 @@ char *uv_stdin_getline(char *buf, size_t bufsize) {
 	if ((buf == NULL) || (bufsize == 0)) {
 		return NULL;
 	}
+	// count the prompt before the first byte is read: a prompt whose answer is
+	// already in the pipe never blocks, so the waiting flag alone would not show
+	// it to the GUI
+	prompt_count++;
 	size_t i = 0;
 	bool any = false;
 	while (i + 1 < bufsize) {
@@ -90,6 +105,7 @@ char *uv_stdin_getline(char *buf, size_t bufsize) {
 
 
 int uv_stdin_getchar(void) {
+	prompt_count++;
 	char c;
 	int r = read_byte(&c);
 	return (r == 1) ? (int) (unsigned char) c : -1;

@@ -63,9 +63,19 @@ void uv_stdin_feed(const char *line);
 
 
 /// @brief: Returns true while a stdin read is blocked waiting for input, i.e. an
-/// interactive prompt is on-screen expecting an answer. The GUI polls this to open
-/// its log command line automatically. Safe to call from any thread.
+/// interactive prompt is on-screen expecting an answer. Safe to call from any
+/// thread.
 bool uv_stdin_is_waiting(void);
+
+
+/// @brief: Returns the number of stdin reads started so far, i.e. how many
+/// interactive prompts have asked for an answer. The GUI watches this to open its
+/// log command line on every new prompt. Counting the prompts rather than watching
+/// uv_stdin_is_waiting() also catches a prompt which never blocks (its answer was
+/// already in the pipe) and one which starts right after the previous one was
+/// answered, neither of which the GUI could see as a change of the waiting flag.
+/// Safe to call from any thread.
+unsigned long uv_stdin_get_prompt_count(void);
 
 
 #endif /* UVSTDIN_H_ */

@@ -401,10 +401,13 @@ void uvui_exec(void) {
 	int prev_scroll = -1;
 	int prev_visible_lines = -1;
 
-	// rising-edge tracking for stdin prompts: when a prompt starts waiting for
-	// input, auto-expand the log so its command line is visible. Only on the edge,
-	// so the user can still collapse it back while the prompt waits.
-	bool prev_waiting = false;
+	// stdin prompt tracking: when a prompt asks for an answer, auto-expand the log
+	// so its command line (and the question above it) are visible. Counted rather
+	// than watched as a "is a read blocked right now" flag: a prompt whose answer
+	// is already in the pipe never blocks, and a prompt starting right after the
+	// previous one was answered leaves no gap to see, so both would be missed. Only
+	// on a new prompt, so the user can still collapse the view back while one waits.
+	unsigned long prev_prompts = uv_stdin_get_prompt_count();
 
 	while (true) {
 		uv_uidisplay_step(&this->display, STEP_MS);
@@ -415,11 +418,11 @@ void uvui_exec(void) {
 
 		// auto-expand the log view when an interactive prompt appears, so the user
 		// can answer it from the log command line
-		bool waiting_now = uv_stdin_is_waiting();
-		if (waiting_now && !prev_waiting) {
+		unsigned long prompts_now = uv_stdin_get_prompt_count();
+		if (prompts_now != prev_prompts) {
+			prev_prompts = prompts_now;
 			log_expand();
 		}
-		prev_waiting = waiting_now;
 
 		// poll the device tab: its file pickers, the running simulators and the
 		// progress of any asynchronous device operation. Driven from here rather
@@ -532,10 +535,28 @@ void uvui_exec(void) {
 
 		// the command line owns the keyboard only while the log is expanded; feed
 		// what the user submits to uvcan's stdin so the interactive prompts can be
-		// answered live
+		// answered live.
+		//
+		// Only while a prompt is actually reading: stdin is a pipe, so a line
+		// submitted with nothing waiting for it would stay there until the next
+		// prompt read it as its answer. That prompt would then never block, so it
+		// would answer itself without the log ever opening to show what was asked -
+		// a single Enter on the empty command line was enough to make the next
+		// parameter-file query pick its default silently.
 		uv_uitextedit_set_focused(&this->log_input, this->log_expanded);
 		if (uv_uitextedit_submitted(&this->log_input)) {
-			uv_stdin_feed(uv_uitextedit_get_text(&this->log_input));
+			const char *line = uv_uitextedit_get_text(&this->log_input);
+			if (uv_stdin_is_waiting()) {
+				uv_stdin_feed(line);
+			}
+			else if (strlen(line) != 0) {
+				// say where the line went; a bare Enter is dropped silently
+				printf("Nothing is waiting for input, '%s' discarded.\n", line);
+				fflush(stdout);
+			}
+			else {
+				// empty line with no prompt waiting: nothing to do
+			}
 			uv_uitextedit_set_text(&this->log_input, "");
 		}
 
