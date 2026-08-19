@@ -218,8 +218,8 @@ static void load(char *filename, const char *devname, uint32_t count, uint32_t i
 						// printed on its own it ends a line, which shows up as an
 						// empty line in the UI log (and in any reader that treats
 						// CR as a line break) right after "Opened file ...".
-						printf("\rLoaded %u / %u bytes (%u %%) file %i/%i",
-								addr, size, 100 * addr / size,
+						printf("\rLoading '%s' %u / %u bytes (%u %%) file %i/%i",
+								devname, addr, size, 100 * addr / size,
 								index + 1,
 								count);
 						fflush(stdout);
