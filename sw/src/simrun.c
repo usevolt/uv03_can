@@ -136,8 +136,11 @@ static void clear_all(void) {
 
 
 // Forks and execs the simulator of *p* in its own working directory, passing the
-// CAN channel and node id as -c / -n. Returns true on success.
-static bool spawn_proc(simproc_st *p, const char *can_channel) {
+// CAN channel as -c and, when *set_nodeid* is true, the node id as -n. Without
+// -n the simulator boots with the node id stored in its own package (its
+// default) and is free to move itself to another one if that one is already
+// taken on the bus. Returns true on success.
+static bool spawn_proc(simproc_st *p, const char *can_channel, bool set_nodeid) {
 	bool ret = false;
 
 	char binpath[2048];
@@ -150,10 +153,32 @@ static bool spawn_proc(simproc_st *p, const char *can_channel) {
 	char logpath[2100];
 	snprintf(logpath, sizeof(logpath), "%s/sim.log", p->pkg.dir);
 
+	// build the argument vectors before forking: the child may only call
+	// async-signal-safe functions between fork() and exec(). The second vector
+	// runs the same command under stdbuf (see the exec calls below).
+	char *argv[8];
+	char *sargv[11];
+	uint8_t argc = 0;
+	argv[argc++] = binpath;
+	argv[argc++] = "-c";
+	argv[argc++] = (char *) can_channel;
+	if (set_nodeid) {
+		argv[argc++] = "-n";
+		argv[argc++] = nodeid_str;
+	}
+	argv[argc] = NULL;
+	sargv[0] = "stdbuf";
+	sargv[1] = "-oL";
+	sargv[2] = "-eL";
+	for (uint8_t i = 0; i <= argc; i++) {
+		sargv[i + 3] = argv[i];
+	}
+
 	// log the exact command so the user can see which CAN device (-c) and node id
 	// (-n) each simulator is started with
-	PRINT("Simulator command: \"%s\" -c %s -n %s  (cwd: %s)\n",
-			binpath, can_channel, nodeid_str, p->pkg.dir);
+	PRINT("Simulator command: \"%s\" -c %s%s%s  (cwd: %s)\n",
+			binpath, can_channel, set_nodeid ? " -n " : "",
+			set_nodeid ? nodeid_str : "", p->pkg.dir);
 
 	pid_t pid = fork();
 	if (pid == 0) {
@@ -203,11 +228,9 @@ static bool spawn_proc(simproc_st *p, const char *can_channel) {
 		// run under stdbuf so the simulator's stdout/stderr are line-buffered: its
 		// output then reaches sim.log immediately (instead of only when a full
 		// buffer flushes), so the log terminal shows it live from the start
-		execlp("stdbuf", "stdbuf", "-oL", "-eL", binpath,
-				"-c", can_channel, "-n", nodeid_str, (char *) NULL);
+		execvp("stdbuf", sargv);
 		// stdbuf not available: run the simulator directly
-		execl(binpath, binpath, "-c", can_channel, "-n", nodeid_str,
-				(char *) NULL);
+		execv(binpath, argv);
 		// exec failed
 		_exit(127);
 	}
@@ -247,6 +270,17 @@ uint8_t simrun_start_system(system_st *sys, const char *can_channel) {
 	// or stopped) and start fresh
 	clear_all();
 
+	// With no system configuration file the devices come from --dev (or from the
+	// UI) and nothing is loaded onto them afterwards, so nothing depends on a
+	// simulator keeping the node id it was started with. A device still sitting on
+	// its package default is then started without -n, leaving it free to move
+	// itself to another node id when that default is already taken on the bus
+	// (two simulators of the same device, or a real device answering there). A
+	// device given an explicit node id keeps it: that id is the reason it was
+	// given. With a system file the node ids are the system's own and the
+	// parameters are loaded per node id, so every simulator is pinned with -n.
+	bool free_default_nodeids = !system_is_sysfile_loaded(sys);
+
 	uint8_t started = 0;
 	for (uint8_t i = 0; (i < system_get_dev_count(sys)) &&
 			(proc_count < SIMRUN_MAX); i++) {
@@ -285,7 +319,11 @@ uint8_t simrun_start_system(system_st *sys, const char *can_channel) {
 		strncpy(p->name, nm, sizeof(p->name) - 1);
 		p->nodeid = d->nodeid;
 
-		if (spawn_proc(p, can_channel)) {
+		// the device is on its package default when no explicit node id was given
+		// for it (system_add_device() then adopts the database's own)
+		bool is_default = (d->default_nodeid != 0) &&
+				(d->nodeid == d->default_nodeid);
+		if (spawn_proc(p, can_channel, !(free_default_nodeids && is_default))) {
 			proc_count++;
 			started++;
 			PRINT("Started simulator for '%s' (node 0x%x), pid %d in '%s'\n",
@@ -556,34 +594,10 @@ static void set_sim_state_by_nodeid(uint8_t nodeid, simrun_state_e st) {
 }
 
 
-/// @brief: Task body for simrun_load_params_async(). Restores the online real
-/// devices to defaults, waits for every managed device (simulated or restored) to
-/// come operational, loads each device's bundled parameters and moves the
-/// simulators STARTED -> PARAM -> RUNNING. Aborts early if the load is cancelled
-/// with simrun_kill_all() (the Force-stop button).
-static void postparam_task(void *ptr) {
-	system_st *sys = pp_sys;
-
-	// make sure heartbeats are tracked so the operational state can be detected
-	find_start_monitor();
-
-	// 0. the online real devices are not simulated; bring each back to the same
-	// known state a freshly started simulator would be in: restore its defaults
-	// and reset it, so only the parameters loaded below deviate from the defaults.
-	if (pp_restore_count > 0) {
-		for (uint8_t i = 0; (i < pp_restore_count) && !pp_cancel; i++) {
-			PRINT("Restoring online device (node 0x%x) to system defaults...\n",
-					(unsigned int) pp_restore[i]);
-			uv_canopen_sdo_restore_params(pp_restore[i], MEMORY_ALL_PARAMS);
-			uv_canopen_nmt_master_send_cmd(pp_restore[i],
-					CANOPEN_NMT_CMD_RESET_NODE);
-		}
-		// let the reset devices drop off the bus before waiting for them to come
-		// back, so the loop below does not see their pre-reset operational state
-		// and proceed while they are still resetting
-		uv_rtos_task_delay(1500);
-	}
-
+/// @brief: Waits until every managed device (a simulator or a restored real
+/// device) is operational, then loads the devices' bundled parameters onto them.
+/// Called by postparam_task() when there is something to load.
+static void postparam_load(system_st *sys) {
 	// 1. wait until every managed device (a simulated device or a restored real
 	// device) reports OPERATIONAL (or time out). Tell the user we are waiting,
 	// since it takes a few seconds while the devices boot.
@@ -679,6 +693,61 @@ static void postparam_task(void *ptr) {
 				fflush(stdout);
 			}
 		}
+	}
+}
+
+
+/// @brief: Task body for simrun_load_params_async(). Restores the online real
+/// devices to defaults, waits for every managed device (simulated or restored) to
+/// come operational, loads each device's bundled parameters and moves the
+/// simulators STARTED -> PARAM -> RUNNING. Aborts early if the load is cancelled
+/// with simrun_kill_all() (the Force-stop button).
+static void postparam_task(void *ptr) {
+	system_st *sys = pp_sys;
+
+	// make sure heartbeats are tracked so the operational state can be detected
+	find_start_monitor();
+
+	// 0. the online real devices are not simulated; bring each back to the same
+	// known state a freshly started simulator would be in: restore its defaults
+	// and reset it, so only the parameters loaded below deviate from the defaults.
+	if (pp_restore_count > 0) {
+		for (uint8_t i = 0; (i < pp_restore_count) && !pp_cancel; i++) {
+			PRINT("Restoring online device (node 0x%x) to system defaults...\n",
+					(unsigned int) pp_restore[i]);
+			uv_canopen_sdo_restore_params(pp_restore[i], MEMORY_ALL_PARAMS);
+			uv_canopen_nmt_master_send_cmd(pp_restore[i],
+					CANOPEN_NMT_CMD_RESET_NODE);
+		}
+		// let the reset devices drop off the bus before waiting for them to come
+		// back, so the loop below does not see their pre-reset operational state
+		// and proceed while they are still resetting
+		uv_rtos_task_delay(1500);
+	}
+
+	// 1. - 3. wait for the devices and load their parameters. Skipped when there
+	// is nothing to load: no online real device was restored and no device carries
+	// a parameter file. That is the normal case when no system configuration file
+	// is loaded, since the parameters are part of the system file - simulators
+	// started from plain device packages just run with their default settings.
+	// The wait is skipped along with the load: without a system file a simulator
+	// may end up on another node id than the one it was started with (see
+	// simrun_start_system()), so waiting for its node to appear would only stall
+	// the start until the timeout.
+	bool nothing_to_load = (pp_restore_count == 0);
+	for (uint8_t i = 0; nothing_to_load && (i < system_get_dev_count(sys)); i++) {
+		device_st *d = system_get_dev(sys, i);
+		if ((d != NULL) && (strlen(d->param_file) != 0)) {
+			nothing_to_load = false;
+		}
+	}
+	if (nothing_to_load) {
+		PRINT("No parameters to load; the simulators run with their default "
+				"settings.\n");
+		fflush(stdout);
+	}
+	else {
+		postparam_load(sys);
 	}
 
 	// 4. every simulator that is still alive is now running. Also done when the

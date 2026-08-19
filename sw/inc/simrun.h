@@ -71,6 +71,14 @@ void simrun_init(void);
 /// -n arguments). Any already-running simulators are killed first. Returns the
 /// number of simulators started.
 ///
+/// When *sys* has no system configuration file (the devices come from --dev or
+/// from the UI), a device still sitting on its package's default node id is
+/// started without -n. It then boots on that default but is free to move itself
+/// to a free node id if another node already answers there. Nothing is loaded
+/// onto those simulators afterwards, so nothing depends on the node id staying
+/// put. Devices given an explicit node id, and all devices of a loaded system
+/// file, are pinned to it with -n.
+///
 /// Devices that are already online (present on the bus as real hardware) are NOT
 /// simulated - a simulator would clash with the real device on its node id - so
 /// they are skipped. The caller must refresh the device states with
@@ -135,6 +143,11 @@ bool simrun_any_running(void);
 /// simulator through PARAM and finally to RUNNING. Devices without a param file
 /// just transition from STARTED to RUNNING once online. Call after
 /// simrun_start_system(). Poll simrun_load_params_is_finished().
+///
+/// When there is nothing to load at all - no device carries a param file (the
+/// parameters live in the system configuration file, so this is the normal case
+/// when none is loaded) and no device is restored - the wait is skipped too and
+/// the simulators go straight to RUNNING.
 ///
 /// *restore_nodeids* (of length *restore_count*) lists the online real devices
 /// that were not simulated (they were skipped by simrun_start_system() because

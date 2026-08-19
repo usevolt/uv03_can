@@ -813,12 +813,20 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	// are live - both while they are starting up / loading parameters (OP_SIMPARAM)
 	// and once they are running afterwards - and stops them all when clicked (both
 	// cases handled in devicetab_step). Only when none is live does it start them;
-	// in that start mode it is disabled when no system file is loaded or another
-	// system operation is busy. Devices already online no longer block it: pressing
-	// it restores those devices to defaults and loads the system parameters onto
-	// them instead of simulating them (see the click handler). Fills the left
-	// column.
+	// in that start mode it is disabled when there is no configured device to
+	// simulate or another system operation is busy. A system file is not required:
+	// devices given with --dev (or added in the UI) are simulated just as well,
+	// only without the parameter load that belongs to a system file. Devices
+	// already online do not block it either: pressing it restores those devices to
+	// defaults and loads the system parameters onto them instead of simulating
+	// them (see the click handler). Fills the left column.
 	bool sims_running = simrun_any_running();
+	// something to start: any device carrying a configuration package
+	bool sim_startable = false;
+	for (uint8_t i = 0; !sim_startable && (i < system_get_dev_count(system)); i++) {
+		device_st *d = system_get_dev(system, i);
+		sim_startable = (d != NULL) && (strlen(d->filepath) != 0);
+	}
 	bool simparam_busy = busy && (busy_op == OP_SIMPARAM);
 	// "stop mode": the simulators are live (starting up or running), so the button
 	// stops them rather than starting new ones
@@ -831,7 +839,7 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	// in stop mode the button stays live so the simulators can always be stopped;
 	// in start mode it is greyed out when there is nothing to start or another
 	// system operation owns the bus
-	if (!sim_stop_mode && (!system->loaded || sys_busy)) {
+	if (!sim_stop_mode && (!sim_startable || sys_busy)) {
 		uv_uiobject_disable(&content.run_sim_btn);
 	}
 
@@ -1782,10 +1790,16 @@ bool devicetab_step(void) {
 			// the same bus uvcan is monitoring
 			const char *chn = uv_can_get_dev();
 
+			// with a system file the simulators are given the system's parameters
+			// afterwards; without one there are no parameters to give (they belong
+			// to the system file), so the devices are only started
+			bool has_sys = system_is_sysfile_loaded(&dev.system);
+
 			// refresh the device states so we know which configured devices are
 			// actually present on the bus right now: those are not simulated (a
-			// simulator would clash with the real hardware). Instead they are
-			// restored to defaults and have the system parameters loaded onto them.
+			// simulator would clash with the real hardware). With a system file
+			// they are restored to defaults and have the system parameters loaded
+			// onto them instead; without one they are left alone.
 			find_update_device_states(&dev.system);
 			uint8_t online_nodeids[SYSTEM_DEV_MAX_COUNT];
 			uint8_t online_count = 0;
@@ -1810,17 +1824,21 @@ bool devicetab_step(void) {
 
 			bool proceed = true;
 			// Some configured devices are already online: warn that they will not
-			// be simulated but restored + reloaded instead, and let the user back
-			// out.
+			// be simulated - restored + reloaded instead when a system file gives
+			// the parameters to reload, and simply left alone without one - and let
+			// the user back out.
 			if (online_count > 0) {
 				char msg[1024];
 				snprintf(msg, sizeof(msg),
 						"These configured devices are already online:\n\n%s\n"
-						"The simulator will NOT be started for them. Instead each "
-						"is restored to its system defaults and the parameters from "
-						"the system configuration file are loaded onto it. The "
+						"The simulator will NOT be started for them. %sThe "
 						"remaining (offline) devices are simulated as usual.\n\n"
-						"Continue?", online_list);
+						"Continue?", online_list,
+						has_sys ?
+						"Instead each is restored to its system defaults and the "
+						"parameters from the system configuration file are loaded "
+						"onto it. " :
+						"They are left untouched. ");
 				uv_uiacceptdialog_st dialog = { };
 				proceed = (uv_uiacceptdialog_exec(&dialog, msg, "Yes", "No",
 						&uv_uistyles[0]) == UIACCEPTDIALOG_RET_YES);
@@ -1838,8 +1856,9 @@ bool devicetab_step(void) {
 						"For them to communicate, at least one real device must be "
 						"present on the CAN network to acknowledge the bus messages. "
 						"Without a real device on the bus the simulators cannot "
-						"exchange data and their parameters will not load.\n\n"
-						"Run the simulators anyway?", chn);
+						"exchange data%s.\n\n"
+						"Run the simulators anyway?", chn,
+						has_sys ? " and their parameters will not load" : "");
 				uv_uiacceptdialog_st dialog = { };
 				proceed = (uv_uiacceptdialog_exec(&dialog, msg, "Yes", "No",
 						&uv_uistyles[0]) == UIACCEPTDIALOG_RET_YES);
@@ -1861,8 +1880,14 @@ bool devicetab_step(void) {
 					// online) and, for the online real devices, after restoring them
 					// to defaults and resetting them. The UI goes busy so it does not
 					// touch the SDO client while the load task owns it.
+					//
+					// With no system file there is nothing to load: the online
+					// devices are then not restored either (there would be no
+					// parameters to put back onto them), so no restore list is
+					// passed and the task only moves the simulators to "Running".
 					simrun_load_params_async(&dev.system,
-							online_nodeids, online_count);
+							has_sys ? online_nodeids : NULL,
+							has_sys ? online_count : 0);
 					start_busy(OP_SIMPARAM);
 				}
 				ret = true;
