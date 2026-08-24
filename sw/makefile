@@ -151,6 +151,19 @@ GIT_REV_ID := $(shell git rev-list --count HEAD)
 APP_NAME := $(shell basename `git rev-parse --show-toplevel`)
 FULL_NAME := $(APP_NAME)_$(GIT_VERSION)
 
+# Version used for the names of the shippable packages only; the strings
+# compiled into the binary keep $(GIT_VERSION) above. git describe counts the
+# commits since the nearest tag, which restarts at zero on every new tag, so
+# package names built from it do not increase over the project's life. The
+# rev-list count does: it is the number of commits in HEAD's history, and it
+# grows with every commit, tag or no tag. The abbreviated hash keeps the name
+# pointing at one exact commit (the count alone would not distinguish branches),
+# and -dirty marks a build made from a modified tree, as git describe does.
+GIT_HASH := $(shell git rev-parse --short=4 HEAD)
+GIT_DIRTY := $(shell git update-index -q --refresh >/dev/null 2>&1; \
+	git diff-index --quiet HEAD -- 2>/dev/null || echo -dirty)
+PKG_FULL_NAME := $(APP_NAME)_$(GIT_REV_ID)-g$(GIT_HASH)$(GIT_DIRTY)
+
 
 
 CFLAGS := $(PLATFORM_CFLAGS) -D$(TARGET)=1 -D__UV_PROJECT_NAME=$(FULL_NAME) -D__UV_PROGRAM_VERSION=$(GIT_REV_ID) $(INCLUDEDIRS) -D$(CORE) -$(O) -g3 -Wall -fmessage-length=0 -fno-builtin -ffunction-sections -fdata-sections
@@ -169,14 +182,14 @@ DEPS := $(OBJECTS:.o=.d)
 ### Build targets #################################################
 
 # Name of the double-clickable Windows package (folder + .zip).
-PKGNAME := $(FULL_NAME)-win
+PKGNAME := $(PKG_FULL_NAME)-win
 PKGDIR  := $(BUILDDIR)/$(PKGNAME)
 
 # Production output directory (sibling of sw/, at the repo root) collecting the
 # shippable artifacts built by 'make publish': the Linux install tarball (binary
 # + install.sh + packaging/) and the double-clickable Windows package (.zip).
 PRODDIR     := ../prod
-PUBLISH_TAR := $(PRODDIR)/$(FULL_NAME)-linux.tar.gz
+PUBLISH_TAR := $(PRODDIR)/$(PKG_FULL_NAME)-linux.tar.gz
 
 .PHONY: linux linux-package linux-package-stage win windows win-package win-package-stage image post-build clean install uninstall publish
 
@@ -241,7 +254,7 @@ win-package-stage:
 #     target Ubuntu box and run ./install.sh — see install.sh --help)
 # The linux and win builds share $(BUILDDIR) for their object files, so the two
 # OS targets cannot coexist there — we 'clean' between them (and stash the win
-# zip in prod before the second clean removes it). PKGNAME/PKGDIR/FULL_NAME are
+# zip in prod before the second clean removes it). PKGNAME/PKGDIR/PKG_FULL_NAME are
 # OS-independent, so the paths resolve the same in either sub-make.
 publish:
 	@mkdir -p "$(PRODDIR)"
