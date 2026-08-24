@@ -13,6 +13,9 @@
 # only the optional apt dependency step uses sudo). Pass --system for a
 # machine-wide install under /usr/local + /usr/share (needs root).
 #
+# The dependency step installs the runtime libraries always, and the -dev
+# packages needed to compile uvcan whenever this run builds it from source.
+#
 # Usage:
 #   ./install.sh [--system] [--no-deps] [--build] [--uninstall] [-h|--help]
 #
@@ -37,7 +40,7 @@ while [ $# -gt 0 ]; do
 		--build)     DO_BUILD="yes" ;;
 		--uninstall) ACTION="uninstall" ;;
 		-h|--help)
-			sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+			sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
 			exit 0 ;;
 		*)
 			echo "Unknown option: $1" >&2
@@ -148,34 +151,54 @@ if [ "$ACTION" = "uninstall" ]; then
 	exit 0
 fi
 
+# ---- will we build? ---------------------------------------------------------
+# Decided before the dependency step, which needs to know: installing a prebuilt
+# binary only wants the runtime shared libraries, building from source wants the
+# headers and pkg-config files of the -dev packages as well.
+BIN_SRC="$SCRIPT_DIR/uvcan"
+WILL_BUILD=0
+if [ "$DO_BUILD" = "yes" ] || [ ! -x "$BIN_SRC" ]; then
+	if [ -f "$SCRIPT_DIR/makefile" ] && command -v make >/dev/null; then
+		WILL_BUILD=1
+	fi
+fi
+
 # ---- dependencies -----------------------------------------------------------
+# zenity/zip/unzip/shared-mime-info/desktop-file-utils: installer + .uvsys
+# handling. libglfw3/libglew2.2/libfreetype6/libreadline8/libmosquitto1: runtime
+# shared libs the binary links against for the OpenGL UI, the interactive
+# terminal and the fleet MQTT connection (not pulled in otherwise).
+RUNTIME_DEPS="zenity zip unzip shared-mime-info desktop-file-utils
+	libglfw3 libglew2.2 libfreetype6 libreadline8 libmosquitto1"
+# A source build additionally needs the development packages of everything the
+# makefile hands to pkg-config (ncurses, glfw3, glew, gl, freetype2,
+# libmosquitto) plus readline, which it links directly. Each -dev package pulls
+# its runtime counterpart in, so the two lists together stay consistent.
+BUILD_DEPS="pkg-config libncurses-dev libglfw3-dev libglew-dev libgl-dev
+	libfreetype-dev libreadline-dev libmosquitto-dev"
+
 if [ "$DO_DEPS" -eq 1 ]; then
+	DEPS="$RUNTIME_DEPS"
+	if [ "$WILL_BUILD" -eq 1 ]; then DEPS="$DEPS $BUILD_DEPS"; fi
 	if command -v apt-get >/dev/null; then
 		say "Installing system dependencies (sudo apt-get)"
-		# libncurses-dev/pkg-config: build. zenity/zip/unzip/shared-mime-info/
-		# desktop-file-utils: installer + .uvsys handling. libglfw3/libglew2.2/
-		# libfreetype6/libreadline8/libmosquitto1: runtime shared libs the binary
-		# links against for the OpenGL UI, the interactive terminal and the fleet
-		# MQTT connection (not pulled in otherwise).
-		sudo apt-get install -y libncurses-dev pkg-config zenity \
-			zip unzip shared-mime-info desktop-file-utils \
-			libglfw3 libglew2.2 libfreetype6 libreadline8 libmosquitto1
+		# word splitting is what turns the lists above into an argument list
+		# shellcheck disable=SC2086
+		sudo apt-get install -y $DEPS
 	else
-		warn "apt-get not found; skipping dependency install. Ensure libncurses,"
-		warn "pkg-config, zenity, zip/unzip, shared-mime-info and the runtime libs"
-		warn "libglfw3, libglew2.2, libfreetype6, libreadline8 and libmosquitto1"
-		warn "are present."
+		warn "apt-get not found; skipping dependency install. Ensure these are"
+		warn "present, under whatever names your distribution gives them:"
+		warn "  $(echo $DEPS)"
 	fi
 fi
 
 # ---- obtain the binary ------------------------------------------------------
-BIN_SRC="$SCRIPT_DIR/uvcan"
-if [ "$DO_BUILD" = "yes" ] || [ ! -x "$BIN_SRC" ]; then
-	if [ "$DO_BUILD" = "yes" ] || command -v arm-none-eabi-gcc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1; then
-		if [ -f "$SCRIPT_DIR/makefile" ] && command -v make >/dev/null; then
-			say "Building uvcan (make)"
-			make -C "$SCRIPT_DIR"
-		fi
+if [ "$WILL_BUILD" -eq 1 ]; then
+	if command -v gcc >/dev/null 2>&1; then
+		say "Building uvcan (make)"
+		make -C "$SCRIPT_DIR"
+	else
+		warn "gcc not found; skipping the build."
 	fi
 fi
 if [ ! -x "$BIN_SRC" ]; then

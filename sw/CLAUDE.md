@@ -10,7 +10,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Install dependencies (first time)
-sudo apt-get install libncurses-dev pkg-config libmosquitto-dev
+sudo apt-get install pkg-config libncurses-dev libglfw3-dev libglew-dev \
+    libgl-dev libfreetype-dev libreadline-dev libmosquitto-dev
 
 # Build
 make
@@ -20,6 +21,12 @@ make clean && make
 ```
 
 The binary is output as `./uvcan`. Build artifacts go to `release/`. Version is derived from git tags/commits automatically.
+
+`./install.sh` does the same from scratch: it installs those dependencies (adding
+the -dev packages only when the run actually builds), builds uvcan if no binary
+is there yet, and installs it into `~/.local` along with the `.uvsys` desktop
+integration. `--system` installs machine-wide, `--build` forces a rebuild and
+`--no-deps` skips the apt step.
 
 ## Architecture
 
