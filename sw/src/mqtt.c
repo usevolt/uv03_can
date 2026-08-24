@@ -1099,6 +1099,8 @@ bool mqtt_poll_changed(void) {
 
 // --- device detail and control ----------------------------------------------
 
+#if MQTT_ENABLED
+
 /// @brief: Bounds-checked lookup used by every getter below.
 static mqtt_dev_st *dev_at(uint8_t fleet_index, uint8_t dev_index) {
 	mqtt_dev_st *ret = NULL;
@@ -1460,3 +1462,162 @@ bool mqtt_dev_get_ui_active(uint8_t fleet_index, uint8_t dev_index) {
 	mqtt_dev_st *d = dev_at(fleet_index, dev_index);
 	return (d != NULL) ? d->ui_active : false;
 }
+
+
+#else /* !MQTT_ENABLED: no broker connection, so there is no device to talk to */
+
+bool mqtt_remove_dev(uint8_t fleet_index, uint8_t dev_index) {
+	(void) fleet_index;
+	(void) dev_index;
+	return false;
+}
+
+const char *mqtt_get_dev_devname(uint8_t fleet_index, uint8_t dev_index) {
+	(void) fleet_index;
+	(void) dev_index;
+	return "";
+}
+
+uint32_t mqtt_get_dev_uptime_s(uint8_t fleet_index, uint8_t dev_index) {
+	(void) fleet_index;
+	(void) dev_index;
+	return 0;
+}
+
+uint8_t mqtt_get_dev_features(uint8_t fleet_index, uint8_t dev_index) {
+	(void) fleet_index;
+	(void) dev_index;
+	return 0;
+}
+
+uint8_t mqtt_get_dev_state(uint8_t fleet_index, uint8_t dev_index) {
+	(void) fleet_index;
+	(void) dev_index;
+	return 0;
+}
+
+bool mqtt_get_dev_ui_size(uint8_t fleet_index, uint8_t dev_index,
+		uint16_t *width, uint16_t *height) {
+	(void) fleet_index;
+	(void) dev_index;
+	(void) width;
+	(void) height;
+	return false;
+}
+
+bool mqtt_dev_set_features(uint8_t fleet_index, uint8_t dev_index,
+		uint8_t features) {
+	(void) fleet_index;
+	(void) dev_index;
+	(void) features;
+	return false;
+}
+
+void mqtt_set_ui_frame_callb(mqtt_ui_frame_callb_t callb, void *user) {
+	(void) callb;
+	(void) user;
+}
+
+void mqtt_set_asset_callb(mqtt_asset_callb_t callb, void *user) {
+	(void) callb;
+	(void) user;
+}
+
+void mqtt_set_close_callb(mqtt_close_callb_t callb, void *user) {
+	(void) callb;
+	(void) user;
+}
+
+void mqtt_set_can_callb(mqtt_can_callb_t callb, void *user) {
+	(void) callb;
+	(void) user;
+}
+
+bool mqtt_dev_set_can_active(uint8_t fleet_index, uint8_t dev_index,
+		bool active) {
+	(void) fleet_index;
+	(void) dev_index;
+	(void) active;
+	return false;
+}
+
+bool mqtt_dev_get_can_active(uint8_t fleet_index, uint8_t dev_index) {
+	(void) fleet_index;
+	(void) dev_index;
+	return false;
+}
+
+bool mqtt_dev_send_rxclear(uint8_t fleet_index, uint8_t dev_index) {
+	(void) fleet_index;
+	(void) dev_index;
+	return false;
+}
+
+bool mqtt_dev_send_rxconf(uint8_t fleet_index, uint8_t dev_index,
+		uint32_t id, uint32_t mask, uv_can_msg_types_e type) {
+	(void) fleet_index;
+	(void) dev_index;
+	(void) id;
+	(void) mask;
+	(void) type;
+	return false;
+}
+
+bool mqtt_dev_send_rxdone(uint8_t fleet_index, uint8_t dev_index) {
+	(void) fleet_index;
+	(void) dev_index;
+	return false;
+}
+
+bool mqtt_dev_send_can(uint8_t fleet_index, uint8_t dev_index,
+		const uv_can_msg_st *msg) {
+	(void) fleet_index;
+	(void) dev_index;
+	(void) msg;
+	return false;
+}
+
+bool mqtt_get_dev_can_stats(uint8_t fleet_index, uint8_t dev_index,
+		remote_can_stats_st *dest) {
+	(void) fleet_index;
+	(void) dev_index;
+	(void) dest;
+	return false;
+}
+
+bool mqtt_dev_request_asset(uint8_t fleet_index, uint8_t dev_index,
+		uint8_t kind, uint32_t id) {
+	(void) fleet_index;
+	(void) dev_index;
+	(void) kind;
+	(void) id;
+	return false;
+}
+
+bool mqtt_dev_send_input(uint8_t fleet_index, uint8_t dev_index,
+		uint8_t action, int16_t x, int16_t y, int16_t scroll, char key) {
+	(void) fleet_index;
+	(void) dev_index;
+	(void) action;
+	(void) x;
+	(void) y;
+	(void) scroll;
+	(void) key;
+	return false;
+}
+
+bool mqtt_dev_set_ui_active(uint8_t fleet_index, uint8_t dev_index,
+		bool active) {
+	(void) fleet_index;
+	(void) dev_index;
+	(void) active;
+	return false;
+}
+
+bool mqtt_dev_get_ui_active(uint8_t fleet_index, uint8_t dev_index) {
+	(void) fleet_index;
+	(void) dev_index;
+	return false;
+}
+
+#endif /* MQTT_ENABLED */

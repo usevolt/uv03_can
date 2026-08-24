@@ -684,28 +684,6 @@ bool remotefiles_login(const char *url, const char *username,
 	return false;
 }
 
-/// @brief: Parses a directory listing into an array node.
-///
-/// The server answers with a bare top-level array, which this project's JSON
-/// reader does not accept - it wants an object at the root - so the body is
-/// wrapped in one first. The nodes point into that wrapper, so it is handed
-/// back for the caller to free once it has finished reading them.
-static parser_node_st rf_parse_listing(const char *body, char **wrapper) {
-	parser_node_st ret = { 0 };
-	*wrapper = NULL;
-	size_t len = strlen(body);
-	char *w = malloc(len + 16);
-	if (w != NULL) {
-		snprintf(w, len + 16, "{\"e\":%s}", body);
-		parser_node_st root = parser_read_buffer(w, strlen(w),
-				PARSER_FORMAT_JSON);
-		ret = parser_find_child(root, "e");
-		*wrapper = w;
-	}
-	return ret;
-}
-
-
 bool remotefiles_list(char *err, unsigned int err_len) {
 	(void) err;
 	(void) err_len;
