@@ -34,8 +34,16 @@
 // height of one device row
 #define DSW_ROW_H		44
 
+// The window lists at most every device of the system, plus the optional extra
+// row of the single-selection mode.
+#define DSW_ROW_MAX		(SYSTEM_DEV_MAX_COUNT + 1)
+
 // colour of the greyed-out reason text of a device that cannot be selected
 #define DSW_DIM_COLOR	C(0xFF909090)
+
+// default explanation line of the multi-selection window
+#define DSW_MULTI_INFO	"Select the devices to include. Devices that cannot " \
+		"take part are greyed out."
 
 
 // The dialog and its persistent widgets. Kept file-scope (static) so they outlive
@@ -45,6 +53,7 @@ static uv_uiobject_st *dialog_buf[8];
 static uv_uilabel_st title_label;
 static char title_str[160];
 static uv_uilabel_st info_label;
+static char info_str[256];
 static uv_uibutton_st all_btn;
 static uv_uibutton_st none_btn;
 static uv_uibutton_st cancel_btn;
@@ -54,16 +63,22 @@ static char accept_str[64];
 // the device rows live in their own window so the list scrolls when the system
 // holds more devices than fit on screen
 static uv_uiwindow_st list_win;
-static uv_uiobject_st *list_buf[2 * SYSTEM_DEV_MAX_COUNT];
-static uv_uicheckbox_st dev_boxes[SYSTEM_DEV_MAX_COUNT];
-static char dev_strs[SYSTEM_DEV_MAX_COUNT][160];
-static uv_uilabel_st dev_reasons[SYSTEM_DEV_MAX_COUNT];
-static char dev_reason_strs[SYSTEM_DEV_MAX_COUNT][96];
+static uv_uiobject_st *list_buf[2 * DSW_ROW_MAX];
+static uv_uicheckbox_st dev_boxes[DSW_ROW_MAX];
+static char dev_strs[DSW_ROW_MAX][160];
+static uv_uilabel_st dev_reasons[DSW_ROW_MAX];
+static char dev_reason_strs[DSW_ROW_MAX][96];
 
-// the listed devices and whether each of them may be selected at all
-static device_st *listed[SYSTEM_DEV_MAX_COUNT];
-static bool selectable[SYSTEM_DEV_MAX_COUNT];
+// the listed devices and whether each of them may be selected at all. A NULL
+// device is the single-selection mode's extra row, which stands for something
+// other than a device.
+static device_st *listed[DSW_ROW_MAX];
+static bool selectable[DSW_ROW_MAX];
 static uint8_t listed_count;
+
+// true while the window picks exactly one row: the checkboxes then behave like
+// radio buttons and the bulk selection buttons are left out
+static bool single_mode;
 
 // set true when the user closed the window with the accepting button (rather
 // than Cancel), i.e. the checkbox states should be read back
@@ -74,6 +89,21 @@ static bool accepted;
 static void set_all(bool state) {
 	for (uint8_t i = 0; i < listed_count; i++) {
 		if (selectable[i]) {
+			uv_uicheckbox_set_state(&dev_boxes[i], state);
+			uv_ui_refresh(&dev_boxes[i]);
+		}
+	}
+}
+
+
+/// @brief: Leaves only the row at *index* checked. Used in single-selection mode
+/// on every click: checking another row clears the previous one, and clicking the
+/// already-checked row (which unchecked it) checks it back on, so the window
+/// always has exactly one row selected.
+static void select_only(uint8_t index) {
+	for (uint8_t i = 0; i < listed_count; i++) {
+		bool state = (i == index);
+		if (uv_uicheckbox_get_state(&dev_boxes[i]) != state) {
 			uv_uicheckbox_set_state(&dev_boxes[i], state);
 			uv_ui_refresh(&dev_boxes[i]);
 		}
@@ -93,11 +123,20 @@ static uv_uiobject_ret_e dsw_step(void *user_ptr, uint16_t step_ms) {
 	else if (uv_uibutton_clicked(&cancel_btn)) {
 		ret = UIOBJECT_RETURN_KILLED;
 	}
-	else if (uv_uibutton_clicked(&all_btn)) {
+	else if (!single_mode && uv_uibutton_clicked(&all_btn)) {
 		set_all(true);
 	}
-	else if (uv_uibutton_clicked(&none_btn)) {
+	else if (!single_mode && uv_uibutton_clicked(&none_btn)) {
 		set_all(false);
+	}
+	else if (single_mode) {
+		// keep the selection on the row the user last clicked
+		for (uint8_t i = 0; i < listed_count; i++) {
+			if (uv_uicheckbox_clicked(&dev_boxes[i])) {
+				select_only(i);
+				break;
+			}
+		}
 	}
 	else {
 		// no button clicked; the checkboxes track their own state
@@ -106,12 +145,57 @@ static uv_uiobject_ret_e dsw_step(void *user_ptr, uint16_t step_ms) {
 }
 
 
-uint8_t devsel_win_exec(system_st *system, const char *title,
+/// @brief: Adds one row to the list window: a checkbox naming the device (or,
+/// for a NULL *device*, holding *text* as it is) and the greyed-out reason text
+/// next to it.
+static void add_row(device_st *device, const char *text, const char *reason,
+		bool checked, int16_t box_w, int16_t reason_w, const uv_uistyle_st *style) {
+	uint8_t r = listed_count;
+	listed[r] = device;
+	selectable[r] = (reason == NULL);
+
+	if (device != NULL) {
+		const char *dname = (strlen(device->devname) > 0) ?
+				device->devname : device->name;
+		snprintf(dev_strs[r], sizeof(dev_strs[r]), "%s  (node 0x%x)",
+				(strlen(dname) > 0) ? dname : "Unnamed device",
+				(unsigned int) device->nodeid);
+	}
+	else {
+		snprintf(dev_strs[r], sizeof(dev_strs[r]), "%s", text);
+	}
+
+	int16_t row_y = (int16_t) r * DSW_ROW_H;
+	uv_uicheckbox_init(&dev_boxes[r], checked, dev_strs[r], style);
+	uv_uiwindow_addxy(&list_win, &dev_boxes[r], 0, row_y, box_w, DSW_ROW_H);
+	if (!selectable[r]) {
+		uv_uiobject_disable(&dev_boxes[r]);
+	}
+
+	// the reason column is only laid out where ineligible devices are listed
+	if (reason_w > 0) {
+		snprintf(dev_reason_strs[r], sizeof(dev_reason_strs[r]), "%s",
+				(reason != NULL) ? reason : "");
+		uv_uilabel_init(&dev_reasons[r], style->font, ALIGN_CENTER_RIGHT,
+				DSW_DIM_COLOR, dev_reason_strs[r]);
+		uv_uiwindow_addxy(&list_win, &dev_reasons[r],
+				box_w + DSW_MARGIN, row_y, reason_w, DSW_ROW_H);
+	}
+
+	listed_count++;
+}
+
+
+/// @brief: Builds and runs the device-selection window in either mode, and
+/// writes the selected devices into *targets*. See the two public functions.
+static uint8_t devsel_exec(system_st *system, const char *title, const char *info,
 		const char *accept_text, devsel_reason_t reason_callb,
-		device_st **targets, uint8_t max_count, const uv_uistyle_st *style) {
+		const char *extra_text, device_st **targets, uint8_t max_count,
+		bool single, const uv_uistyle_st *style) {
 	uint8_t ret = 0;
 	accepted = false;
 	listed_count = 0;
+	single_mode = single;
 
 	uv_uidialog_init(&dialog, dialog_buf, style);
 	uv_uidialog_set_stepcallback(&dialog, &dsw_step, NULL);
@@ -124,11 +208,9 @@ uint8_t devsel_win_exec(system_st *system, const char *title,
 	uv_uidialog_addxy(&dialog, &title_label,
 			DSW_MARGIN, DSW_MARGIN, w - 2 * DSW_MARGIN, DSW_TITLE_H);
 
-	// string literal, so it lives for the program's lifetime
+	snprintf(info_str, sizeof(info_str), "%s", info);
 	uv_uilabel_init(&info_label, style->font, ALIGN_CENTER_LEFT,
-			style->text_color,
-			"Select the devices to include. Devices that cannot take part are "
-			"greyed out.");
+			style->text_color, info_str);
 	int16_t info_y = DSW_MARGIN + DSW_TITLE_H;
 	uv_uidialog_addxy(&dialog, &info_label,
 			DSW_MARGIN, info_y, w - 2 * DSW_MARGIN, DSW_INFO_H);
@@ -142,40 +224,34 @@ uint8_t devsel_win_exec(system_st *system, const char *title,
 	uv_uidialog_addxy(&dialog, &list_win, DSW_MARGIN, list_y, list_w, list_h);
 
 	// leave room for the scroll bar, and split each row between the checkbox
-	// (with the device name) and the right-aligned status text
+	// (with the device name) and the right-aligned status text. Single selection
+	// lists no ineligible devices, so it has no status text and gives the whole
+	// row to the name.
 	int16_t inner_w = list_w - CONFIG_UI_WINDOW_SCROLLBAR_WIDTH;
-	int16_t reason_w = inner_w / 3;
-	int16_t box_w = inner_w - reason_w - DSW_MARGIN;
+	int16_t reason_w = single ? 0 : (inner_w / 3);
+	int16_t box_w = single ? inner_w : (inner_w - reason_w - DSW_MARGIN);
 
 	for (uint8_t i = 0; (i < system_get_dev_count(system)) &&
-			(listed_count < SYSTEM_DEV_MAX_COUNT); i++) {
+			(listed_count < DSW_ROW_MAX); i++) {
 		device_st *d = system_get_dev(system, i);
-		uint8_t r = listed_count;
-		listed[r] = d;
 		const char *reason = (reason_callb != NULL) ? reason_callb(d) : NULL;
-		selectable[r] = (reason == NULL);
-
-		const char *dname = (strlen(d->devname) > 0) ? d->devname : d->name;
-		snprintf(dev_strs[r], sizeof(dev_strs[r]), "%s  (node 0x%x)",
-				(strlen(dname) > 0) ? dname : "Unnamed device",
-				(unsigned int) d->nodeid);
-		// every selectable device starts checked: the user deselects the ones to
-		// leave out
-		int16_t row_y = (int16_t) r * DSW_ROW_H;
-		uv_uicheckbox_init(&dev_boxes[r], selectable[r], dev_strs[r], style);
-		uv_uiwindow_addxy(&list_win, &dev_boxes[r], 0, row_y, box_w, DSW_ROW_H);
-		if (!selectable[r]) {
-			uv_uiobject_disable(&dev_boxes[r]);
+		if (single && (reason != NULL)) {
+			// only the devices that can be picked are worth listing when exactly
+			// one of them is chosen
+			continue;
 		}
+		// in multi-selection every selectable device starts checked: the user
+		// deselects the ones to leave out. In single selection only the first row
+		// is checked, as the default pick.
+		bool checked = single ? (listed_count == 0) : (reason == NULL);
+		add_row(d, NULL, reason, checked, box_w, reason_w, style);
+	}
 
-		snprintf(dev_reason_strs[r], sizeof(dev_reason_strs[r]), "%s",
-				(reason != NULL) ? reason : "");
-		uv_uilabel_init(&dev_reasons[r], style->font, ALIGN_CENTER_RIGHT,
-				DSW_DIM_COLOR, dev_reason_strs[r]);
-		uv_uiwindow_addxy(&list_win, &dev_reasons[r],
-				box_w + DSW_MARGIN, row_y, reason_w, DSW_ROW_H);
-
-		listed_count++;
+	// the extra row goes last, below the devices, so the default selection stays
+	// on the first device
+	if (single && (extra_text != NULL) && (listed_count < DSW_ROW_MAX)) {
+		add_row(NULL, extra_text, NULL, (listed_count == 0),
+				box_w, reason_w, style);
 	}
 
 	// scroll only when the rows do not fit
@@ -186,14 +262,16 @@ uint8_t devsel_win_exec(system_st *system, const char *title,
 	uv_uiwindow_set_contentbb(&list_win, inner_w, content_h);
 
 	// button row: the bulk selection buttons on the left, cancel / accept on the
-	// right
+	// right. Picking a single device needs no bulk selection.
 	int16_t btn_y = h - DSW_BTN_H - DSW_MARGIN;
-	uv_uibutton_init(&all_btn, "Select all", style);
-	uv_uidialog_addxy(&dialog, &all_btn,
-			DSW_MARGIN, btn_y, DSW_BTN_W, DSW_BTN_H);
-	uv_uibutton_init(&none_btn, "Select none", style);
-	uv_uidialog_addxy(&dialog, &none_btn,
-			DSW_MARGIN + DSW_BTN_W + DSW_MARGIN, btn_y, DSW_BTN_W, DSW_BTN_H);
+	if (!single) {
+		uv_uibutton_init(&all_btn, "Select all", style);
+		uv_uidialog_addxy(&dialog, &all_btn,
+				DSW_MARGIN, btn_y, DSW_BTN_W, DSW_BTN_H);
+		uv_uibutton_init(&none_btn, "Select none", style);
+		uv_uidialog_addxy(&dialog, &none_btn,
+				DSW_MARGIN + DSW_BTN_W + DSW_MARGIN, btn_y, DSW_BTN_W, DSW_BTN_H);
+	}
 
 	snprintf(accept_str, sizeof(accept_str), "%s", accept_text);
 	uv_uibutton_init(&cancel_btn, "Cancel", style);
@@ -215,6 +293,30 @@ uint8_t devsel_win_exec(system_st *system, const char *title,
 		}
 	}
 	return ret;
+}
+
+
+uint8_t devsel_win_exec(system_st *system, const char *title,
+		const char *accept_text, devsel_reason_t reason_callb,
+		device_st **targets, uint8_t max_count, const uv_uistyle_st *style) {
+	return devsel_exec(system, title, DSW_MULTI_INFO, accept_text, reason_callb,
+			NULL, targets, max_count, false, style);
+}
+
+
+bool devsel_win_exec_single(system_st *system, const char *title,
+		const char *info, const char *accept_text, devsel_reason_t reason_callb,
+		const char *extra_text, device_st **target, const uv_uistyle_st *style) {
+	device_st *picked[1] = { NULL };
+	uint8_t count = devsel_exec(system, title, info, accept_text, reason_callb,
+			extra_text, picked, 1, true, style);
+	if (count != 0) {
+		*target = picked[0];
+	}
+	else {
+		// cancelled: leave the caller's target untouched
+	}
+	return (count != 0);
 }
 
 

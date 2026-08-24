@@ -49,4 +49,27 @@ uint8_t devsel_win_exec(system_st *system, const char *title,
 		device_st **targets, uint8_t max_count, const uv_uistyle_st *style);
 
 
+/// @brief: Opens the modal device-selection window in single-selection mode:
+/// exactly one row is picked. The rows behave like radio buttons — checking one
+/// clears the others — and only the devices *reason_callb* accepts are listed,
+/// since a row that cannot be picked is of no use when picking the one target.
+/// Blocks until the user accepts or cancels.
+///
+/// @param title: Window title, naming the operation the device is picked for.
+/// @param info: Explanation line shown above the list.
+/// @param accept_text: Label of the accepting button (e.g. "Flash").
+/// @param reason_callb: Eligibility callback, see devsel_reason_t. Devices with
+/// a reason are left out of the list entirely. May be NULL to list every device.
+/// @param extra_text: When non-NULL, an extra row listed below the devices which
+/// stands for something other than a device (e.g. waiting for a device to be
+/// powered on). Selecting it sets *target to NULL.
+/// @param target: Out: the selected device, or NULL when *extra_text*'s row was
+/// selected. Left untouched when the user cancels.
+///
+/// @return: true when the user accepted a selection, false when they cancelled.
+bool devsel_win_exec_single(system_st *system, const char *title,
+		const char *info, const char *accept_text, devsel_reason_t reason_callb,
+		const char *extra_text, device_st **target, const uv_uistyle_st *style);
+
+
 #endif /* DEVSEL_WIN_H_ */

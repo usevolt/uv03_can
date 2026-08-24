@@ -1443,6 +1443,26 @@ static const char *sysload_reason(device_st *device) {
 }
 
 
+/// @brief: Eligibility callback of the flash-target selection window shown when
+/// an offline device's firmware is flashed: a device can take the download when
+/// it is alive on the bus, in any NMT state. A device in BOOT-UP counts too — it
+/// runs its bootloader, which is exactly what the download talks to.
+static const char *flashtarget_reason(device_st *device) {
+	const char *ret = NULL;
+	if (device->state == DEV_STATE_OFFLINE) {
+		ret = "Offline";
+	}
+	else if (device->thirdparty) {
+		// another manufacturer's device: a Usevolt firmware has no business there
+		ret = "Not a Usevolt device";
+	}
+	else {
+		// the device can take the download
+	}
+	return ret;
+}
+
+
 /// @brief: Rewrites the system-tab search button label to a live countdown of
 /// the remaining listen time ("Searching Xs...") while a scan is running.
 static void refresh_search_btn_text(void) {
@@ -1934,9 +1954,7 @@ bool devicetab_step(void) {
 		else if (uv_uibutton_clicked(&content.flash_btn)) {
 			// A device with no configuration package flashes a .uvdev the user
 			// picks here (that package is then kept as the device's config file); a
-			// configured device flashes its own package. An offline device is
-			// flashed with the wait-for-boot-up logic (wfr): the flash waits until
-			// the device is powered on, then downloads.
+			// configured device flashes its own package.
 			bool configless = (strlen(current_device->filepath) == 0);
 			bool offline = (current_device->state == DEV_STATE_OFFLINE);
 			bool bootup = (current_device->state == DEV_STATE_BOOTUP);
@@ -1954,11 +1972,60 @@ bool devicetab_step(void) {
 				}
 			}
 
+			// This device's own node id answers nothing while it is offline, so the
+			// firmware is downloaded to another device on the bus instead: ask which
+			// of the devices that are alive on the bus to flash. That is the way a
+			// new device running nothing but its bootloader (BOOT-UP, typically at
+			// node 0x7f) is brought up with this device's firmware. The device can
+			// still be waited for instead, which is the only choice left when the
+			// bus holds no live device at all.
+			device_st *target = current_device;
+			bool wfr = false;
+			if (proceed && offline) {
+				uint8_t live = 0;
+				for (uint8_t i = 0; i < system_get_dev_count(&dev.system); i++) {
+					if (flashtarget_reason(system_get_dev(&dev.system, i)) == NULL) {
+						live++;
+					}
+				}
+				if (live == 0) {
+					wfr = true;
+				}
+				else {
+					char extra[160];
+					snprintf(extra, sizeof(extra),
+							"Wait for this device to power on (node 0x%x)",
+							(unsigned int) current_device->nodeid);
+					device_st *sel = NULL;
+					if (devsel_win_exec_single(&dev.system,
+							"Select the device to flash",
+							"This device is offline. Pick the device on the bus to "
+							"download the firmware to.",
+							"Flash", &flashtarget_reason, extra, &sel,
+							&uv_uistyles[0])) {
+						if (sel != NULL) {
+							target = sel;
+						}
+						else {
+							// the extra row: flash this device once it is powered on
+							wfr = true;
+						}
+					}
+					else {
+						// the user cancelled the selection window
+						proceed = false;
+					}
+				}
+			}
+
 			// A device stuck in BOOTUP sits in its bootloader with no running
 			// firmware, so it answers at whatever node id the bootloader uses. Once
 			// the flash finishes it boots the new firmware, which takes its node id
 			// from the package's DATABASE default. Follow that node id here so the
-			// tab keeps addressing the device after it comes back up.
+			// tab keeps addressing the device after it comes back up. Only this
+			// device's own BOOTUP state does that: flashing an offline device's
+			// firmware to some other device on the bus leaves this device's node id
+			// alone, as nothing about this device changed.
 			uint8_t boot_nodeid = 0;
 			if (proceed && bootup) {
 				boot_nodeid = configless ? system_read_file_nodeid(picked) :
@@ -1975,9 +2042,21 @@ bool devicetab_step(void) {
 				char msgbuf[2048];
 				// note explaining the wait-for-boot-up behaviour for an offline
 				// device (it also tells the user how to cancel)
-				const char *offline_note = offline ?
+				const char *offline_note = wfr ?
 						" The device is offline: flashing will begin once it is "
 						"powered on. Click the button again to cancel." : "";
+				// note naming the other device the firmware goes to
+				char target_note[256] = "";
+				if (target != current_device) {
+					const char *tname = (strlen(target->devname) > 0) ?
+							target->devname : target->name;
+					snprintf(target_note, sizeof(target_note),
+							"\n\nThis device is offline, so the firmware is "
+							"downloaded to %s at node 0x%x. That device's node id is "
+							"not changed by the flash.",
+							(strlen(tname) > 0) ? tname : "the device",
+							(unsigned int) target->nodeid);
+				}
 				// note about the node id change a bootloader-state device makes when
 				// it boots the flashed firmware
 				char boot_note[256] = "";
@@ -2000,26 +2079,27 @@ bool devicetab_step(void) {
 							"uvcan cannot verify that this package is suitable for "
 							"this device \342\200\224 you are responsible for "
 							"choosing the correct firmware. The device will be reset "
-							"and must not be powered off during flashing.%s%s",
-							base, (unsigned int) current_device->nodeid,
-							offline_note, boot_note);
+							"and must not be powered off during flashing.%s%s%s",
+							base, (unsigned int) target->nodeid,
+							offline_note, target_note, boot_note);
 				}
 				else {
 					snprintf(msgbuf, sizeof(msgbuf),
 							"Flash the firmware to the device at node 0x%x? The "
 							"device will be reset and must not be powered off during "
-							"flashing.%s%s",
-							(unsigned int) current_device->nodeid, offline_note,
+							"flashing.%s%s%s",
+							(unsigned int) target->nodeid, offline_note, target_note,
 							boot_note);
 				}
 				if (uv_uiacceptdialog_exec(&dialog, msgbuf, "Yes", "No",
 						&uv_uistyles[0]) == UIACCEPTDIALOG_RET_YES) {
-					// an offline device waits for its boot-up message before flashing
-					bool wfr = offline;
+					// an offline device that is flashed at its own node id waits for
+					// its boot-up message before flashing
 					bool started = configless ?
 							load_flash_uvdev_to_node(picked,
-									current_device->nodeid, wfr) :
-							load_flash_device(current_device, wfr);
+									target->nodeid, wfr) :
+							load_flash_device_to_node(current_device,
+									target->nodeid, wfr);
 					if (started) {
 						// the firmware changes, so re-read the device's revision and
 						// software version once it is back online after the flash
@@ -2027,13 +2107,13 @@ bool devicetab_step(void) {
 						current_device->sw_version = 0;
 						// keep the picked package as this device's configuration file
 						// so it is no longer config-less. Takes visual effect when the
-						// flash finishes and the tab rebuilds. Preserve the node id we
-						// are flashing (assigning a file to an offline device would
+						// flash finishes and the tab rebuilds. Preserve this device's
+						// node id (assigning a file to an offline device would
 						// otherwise adopt the file's default node id).
 						if (configless) {
-							uint8_t flashed_nodeid = current_device->nodeid;
+							uint8_t nodeid = current_device->nodeid;
 							system_set_device_file(current_device, picked);
-							current_device->nodeid = flashed_nodeid;
+							current_device->nodeid = nodeid;
 						}
 						// the device was flashed in its bootloader: it boots the new
 						// firmware at the package's default node id, so address it
