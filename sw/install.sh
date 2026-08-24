@@ -143,15 +143,17 @@ if [ "$DO_DEPS" -eq 1 ]; then
 		say "Installing system dependencies (sudo apt-get)"
 		# libncurses-dev/pkg-config: build. zenity/zip/unzip/shared-mime-info/
 		# desktop-file-utils: installer + .uvsys handling. libglfw3/libglew2.2/
-		# libfreetype6/libreadline8: runtime shared libs the binary links against
-		# for the OpenGL UI and the interactive terminal (not pulled in otherwise).
+		# libfreetype6/libreadline8/libmosquitto1: runtime shared libs the binary
+		# links against for the OpenGL UI, the interactive terminal and the fleet
+		# MQTT connection (not pulled in otherwise).
 		sudo apt-get install -y libncurses-dev pkg-config zenity \
 			zip unzip shared-mime-info desktop-file-utils \
-			libglfw3 libglew2.2 libfreetype6 libreadline8
+			libglfw3 libglew2.2 libfreetype6 libreadline8 libmosquitto1
 	else
 		warn "apt-get not found; skipping dependency install. Ensure libncurses,"
 		warn "pkg-config, zenity, zip/unzip, shared-mime-info and the runtime libs"
-		warn "libglfw3, libglew2.2, libfreetype6 and libreadline8 are present."
+		warn "libglfw3, libglew2.2, libfreetype6, libreadline8 and libmosquitto1"
+		warn "are present."
 	fi
 fi
 

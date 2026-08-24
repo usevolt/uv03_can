@@ -8,6 +8,7 @@
 # Build targets:
 #   make            # same as 'make linux'
 #   make linux      # native Linux build, produces ./uvcan
+#   make linux-package # build linux + tar the install package into ../prod
 #   make win        # Windows cross-compile (x86_64 mingw-w64), produces ./uvcan.exe
 #   make windows    # alias for 'make win'
 #   make win-package # build win + zip a double-clickable package under release/
@@ -177,7 +178,7 @@ PKGDIR  := $(BUILDDIR)/$(PKGNAME)
 PRODDIR     := ../prod
 PUBLISH_TAR := $(PRODDIR)/$(FULL_NAME)-linux.tar.gz
 
-.PHONY: linux win windows win-package win-package-stage image post-build clean install uninstall publish
+.PHONY: linux linux-package linux-package-stage win windows win-package win-package-stage image post-build clean install uninstall publish
 
 # Bare 'make' builds the Linux target.
 linux:
@@ -191,6 +192,21 @@ install: $(BINARY)
 
 uninstall:
 	@./install.sh --uninstall $(ARGS)
+
+# Builds the Linux target and packs the install tarball (the binary, install.sh
+# and packaging/) into $(PRODDIR). This is the whole of what a Linux user needs:
+# unpack it anywhere and run ./install.sh, which installs the runtime
+# dependencies and registers the .uvsys association. Needs no mingw toolchain,
+# unlike 'publish', which builds the Windows package as well.
+linux-package:
+	@$(MAKE) --no-print-directory OS=linux image
+	@$(MAKE) --no-print-directory linux-package-stage
+
+linux-package-stage:
+	@mkdir -p "$(PRODDIR)"
+	@rm -f "$(PUBLISH_TAR)"
+	tar czf "$(PUBLISH_TAR)" uvcan install.sh packaging
+	@echo "Created $(PUBLISH_TAR)"
 
 win windows:
 	@$(MAKE) --no-print-directory OS=win image
@@ -233,11 +249,9 @@ publish:
 	@$(MAKE) --no-print-directory OS=win win-package
 	@cp "$(PKGDIR).zip" "$(PRODDIR)/"
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory OS=linux image
 	@echo ""
 	@echo "Publishing to $(PRODDIR)"
-	@rm -f "$(PUBLISH_TAR)"
-	tar czf "$(PUBLISH_TAR)" uvcan install.sh packaging
+	@$(MAKE) --no-print-directory linux-package
 	@echo "Created:"
 	@echo "    $(PUBLISH_TAR)"
 	@echo "    $(PRODDIR)/$(PKGNAME).zip"
