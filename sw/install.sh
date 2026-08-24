@@ -5,6 +5,7 @@
 # Installs the uvcan binary plus the desktop integration that makes .uvsys
 # system packages double-clickable:
 #   * the uvcan binary and a uvcan-open launcher wrapper
+#   * bash tab completion for uvcan's command line options
 #   * the application/x-uvsys MIME type and its file icon (Usevolt wordmark)
 #   * a .desktop entry registered as the default handler for .uvsys files
 #
@@ -63,6 +64,15 @@ ICON_BASE="$ICONS_ROOT/hicolor"
 MIME_DIR="$DATA_DIR/mime"
 APPS_DIR="$DATA_DIR/applications"
 DESKTOP_NAME="uvcan-uvsys.desktop"
+# bash-completion reads the user's completions from XDG_DATA_HOME and the
+# system's from /usr/share, both under the same bash-completion/completions
+# subdirectory; a file named after the command is loaded when that command is
+# first completed in a new shell.
+if [ "$MODE" = "system" ]; then
+	COMPLETION_DIR="/usr/share/bash-completion/completions"
+else
+	COMPLETION_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions"
+fi
 
 # run a privileged command (no-op prefix in user mode)
 priv() { $SUDO "$@"; }
@@ -119,6 +129,7 @@ remove_mime_icon() {
 if [ "$ACTION" = "uninstall" ]; then
 	say "Uninstalling uvcan desktop integration ($MODE)"
 	priv rm -f "$BIN_DIR/uvcan" "$BIN_DIR/uvcan-open"
+	priv rm -f "$COMPLETION_DIR/uvcan"
 	priv rm -f "$APPS_DIR/$DESKTOP_NAME"
 	priv rm -f "$MIME_DIR/packages/application-x-uvsys.xml"
 	for ctx in mimetypes apps; do
@@ -179,12 +190,18 @@ echo "    binary  -> $BIN_DIR/uvcan"
 echo "    icon    -> $ICON_BASE/.../application-x-uvsys.*"
 echo "    mime    -> $MIME_DIR/packages/application-x-uvsys.xml"
 echo "    desktop -> $APPS_DIR/$DESKTOP_NAME"
+echo "    tab completion -> $COMPLETION_DIR/uvcan"
 
-priv install -d "$BIN_DIR" "$APPS_DIR" "$MIME_DIR/packages" "$ICON_BASE/scalable/apps"
+priv install -d "$BIN_DIR" "$APPS_DIR" "$MIME_DIR/packages" "$ICON_BASE/scalable/apps" \
+	"$COMPLETION_DIR"
 
 # binary + launcher wrapper
 priv install -m 0755 "$BIN_SRC"               "$BIN_DIR/uvcan"
 priv install -m 0755 "$PKG_DIR/uvcan-open"    "$BIN_DIR/uvcan-open"
+
+# bash tab completion for the command line options. It reads the option names
+# from the installed binary's --help, so it stays right as commands are added.
+priv install -m 0644 "$PKG_DIR/uvcan-completion.bash" "$COMPLETION_DIR/uvcan"
 
 # icon: scalable SVG + pre-rendered PNG sizes. Installed into the "mimetypes"
 # context (where file managers look up a file's icon by its MIME-type name) and
