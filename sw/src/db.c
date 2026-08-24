@@ -667,6 +667,33 @@ static bool pdo_parse_mappings(parser_node_st mappingsnode, canopen_pdo_mapping_
 }
 
 
+/// @brief: Remembers a file which was pulled in with a "content" reference, so
+/// that *makeuvdev* can bundle the database with everything it reads. The same
+/// file is referenced over and over again (e.g. one 'in.json' per input), so
+/// only the first reference to each is stored.
+static void add_include(db_st *this, const char *path) {
+	bool found = false;
+	for (uint16_t i = 0; (i < this->include_count) && !found; i++) {
+		if (strcmp(this->includes[i], path) == 0) {
+			found = true;
+		}
+	}
+	if (!found) {
+		if (this->include_count < DB_INCLUDE_MAX_COUNT) {
+			strncpy(this->includes[this->include_count], path,
+					DB_INCLUDE_MAX_LEN - 1);
+			this->includes[this->include_count][DB_INCLUDE_MAX_LEN - 1] = '\0';
+			this->include_count++;
+		}
+		else {
+			ERROR("More than %u content files, '%s' and the ones after it are "
+					"not listed as a part of the database.\n",
+					(unsigned int) DB_INCLUDE_MAX_COUNT, path);
+		}
+	}
+}
+
+
 static bool parse_obj_dict_obj(db_st *this, parser_node_st child, char *path) {
 	bool ret = true;
 
@@ -731,6 +758,9 @@ static bool parse_obj_dict_obj(db_st *this, parser_node_st child, char *path) {
 					ERROR("Failed to open content file '%s'.\n", name);
 				}
 				else {
+					// the file is a part of the database; remember it for the
+					// commands which bundle the database into a package
+					add_include(this, name);
 					// compute the path for nested content references
 					char namecopy[128] = {};
 					strcpy(namecopy, name);
@@ -1665,6 +1695,15 @@ bool cmd_db(const char *arg) {
 			sizeof(this->rxpdo_buffer) / sizeof(this->rxpdo_buffer[0]),
 			sizeof(this->rxpdo_buffer[0]));
 
+	this->include_count = 0;
+	this->basepath[0] = '\0';
+
+	// dirname() below chews up the path it is given, so store the database's
+	// own path before that happens
+	char givenpath[sizeof(this->filepath)];
+	strncpy(givenpath, (arg != NULL) ? arg : "", sizeof(givenpath) - 1);
+	givenpath[sizeof(givenpath) - 1] = '\0';
+
 	// try to load the CANOpen database
 
 	// the database can be given either as a JSON or as a YAML file; the
@@ -1677,6 +1716,12 @@ bool cmd_db(const char *arg) {
 		ERROR("Failed to open database file %s.\n", arg);
 	}
 	else {
+		// The base directory which the database's top level "content" references
+		// are resolved against is the *parent* of the directory the database
+		// itself is in, i.e. the root of the project: the references are written
+		// as e.g. "uvcan/can_common.json" while the database is 'uvcan/can_x.json'.
+		// dirname() modifies the string it is given, so calling it twice on *arg*
+		// strips one directory level per call.
 		char *path = malloc(strlen(dirname(arg)) + 2);
 		strcpy(path, dirname(arg));
 		strcat(path, "/");
@@ -1686,7 +1731,10 @@ bool cmd_db(const char *arg) {
 
 		if (parse_document(this, root, path)) {
 			printf("Database parsed succesfully.\n");
-			strcpy(dev.db.filepath, arg);
+			strncpy(dev.db.filepath, givenpath, sizeof(dev.db.filepath) - 1);
+			dev.db.filepath[sizeof(dev.db.filepath) - 1] = '\0';
+			strncpy(dev.db.basepath, path, sizeof(dev.db.basepath) - 1);
+			dev.db.basepath[sizeof(dev.db.basepath) - 1] = '\0';
 			ret = true;
 		}
 		else {

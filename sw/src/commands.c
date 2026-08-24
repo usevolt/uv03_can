@@ -30,6 +30,7 @@
 #include "db.h"
 #include "loadmedia.h"
 #include "clearmedia.h"
+#include "makeuvdev.h"
 #include "sdo.h"
 #include "system.h"
 #include "simrun.h"
@@ -143,7 +144,8 @@ commands_st commands[] = {
 						"The argument may be a raw firmware binary (the device node id is then "
 						"selected with the 'node' option), a .uvdev package (its FIRMWARE binary is "
 						"flashed), or a .uvsys package (every device inside is flashed). If the "
-						"argument is omitted, the devices loaded earlier with --dev / --sys are flashed.",
+						"argument is omitted, the devices loaded earlier with --dev / --sys are flashed, "
+						"or, when no devices were given, the binary given with 'firmware'.",
 				.args = ARG_OPTIONAL,
 				.callback = &cmd_load
 		},
@@ -152,7 +154,8 @@ commands_st commands[] = {
 				.str = "Loads firmware to UV device with a CANopen 302 compatible bootloader"
 						" by waiting for NMT boot up message. "
 						"Accepts a raw binary, a .uvdev or .uvsys package, or no argument to flash "
-						"the devices loaded earlier with --dev / --sys. "
+						"the devices loaded earlier with --dev / --sys, or the binary given with "
+						"'firmware' when no devices were given. "
 						"The device node id should be selected with 'node' option prior to this command.",
 				.args = ARG_OPTIONAL,
 				.callback = &cmd_loadwfr
@@ -161,7 +164,8 @@ commands_st commands[] = {
 				.cmd_long = "segloadbin",
 				.str = "Loads firmware to UV device with a CANopen 302 compatible bootloader. "
 						"Accepts a raw binary, a .uvdev or .uvsys package, or no argument to flash "
-						"the devices loaded earlier with --dev / --sys. "
+						"the devices loaded earlier with --dev / --sys, or the binary given with "
+						"'firmware' when no devices were given. "
 						"The device node id should be selected with 'node' option prior to this command. "
 						"Uses the SDO segmented transfer to load the binary. Note that this is more "
 						"unsafe method compared to \"loadbin\".",
@@ -173,7 +177,8 @@ commands_st commands[] = {
 				.str = "Loads firmware to UV device with a CANopen 302 compatible bootloader"
 						" by waiting for NMT boot up message. "
 						"Accepts a raw binary, a .uvdev or .uvsys package, or no argument to flash "
-						"the devices loaded earlier with --dev / --sys. "
+						"the devices loaded earlier with --dev / --sys, or the binary given with "
+						"'firmware' when no devices were given. "
 						"The device node id should be selected with 'node' option prior to this command. "
 						"Uses the SDO segmented transfer to load the binary. Note that this is more "
 						"unsafe method compared to \"loadbinwfr\".",
@@ -184,7 +189,8 @@ commands_st commands[] = {
 				.cmd_long = "uvloadbin",
 				.str = "Loads firmware to UV device with an UV compatible bootloader. "
 						"Accepts a raw binary, a .uvdev or .uvsys package, or no argument to flash "
-						"the devices loaded earlier with --dev / --sys. "
+						"the devices loaded earlier with --dev / --sys, or the binary given with "
+						"'firmware' when no devices were given. "
 						"The device node id should be selected with 'node' option prior to this command.",
 				.args = ARG_OPTIONAL,
 				.callback = &cmd_uvload
@@ -194,7 +200,8 @@ commands_st commands[] = {
 				.str = "Loads firmware to UV device with an UV compatible bootloader "
 						"by waiting for NMT boot up message. "
 						"Accepts a raw binary, a .uvdev or .uvsys package, or no argument to flash "
-						"the devices loaded earlier with --dev / --sys. "
+						"the devices loaded earlier with --dev / --sys, or the binary given with "
+						"'firmware' when no devices were given. "
 						"The device node id should be selected with 'node' option prior to this command.",
 				.args = ARG_OPTIONAL,
 				.callback = &cmd_uvloadwfr
@@ -280,6 +287,61 @@ commands_st commands[] = {
 						"loaded. Devices whose package bundles no media are reported with a warning.",
 				.args = ARG_OPTIONAL,
 				.callback = &cmd_loadmedia
+		},
+		{
+				.cmd_long = "firmware",
+				.str = "Sets the firmware binary which *makeuvdev* packages into the .uvdev file.\n"
+						"Mandatory for *makeuvdev*. The *loadbin* command family flashes this\n"
+						"binary as well when it is given no file of its own and no devices were\n"
+						"loaded with --dev / --sys.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_firmware
+		},
+		{
+				.cmd_long = "linuxbin",
+				.str = "Sets the Linux simulator executable which *makeuvdev* packages into the\n"
+						".uvdev file. Optional: a package without it simply cannot be simulated.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_linuxbin
+		},
+		{
+				.cmd_long = "bootloader",
+				.str = "Sets the bootloader binary which *makeuvdev* packages into the .uvdev file.\n"
+						"Optional.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_bootloader
+		},
+		{
+				.cmd_long = "media",
+				.str = "Adds a media file, or a directory of media files, into the media which\n"
+						"*makeuvdev* packages into the .uvdev file. Of a directory the files in it\n"
+						"are packaged, not its subdirectories. Optional, and can be given more than\n"
+						"once; all of them end up in the same media directory of the package, which\n"
+						"*loadmedia* then loads onto the device.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_media
+		},
+		{
+				.cmd_long = "fwversion",
+				.str = "Sets the firmware version string which *makeuvdev* stores in the .uvdev\n"
+						"package. Usually the same git describe based version which the firmware\n"
+						"itself was built with. Optional.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_fwversion
+		},
+		{
+				.cmd_long = "makeuvdev",
+				.str = "Writes a .uvdev device package to the file given as the argument. The package\n"
+						"bundles the device database given with *db* (and every file which the\n"
+						"database pulls in with a \"content\" reference) and the firmware binary given\n"
+						"with *firmware*; both of them are mandatory and have to be given before this\n"
+						"command. The Linux simulator (*linuxbin*), the bootloader binary\n"
+						"(*bootloader*), the media files (*media*) and the firmware version\n"
+						"(*fwversion*) are optional and are left out of the package when not given.\n"
+						"The directory of the output file is created if it doesn't exist, and the\n"
+						"'.uvdev' extension is added to the file name when it is missing.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_makeuvdev
 		},
 		{
 				.cmd_long = "clearmedia",

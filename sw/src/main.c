@@ -162,7 +162,9 @@ int main(int argc, char *argv[]) {
 	// (and the UI's Account panel) start from the current values and override them
 	credentials_init();
 
-	struct option opts[50] = {};
+	// one slot per command plus the zero terminator which getopt_long expects
+	struct option opts[commands_count() + 1];
+	memset(opts, 0, sizeof(opts));
 	char optstr[512] = "";
 	int i;
 	for (i = 0; i < commands_count(); i++) {
@@ -237,5 +239,8 @@ int main(int argc, char *argv[]) {
 		uv_rtos_start_scheduler();
 	}
 
-	return EXIT_SUCCESS;
+	// a command which returned false ends up here (a successful run exits from
+	// step()), so report the failure to whoever called us: makefiles and scripts
+	// which package or flash with uvcan have to notice it
+	return error ? EXIT_FAILURE : EXIT_SUCCESS;
 }

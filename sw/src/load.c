@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "load.h"
+#include "makeuvdev.h"
 #include "main.h"
 #include "uvdev.h"
 
@@ -289,7 +290,8 @@ static void flash_devices(uint8_t start, uint8_t end,
 //   - a .uvsys package: load it and flash every device it adds
 //   - a .uvdev package:  flash its FIRMWARE to the selected node
 //   - any other path:    flash it as a raw firmware binary (legacy behavior)
-//   - no argument:       flash every device already loaded with --dev / --sys
+//   - no argument:       flash every device already loaded with --dev / --sys,
+//                        or the binary given with --firmware when there are none
 static void load_dispatch_step(void *ptr) {
 	const char *arg = cmdline_load_arg(this->dispatch_arg);
 	bool wfr = this->dispatch_wfr;
@@ -326,10 +328,19 @@ static void load_dispatch_step(void *ptr) {
 		// no file given: flash the devices already loaded with --dev / --sys
 		flash_devices(0, dev.system.dev_count, wfr, uv, block);
 	}
+	else if (strlen(makeuvdev_get_firmware()) != 0) {
+		// nothing to flash but a firmware binary was named with --firmware (the
+		// option the packaging commands take it with), so flash that one. This
+		// is what lets a project's makefile hand the same binary to *makeuvdev*
+		// and to *loadbin*.
+		const char *fw = makeuvdev_get_firmware();
+		printf("Firmware %s selected\n", fw);
+		flash_bin_sync(fw, db_get_nodeid(&dev.db), wfr, uv, block);
+	}
 	else {
 		printf(PRINT_BOLDRED "ERROR: no firmware given. Provide a firmware binary, "
-				"a .uvdev / .uvsys package, or load devices with --dev / --sys "
-				"first.\n" PRINT_RESET);
+				"a .uvdev / .uvsys package, the binary to flash with --firmware, or "
+				"load devices with --dev / --sys first.\n" PRINT_RESET);
 	}
 }
 

@@ -28,6 +28,12 @@
 
 #define DB_OBJ_MAX_COUNT	512
 
+/// @brief: Maximum count of files which a database can pull in with "content"
+/// references, and the maximum length of such a file's path. The path length
+/// matches the buffer which the paths are resolved in while reading them.
+#define DB_INCLUDE_MAX_COUNT	128
+#define DB_INCLUDE_MAX_LEN		128
+
 
 enum {
 	DBVALUE_INT = 0,
@@ -242,6 +248,17 @@ typedef struct {
 
 	char filepath[128];
 
+	/// @brief: The directory which the top level "content" references of the
+	/// database are resolved against, i.e. the root of the project the database
+	/// belongs to. Ends with a '/'.
+	char basepath[128];
+
+	/// @brief: The files which the database pulled in with "content" references,
+	/// as they were resolved when reading, without duplicates. Bundled into the
+	/// .uvdev packages written by *makeuvdev*.
+	char includes[DB_INCLUDE_MAX_COUNT][DB_INCLUDE_MAX_LEN];
+	uint16_t include_count;
+
 	db_emcy_st emcys_buffer[128];
 	uv_vector_st emcys;
 	uint16_t emcys_index;
@@ -277,6 +294,27 @@ static inline int32_t db_get_object_count(db_st *this) {
 
 static inline char *db_get_file(db_st *this) {
 	return this->filepath;
+}
+
+
+/// @brief: Returns the directory which the database's top level "content"
+/// references were resolved against, i.e. the root of the project it belongs to
+static inline char *db_get_basepath(db_st *this) {
+	return this->basepath;
+}
+
+
+/// @brief: Returns the count of the files which the database pulled in with
+/// "content" references
+static inline uint16_t db_get_include_count(db_st *this) {
+	return this->include_count;
+}
+
+
+/// @brief: Returns the path of the *index*'th file which the database pulled in
+/// with a "content" reference, as it was resolved when reading it
+static inline char *db_get_include(db_st *this, uint16_t index) {
+	return this->includes[index];
 }
 
 

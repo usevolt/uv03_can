@@ -49,6 +49,7 @@ The application uses a global `struct _dev_st dev` instance (defined via `CONFIG
 | terminal | `src/terminal.c` | Interactive terminal via SDO reply protocol |
 | sdo | `src/sdo.c` | Direct SDO read/write operations |
 | loadmedia | `src/loadmedia.c` | Media file upload via UV media protocol |
+| makeuvdev | `src/makeuvdev.c` | Assembles a .uvdev device package out of a build's artifacts |
 
 ### File formats: JSON and YAML
 
@@ -103,6 +104,29 @@ Prefer the keyed form for new files. If the chosen answer's key is missing from 
 keyed object, that value is skipped with a warning. Both forms work anywhere a
 query is referenced (`DATA`, `MAININDEX`, `TYPE`, `SUBINDEX`, `NODEID`, and
 device-selecting queries).
+
+### Creating .uvdev packages
+
+`--makeuvdev <file.uvdev>` writes a device package out of a project's build
+artifacts, i.e. it is what a project's `make publish` calls. The package is a
+plain zip archive holding a `uvdev.json` manifest plus the files it names:
+
+| Manifest key | Option | |
+|---|---|---|
+| `DATABASE` | `--db` | mandatory; the object dictionary file **and** every file it pulls in with a `"content"` reference |
+| `FIRMWARE` | `--firmware` | mandatory |
+| `LINUX_BIN` | `--linuxbin` | optional, the desktop simulator executable |
+| `BOOTLOADER` | `--bootloader` | optional |
+| `MEDIA` | `--media` | optional, a media file or a directory of them; can be given more than once |
+| `VERSION` | `--fwversion` | optional, usually the `git describe` version the firmware was built with |
+
+The `"content"` files are not searched for again: `db` records each of them as
+it reads the database, so exactly the files the database was parsed from end up
+in the package. They keep the paths they have relative to the project root (the
+parent directory of the database's own directory, which is what the top level
+`"content"` references are resolved against), so the references still resolve
+when the database is read back from the package. A file outside that root
+cannot be packaged and is reported as an error.
 
 ### Configuration
 
