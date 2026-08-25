@@ -54,6 +54,15 @@ bool cmd_sim(const char *arg);
 bool cmd_user(const char *arg);
 bool cmd_pwd(const char *arg);
 
+// Node id note shared by the help of the commands which operate on the devices
+// loaded with *dev* / *sys*, so each of them tells where a device's node id comes
+// from without repeating the explanation.
+#define DEV_NODEID_HELP \
+		"A device given with *dev* is addressed with the node id in its\n"\
+		"'<file>:0x14' postfix, or with a *nodeid* option given after the\n"\
+		"device; a device coming from *sys* uses the node id stored in the\n"\
+		"system file."
+
 commands_st commands[] = {
 		{
 				.cmd_long = "help",
@@ -74,8 +83,8 @@ commands_st commands[] = {
 		{
 				.cmd_long = "sys",
 				.str = "Loads a system configuration (.uvsys) file. The system file bundles the "
-						"devices of the whole system, so once it is given, individual --dev files "
-						"are not allowed.",
+						"devices of the whole system. Individual --dev files can still be given "
+						"alongside it; they are added on top of the system file's devices.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_system
 		},
@@ -84,8 +93,10 @@ commands_st commands[] = {
 				.str = "Adds a device configuration (.uvdev) file to the system, given as "
 						"'<path>:<nodeid>' (e.g. '/path/to/dev.uvdev:0x10'). The "
 						"':<nodeid>' suffix is optional; when omitted the default node id "
-						"is read from the .uvdev file. Can be given multiple times, up to "
-						"6 devices. Not allowed together with --sys.",
+						"is read from the .uvdev file, unless a *nodeid* option follows the "
+						"device, which assigns the node id to it just like the suffix does. "
+						"Can be given multiple times, and also together with --sys, in which "
+						"case the devices are added on top of the system file's ones.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_device
 		},
@@ -122,7 +133,9 @@ commands_st commands[] = {
 				.str = "Selecs the CANopen Node via Node ID. This should be called prior to commands which "
 						"Operate on CANopen nodes, such as *loadbin*. Never changes the node id of the "
 						"device; *loadparam* loads the parameters to this node id and, for parameter files "
-						"which contain more than one device, ignores this option altogether.",
+						"which contain more than one device, ignores this option altogether. When given "
+						"after a *dev* file, the node id is also assigned to that device, i.e. "
+						"'--dev file.uvdev -n 0x14' means the same as '--dev file.uvdev:0x14'.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_node
 		},
@@ -133,7 +146,9 @@ commands_st commands[] = {
 						"device. The node id is written to the device only after the user has confirmed it "
 						"with an empty line, and it applies only after the device's settings have been "
 						"saved and the device rebooted. Ignored for parameter files which contain more "
-						"than one device.",
+						"than one device. Like *nodeid*, when given after a *dev* file it also assigns "
+						"the node id to that device, i.e. '--dev file.uvdev --forcenodeid 0x14' means "
+						"the same as '--dev file.uvdev:0x14'.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_forcenode
 		},
@@ -145,7 +160,8 @@ commands_st commands[] = {
 						"selected with the 'node' option), a .uvdev package (its FIRMWARE binary is "
 						"flashed), or a .uvsys package (every device inside is flashed). If the "
 						"argument is omitted, the devices loaded earlier with --dev / --sys are flashed, "
-						"or, when no devices were given, the binary given with 'firmware'.",
+						"or, when no devices were given, the binary given with 'firmware'.\n"
+						DEV_NODEID_HELP,
 				.args = ARG_OPTIONAL,
 				.callback = &cmd_load
 		},
@@ -156,7 +172,8 @@ commands_st commands[] = {
 						"Accepts a raw binary, a .uvdev or .uvsys package, or no argument to flash "
 						"the devices loaded earlier with --dev / --sys, or the binary given with "
 						"'firmware' when no devices were given. "
-						"The device node id should be selected with 'node' option prior to this command.",
+						"The device node id should be selected with 'node' option prior to this command.\n"
+						DEV_NODEID_HELP,
 				.args = ARG_OPTIONAL,
 				.callback = &cmd_loadwfr
 		},
@@ -166,7 +183,8 @@ commands_st commands[] = {
 						"Accepts a raw binary, a .uvdev or .uvsys package, or no argument to flash "
 						"the devices loaded earlier with --dev / --sys, or the binary given with "
 						"'firmware' when no devices were given. "
-						"The device node id should be selected with 'node' option prior to this command. "
+						"The device node id should be selected with 'node' option prior to this command.\n"
+						DEV_NODEID_HELP "\n"
 						"Uses the SDO segmented transfer to load the binary. Note that this is more "
 						"unsafe method compared to \"loadbin\".",
 				.args = ARG_OPTIONAL,
@@ -179,7 +197,8 @@ commands_st commands[] = {
 						"Accepts a raw binary, a .uvdev or .uvsys package, or no argument to flash "
 						"the devices loaded earlier with --dev / --sys, or the binary given with "
 						"'firmware' when no devices were given. "
-						"The device node id should be selected with 'node' option prior to this command. "
+						"The device node id should be selected with 'node' option prior to this command.\n"
+						DEV_NODEID_HELP "\n"
 						"Uses the SDO segmented transfer to load the binary. Note that this is more "
 						"unsafe method compared to \"loadbinwfr\".",
 				.args = ARG_OPTIONAL,
@@ -191,7 +210,8 @@ commands_st commands[] = {
 						"Accepts a raw binary, a .uvdev or .uvsys package, or no argument to flash "
 						"the devices loaded earlier with --dev / --sys, or the binary given with "
 						"'firmware' when no devices were given. "
-						"The device node id should be selected with 'node' option prior to this command.",
+						"The device node id should be selected with 'node' option prior to this command.\n"
+						DEV_NODEID_HELP,
 				.args = ARG_OPTIONAL,
 				.callback = &cmd_uvload
 		},
@@ -202,7 +222,8 @@ commands_st commands[] = {
 						"Accepts a raw binary, a .uvdev or .uvsys package, or no argument to flash "
 						"the devices loaded earlier with --dev / --sys, or the binary given with "
 						"'firmware' when no devices were given. "
-						"The device node id should be selected with 'node' option prior to this command.",
+						"The device node id should be selected with 'node' option prior to this command.\n"
+						DEV_NODEID_HELP,
 				.args = ARG_OPTIONAL,
 				.callback = &cmd_uvloadwfr
 		},
@@ -220,7 +241,8 @@ commands_st commands[] = {
 						"connected to the selected CAN device (--can) with the "
 						"device's node id. uvcan keeps running to monitor the "
 						"simulators and kills them when it exits. Linux only. This is "
-						"the same action as the UI's \"Run simulator\" button.",
+						"the same action as the UI's \"Run simulator\" button.\n"
+						DEV_NODEID_HELP,
 				.args = ARG_NONE,
 				.callback = &cmd_sim
 		},
@@ -284,7 +306,8 @@ commands_st commands[] = {
 						"subdirectories are not), a .uvdev package (its bundled media is loaded), or a\n"
 						".uvsys package (each device's bundled media is loaded). If the argument is\n"
 						"omitted, the bundled media of the devices loaded earlier with --dev / --sys is\n"
-						"loaded. Devices whose package bundles no media are reported with a warning.",
+						"loaded. Devices whose package bundles no media are reported with a warning.\n"
+						DEV_NODEID_HELP,
 				.args = ARG_OPTIONAL,
 				.callback = &cmd_loadmedia
 		},
@@ -402,7 +425,8 @@ commands_st commands[] = {
 						"is written, so no device warns about another one being configured. A device\n"
 						"which does not have the parameter is loaded anyway, with a warning. For a\n"
 						"whole system the devices are stored and reset together once all of them have\n"
-						"been written.",
+						"been written.\n"
+						DEV_NODEID_HELP,
 				.args = ARG_OPTIONAL,
 				.callback = &cmd_loadparam
 		},
@@ -485,6 +509,16 @@ bool cmd_baud(const char *arg) {
 	return ret;
 }
 
+// Assigns *nodeid* to the device given last with --dev, so that a node id given
+// after a device file means the same as the file's own ":<nodeid>" suffix.
+// Does nothing when no device file has been given on the command line.
+static void select_cmdline_device(uint8_t nodeid) {
+	device_st *d = system_set_cmdline_dev_nodeid(&dev.system, nodeid);
+	if (d != NULL) {
+		PRINT("Node ID 0x%x assigned to device '%s'\n", nodeid, d->name);
+	}
+}
+
 bool cmd_node(const char *arg) {
 	bool ret = true;
 	if (!arg) {
@@ -499,6 +533,7 @@ bool cmd_node(const char *arg) {
 		dev.loadparam.forced_nodeid = nodeid;
 		// *nodeid* selects the device only, it never assigns a new node id
 		dev.loadparam.forcenodeid = false;
+		select_cmdline_device(nodeid);
 	}
 
 	return ret;
@@ -518,6 +553,7 @@ bool cmd_forcenode(const char *arg) {
 		dev.loadparam.forced_nodeid_set = true;
 		dev.loadparam.forced_nodeid = nodeid;
 		dev.loadparam.forcenodeid = true;
+		select_cmdline_device(nodeid);
 	}
 
 	return ret;

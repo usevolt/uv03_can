@@ -137,6 +137,11 @@ typedef struct {
 
 	device_st devs[SYSTEM_DEV_MAX_COUNT];
 	uint8_t dev_count;
+	/// @brief: Index of the device added last with --dev, plus one; 0 when no
+	/// device file has been given on the command line yet. A node id given after
+	/// a --dev (with -n / --forcenodeid) is assigned to that device, which makes
+	/// '--dev file.uvdev -n 0x14' equivalent to '--dev file.uvdev:0x14'.
+	uint8_t last_cmdline_dev;
 } system_st;
 
 
@@ -203,9 +208,14 @@ void system_set_device_file(device_st *device, const char *filepath);
 /// flashed onto it. Returns 0 when the file cannot be read or defines no node id.
 uint8_t system_read_file_nodeid(const char *filepath);
 
+/// @brief: Assigns *nodeid* to the device added last with --dev, i.e. the one a
+/// node id given after it on the command line refers to. Returns that device, or
+/// NULL when no device file has been given on the command line.
+device_st *system_set_cmdline_dev_nodeid(system_st *this, uint8_t nodeid);
+
 /// @brief: Returns true once a system configuration (.uvsys) file has been
-/// loaded. While true, individual device files must not be added, because the
-/// system file already contains the system's devices.
+/// loaded. The system file brings the system's own devices; individual --dev
+/// files can still be added on top of them.
 static inline bool system_is_sysfile_loaded(system_st *this) {
 	return this->loaded;
 }

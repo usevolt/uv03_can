@@ -422,6 +422,17 @@ bool system_add_device(system_st *this, const char *filepath, uint8_t nodeid) {
 }
 
 
+device_st *system_set_cmdline_dev_nodeid(system_st *this, uint8_t nodeid) {
+	device_st *ret = NULL;
+	if ((this->last_cmdline_dev != 0) &&
+			(this->last_cmdline_dev <= this->dev_count)) {
+		ret = &this->devs[this->last_cmdline_dev - 1];
+		ret->nodeid = nodeid;
+	}
+	return ret;
+}
+
+
 device_st *system_add_empty_device(system_st *this) {
 	device_st *ret = NULL;
 	if (!system_is_full(this)) {
@@ -465,6 +476,7 @@ device_st *system_add_found_device(system_st *this, uint8_t nodeid,
 void system_clear_devices(system_st *this) {
 	memset(this->devs, 0, sizeof(this->devs));
 	this->dev_count = 0;
+	this->last_cmdline_dev = 0;
 }
 
 
@@ -618,16 +630,7 @@ bool cmd_device(const char *arg) {
 	char path[1024];
 	uint8_t nodeid;
 
-	if (system_is_sysfile_loaded(&dev.system)) {
-		// a system file already provides the devices; adding individual device
-		// files on top of it is not allowed. Keep going so later commands run.
-		PRINT(PRINT_BOLDRED
-				"ERROR: a system file is already loaded ('%s'); ignoring device "
-				"'%s'. Device files cannot be combined with a --sys file.\n"
-				PRINT_RESET,
-				dev.system.filepath, arg);
-	}
-	else if (!parse_device_arg(arg, path, sizeof(path), &nodeid)) {
+	if (!parse_device_arg(arg, path, sizeof(path), &nodeid)) {
 		// an explicit node id was given but it is out of range
 		PRINT(PRINT_BOLDRED
 				"ERROR: invalid node id in device '%s'; it must be in the range "
@@ -637,6 +640,8 @@ bool cmd_device(const char *arg) {
 	else if (system_add_device(&dev.system, path, nodeid)) {
 		// as with --sys, start the UI's file dialogs next to the given file
 		uv_uifiledialog_set_default_dir(path);
+		// a node id given after this device (with -n / --forcenodeid) belongs to it
+		dev.system.last_cmdline_dev = dev.system.dev_count;
 		if (nodeid != 0) {
 			PRINT("Added device configuration file '%s' with node id 0x%x\n",
 					path, nodeid);
