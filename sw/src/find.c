@@ -183,6 +183,31 @@ static uint32_t read_sw_version(uint8_t nodeid) {
 }
 
 
+/// @brief: Reads the name a Usevolt device gives itself from the CANopen DEVNAME
+/// object of an online device into *dest*. Returns true when a non-empty name was
+/// read; *dest* is left untouched otherwise.
+static bool read_devname(uint8_t nodeid, char *dest, size_t len) {
+	bool ret = false;
+	char name[64] = { };
+	if (uv_canopen_sdo_read(nodeid, CONFIG_CANOPEN_DEVNAME_INDEX, 0,
+			sizeof(name) - 1, name) == ERR_NONE) {
+		name[sizeof(name) - 1] = '\0';
+		if (name[0] != '\0') {
+			strncpy(dest, name, len - 1);
+			dest[len - 1] = '\0';
+			ret = true;
+		}
+		else {
+			// the device answered with an empty name; nothing to show
+		}
+	}
+	else {
+		// no readable DEVNAME object on this device
+	}
+	return ret;
+}
+
+
 // All Usevolt devices expose their CAN interface version (object-dictionary
 // revision) at a fixed object, so it can be read straight from the device even
 // when no configuration package is attached to point at it.
@@ -247,9 +272,30 @@ bool find_update_device_states(system_st *sys) {
 				device->sw_version = read_sw_version(device->nodeid);
 				device->sw_version_tried = true;
 			}
+			// A device without a configuration file is only known by its node id
+			// ("Node 0x14"), which tells several such devices poorly apart. Usevolt
+			// devices name themselves in the DEVNAME object, so read that name once
+			// and let the UI show it. Other manufacturers' devices have no such
+			// object and are left alone. The attempt is latched like the version
+			// read above so a device that does not answer is not asked every cycle.
+			if ((device->filepath[0] == '\0') &&
+					(device->vendor_id == CANOPEN_USEVOLT_VENDOR_ID) &&
+					(device->devname[0] == '\0') && !device->devname_tried) {
+				device->devname_tried = true;
+				if (read_devname(device->nodeid, device->devname,
+						sizeof(device->devname))) {
+					// the name is shown as the device's tab title: report the change
+					// so the caller refreshes the tabs
+					changed = true;
+				}
+				else {
+					// name unavailable; the device keeps its node-id name
+				}
+			}
 		}
 		else {
 			device->sw_version_tried = false;
+			device->devname_tried = false;
 		}
 
 		if (newstate != device->state) {

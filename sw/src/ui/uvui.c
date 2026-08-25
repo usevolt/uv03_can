@@ -469,7 +469,9 @@ void uvui_exec(void) {
 		// the SDO client, and a flash resets the device).
 		if (!devicetab_is_busy() && find_update_device_states(&dev.system) &&
 				device_tabs_shown()) {
-			uv_ui_refresh(&this->tabwindow);
+			// rebuild rather than plain refresh: coming online can also bring the
+			// device's own name, which the tab titles are built from
+			rebuild_tabs();
 			show_active_tab();
 		}
 
@@ -724,6 +726,12 @@ static void populate_tab_names(void) {
 		device_st *device = system_get_dev(sys, d);
 		char *buf = this->tab_name_buffer[i];
 		size_t bufsz = sizeof(this->tab_name_buffer[i]);
+		// a device with no configuration file is named after its node id alone
+		// ("Node 0x14"), which tells several of them poorly apart; once such a
+		// device has been asked for its own name on the bus (see
+		// find_update_device_states()) that name identifies it instead
+		const char *devname = ((device->filepath[0] == '\0') &&
+				(device->devname[0] != '\0')) ? device->devname : device->name;
 		if (device->nodeid != 0) {
 			// tab name is "<name>_0x<nodeid>", but the device name may already end
 			// with that suffix (devices loaded from a .uvsys keep the renamed
@@ -733,7 +741,7 @@ static void populate_tab_names(void) {
 					(unsigned int) device->nodeid);
 			// base kept short enough that base + suffix always fits *buf*
 			char base[96];
-			strncpy(base, device->name, sizeof(base) - 1);
+			strncpy(base, devname, sizeof(base) - 1);
 			base[sizeof(base) - 1] = '\0';
 			size_t slen = strlen(suffix);
 			size_t blen = strlen(base);
@@ -744,7 +752,7 @@ static void populate_tab_names(void) {
 			snprintf(buf, bufsz, "%s%s", base, suffix);
 		}
 		else {
-			strncpy(buf, device->name, bufsz - 1);
+			strncpy(buf, devname, bufsz - 1);
 			buf[bufsz - 1] = '\0';
 		}
 		i++;

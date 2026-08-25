@@ -102,6 +102,11 @@ typedef struct {
 	/// every cycle. Cleared when the device leaves OP/PRE-OP so a fresh read is
 	/// taken after a reboot/reconnect.
 	bool sw_version_tried;
+	/// @brief: Latches that the device name has been read off the bus (see
+	/// *devname*), so a device that does not answer the DEVNAME object is not
+	/// asked again every cycle. Cleared when the device leaves OP/PRE-OP so a
+	/// fresh read is taken after a reboot/reconnect.
+	bool devname_tried;
 	/// @brief: Whether (and how) the device is currently seen on the CAN bus.
 	/// Devices added from a file start OFFLINE; --find and the --ui monitor set it
 	/// to the device's live NMT state (BOOTUP / PREOP / OP).
