@@ -83,6 +83,51 @@ priv() { $SUDO "$@"; }
 say()  { printf '\033[1;35m==>\033[0m %s\n' "$*"; }   # purple arrow
 warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$*" >&2; }
 
+# ---- PATH entry for the per-user bin directory ------------------------------
+#
+# A user-mode install lands in ~/.local/bin, which Ubuntu's stock ~/.profile
+# only puts on PATH when the directory ALREADY EXISTED at login:
+#
+#     if [ -d "$HOME/.local/bin" ] ; then PATH="$HOME/.local/bin:$PATH" ; fi
+#
+# On a machine that never had that directory, this installer creates it — but
+# the running desktop session evaluated the test long ago, so no shell of that
+# session looks there and 'uvcan' is command-not-found straight after a
+# successful install. Writing the entry into the interactive shell's rc file
+# makes every terminal opened from now on find it, without a re-login.
+PATH_MARK_BEGIN="# >>> uvcan installer >>>"
+PATH_MARK_END="# <<< uvcan installer <<<"
+
+# rc file of the user's interactive shell — the one every new terminal reads
+shell_rc() {
+	case "$(basename "${SHELL:-/bin/bash}")" in
+		zsh) echo "$HOME/.zshrc" ;;
+		*)   echo "$HOME/.bashrc" ;;
+	esac
+}
+
+# append_path_block <rc-file> — the block re-tests PATH at every shell startup
+# so that a login shell whose child shells re-read the rc cannot stack the
+# directory into PATH twice.
+append_path_block() {
+	local rc="$1"
+	{
+		printf '\n%s\n' "$PATH_MARK_BEGIN"
+		printf 'case ":$PATH:" in\n'
+		printf '\t*":%s:"*) ;;\n' "$BIN_DIR"
+		printf '\t*) export PATH="%s:$PATH" ;;\n' "$BIN_DIR"
+		printf 'esac\n'
+		printf '%s\n' "$PATH_MARK_END"
+	} >> "$rc"
+}
+
+remove_path_block() {
+	local rc="$1"
+	[ -f "$rc" ] && grep -qF "$PATH_MARK_BEGIN" "$rc" || return 0
+	sed -i "\|^$PATH_MARK_BEGIN\$|,\|^$PATH_MARK_END\$|d" "$rc"
+	say "Removed the PATH entry from $rc"
+}
+
 # Themes that must also carry the .uvsys mimetype icon.
 #
 # GTK4 (Nautilus on modern GNOME/Ubuntu) resolves a file's icon from a fallback
@@ -147,6 +192,7 @@ if [ "$ACTION" = "uninstall" ]; then
 	command -v update-mime-database    >/dev/null && priv update-mime-database "$MIME_DIR" || true
 	command -v update-desktop-database >/dev/null && priv update-desktop-database "$APPS_DIR" || true
 	command -v gtk-update-icon-cache   >/dev/null && priv gtk-update-icon-cache -f -t "$ICON_BASE" >/dev/null 2>&1 || true
+	if [ "$MODE" = "user" ]; then remove_path_block "$(shell_rc)"; fi
 	say "Done. The uvcan binary was removed; your .uvsys files are untouched."
 	exit 0
 fi
@@ -156,11 +202,30 @@ fi
 # binary only wants the runtime shared libraries, building from source wants the
 # headers and pkg-config files of the -dev packages as well.
 BIN_SRC="$SCRIPT_DIR/uvcan"
+
+# A usable prebuilt binary is a regular executable FILE. Testing [ -x ] alone
+# would also accept a *directory* — directories are searchable, so -x is true
+# for them — and this package unpacks flat (uvcan, install.sh, packaging/). Drop
+# it into a folder that already holds a "uvcan" directory (a source checkout, a
+# firmware project's sw/ with the uvcan submodule) and tar cannot write the
+# binary over that directory: install would then be handed the directory and
+# fail with "omitting directory", after ~/.local/bin had already been created.
+have_binary() { [ -f "$1" ] && [ -x "$1" ]; }
+
 WILL_BUILD=0
-if [ "$DO_BUILD" = "yes" ] || [ ! -x "$BIN_SRC" ]; then
+if [ "$DO_BUILD" = "yes" ] || ! have_binary "$BIN_SRC"; then
 	if [ -f "$SCRIPT_DIR/makefile" ] && command -v make >/dev/null; then
 		WILL_BUILD=1
 	fi
+fi
+
+# Unpacking the package straight into the install directory would make the
+# source and the destination of the copy below the same file, which install
+# refuses ("... are the same file") — after the dependency step has already run.
+if [ "$SCRIPT_DIR" = "$BIN_DIR" ]; then
+	echo "error: this package is unpacked in $BIN_DIR, the directory it installs into." >&2
+	echo "       Move it somewhere else (e.g. ~/uvcan-pkg) and run ./install.sh there." >&2
+	exit 2
 fi
 
 # ---- dependencies -----------------------------------------------------------
@@ -201,9 +266,23 @@ if [ "$WILL_BUILD" -eq 1 ]; then
 		warn "gcc not found; skipping the build."
 	fi
 fi
-if [ ! -x "$BIN_SRC" ]; then
-	echo "error: no uvcan binary found at $BIN_SRC and the build did not produce one." >&2
-	echo "       Build it first with 'make', or run a release bundle that ships the binary." >&2
+if ! have_binary "$BIN_SRC"; then
+	if [ -d "$BIN_SRC" ]; then
+		echo "error: $BIN_SRC is a directory, not the uvcan binary." >&2
+		echo "       This package was unpacked into a folder that already contained a" >&2
+		echo "       'uvcan' directory, so tar could not write the binary over it." >&2
+		echo "       Unpack the tarball into an empty directory of its own and run" >&2
+		echo "       ./install.sh from there:" >&2
+		echo "           mkdir uvcan-pkg && tar xzf <package>.tar.gz -C uvcan-pkg" >&2
+		echo "           cd uvcan-pkg && ./install.sh" >&2
+	elif [ -e "$BIN_SRC" ]; then
+		echo "error: $BIN_SRC is not an executable file." >&2
+		echo "       If the package was unpacked by a tool that dropped the permission" >&2
+		echo "       bits, restore them with: chmod +x '$BIN_SRC'" >&2
+	else
+		echo "error: no uvcan binary found at $BIN_SRC and the build did not produce one." >&2
+		echo "       Build it first with 'make', or run a release bundle that ships the binary." >&2
+	fi
 	exit 1
 fi
 
@@ -221,6 +300,12 @@ priv install -d "$BIN_DIR" "$APPS_DIR" "$MIME_DIR/packages" "$ICON_BASE/scalable
 # binary + launcher wrapper
 priv install -m 0755 "$BIN_SRC"               "$BIN_DIR/uvcan"
 priv install -m 0755 "$PKG_DIR/uvcan-open"    "$BIN_DIR/uvcan-open"
+
+# Confirm the copy really landed, so a broken install cannot end with "Done".
+if ! have_binary "$BIN_DIR/uvcan"; then
+	echo "error: $BIN_DIR/uvcan was not installed." >&2
+	exit 1
+fi
 
 # bash tab completion for the command line options. It reads the option names
 # from the installed binary's --help, so it stays right as commands are added.
@@ -283,13 +368,36 @@ if command -v xdg-mime >/dev/null; then
 	xdg-mime default "$DESKTOP_NAME" application/x-uvsys || warn "xdg-mime default failed"
 fi
 
-# ---- PATH sanity check ------------------------------------------------------
-case ":$PATH:" in
-	*":$BIN_DIR:"*) ;;
-	*) warn "$BIN_DIR is not on your PATH. Add it (e.g. in ~/.profile):"
-	   warn "    export PATH=\"$BIN_DIR:\$PATH\""
-	   warn "Double-click association still works (it uses an absolute path)." ;;
-esac
+# ---- make sure the binary is actually reachable by name ---------------------
+# See the PATH_MARK_BEGIN comment above for why a per-user install is otherwise
+# invisible to every shell of the session that ran the installer.
+PATH_OK=1
+if [ "$MODE" = "user" ]; then
+	case ":$PATH:" in
+		*":$BIN_DIR:"*) ;;    # this shell already sees it, nothing to do
+		*)
+			PATH_OK=0
+			rc="$(shell_rc)"
+			if [ -f "$rc" ] && grep -qF "$PATH_MARK_BEGIN" "$rc"; then
+				say "$rc already adds $BIN_DIR to PATH"
+			else
+				append_path_block "$rc"
+				say "Added $BIN_DIR to your PATH in $rc"
+			fi
+			echo
+			warn "'uvcan' is not on the PATH of THIS shell yet. Open a new"
+			warn "terminal, or make it visible here with:"
+			warn "    export PATH=\"$BIN_DIR:\$PATH\""
+			warn "Double-clicking a .uvsys file works either way — the desktop"
+			warn "entry calls the binary by its absolute path."
+			echo ;;
+	esac
+fi
 
-say "Done. Double-click any .uvsys file to open it in uvcan, or run 'uvcan --ui'."
+if [ "$PATH_OK" -eq 1 ]; then
+	say "Done. Double-click any .uvsys file to open it in uvcan, or run 'uvcan --ui'."
+else
+	say "Done. Double-click any .uvsys file to open it in uvcan. Running"
+	say "'uvcan --ui' from a terminal needs the PATH change noted above."
+fi
 say "Verify the association with: xdg-mime query default application/x-uvsys"
