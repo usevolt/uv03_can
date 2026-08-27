@@ -41,6 +41,18 @@ typedef struct {
 
 #define QUERY_COUNT			20
 
+
+/// @brief: The node id selection in effect at one point of the command line, as
+/// *loadparam* sees it: the system's own selection (see system_nodeids_st) plus
+/// the target which this module keeps of the *nodeid* / *forcenodeid* commands.
+typedef struct {
+	system_nodeids_st sys;
+	bool forced_nodeid_set;
+	uint8_t forced_nodeid;
+	bool forcenodeid;
+} loadparam_nodeids_st;
+
+
 typedef struct {
 	char files[64][256];
 	unsigned int current_file;
@@ -50,6 +62,12 @@ typedef struct {
 	// non-option arguments and the loaded system) into a .uvsys / prior-system
 	// parameter load or a raw parameter-file load.
 	char dispatch_arg[1024];
+	// The node id selection in effect where the command stood on the command
+	// line, captured when the callback ran. The dispatch task puts it back for
+	// the duration of the load, so a *nodeid* given after the command (the node
+	// ids are positional, see load_st's dispatch_nodeids) does not move its
+	// target.
+	loadparam_nodeids_st dispatch_nodeids;
 
 	query_st queries_buffer[QUERY_COUNT];
 	uv_vector_st queries;

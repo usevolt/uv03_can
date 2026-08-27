@@ -1656,6 +1656,24 @@ void db_set_nodeid_force(db_st *this, uint8_t value) {
 	nodeid_force_set = true;
 }
 
+void db_get_nodeid_state(db_st *this, uint8_t *nodeid, bool *is_set, bool *forced) {
+	if (nodeid != NULL) {
+		*nodeid = this->node_id;
+	}
+	if (is_set != NULL) {
+		*is_set = is_nodeid_set;
+	}
+	if (forced != NULL) {
+		*forced = nodeid_force_set;
+	}
+}
+
+void db_set_nodeid_state(db_st *this, uint8_t nodeid, bool is_set, bool forced) {
+	this->node_id = nodeid;
+	is_nodeid_set = is_set;
+	nodeid_force_set = forced;
+}
+
 
 
 #define this (&dev.db)

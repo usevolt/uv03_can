@@ -22,12 +22,18 @@
 
 #include <uv_utilities.h>
 #include <stdbool.h>
+#include "system.h"
 
 
 
 typedef struct {
 	// path to the media file or directory given as the command argument
 	char file[1024];
+	// The node id selection in effect where the command stood on the command
+	// line, captured when the callback ran. The dispatch task puts it back for the
+	// duration of the load, so a *nodeid* given after the command does not move
+	// its target (see the same field in load_st).
+	system_nodeids_st nodeids;
 } loadmedia_st;
 
 

@@ -78,6 +78,23 @@ void find_reinstall_monitor(void);
 bool find_node_is_online(uint8_t nodeid);
 
 
+/// @brief: Returns the live state of *nodeid* as of its latest heartbeat (BOOTUP
+/// / PREOP / OP), or DEV_STATE_OFFLINE when no heartbeat has been received from
+/// it recently. The same state find_update_device_states() gives a device, for a
+/// bare node id which need not belong to any device.
+dev_state_e find_node_get_state(uint8_t nodeid);
+
+
+/// @brief: Waits until *nodeid* reports OPERATIONAL in its heartbeat, for at most
+/// *timeout_ms*. Only the heartbeats received after this call is made are taken
+/// into account, so a node which is still resetting is not mistaken for a running
+/// one on the strength of the heartbeat it sent before the reset. Brings the CAN
+/// bus up and (re)installs the heartbeat monitor, so it works on its own after a
+/// firmware flash, which takes the CAN callback over. Blocks; call from a task.
+/// Returns true when the node became operational, false on a timeout.
+bool find_wait_node_operational(uint8_t nodeid, uint32_t timeout_ms);
+
+
 /// @brief: Reads *device*'s own CAN IF VERSION (revision) from the CAN IF VERSION
 /// object on the bus, using the object location captured from its .uvdev database.
 /// Returns 0 when the device is offline, has no configuration file, or the read

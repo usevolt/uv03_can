@@ -59,6 +59,13 @@ typedef struct {
 	bool dispatch_wfr;
 	bool dispatch_uv;
 	bool dispatch_block;
+	// The node id selection in effect where the command stood on the command
+	// line, captured when the callback ran. The dispatch task puts it back for
+	// the duration of the flash, so a *nodeid* given after the load command (e.g.
+	// '-n 0x7f --loadbin -n 0xd --loadmedia', where the firmware goes to the
+	// bootloader's node and the media to the device's own) does not move its
+	// target.
+	system_nodeids_st dispatch_nodeids;
 } load_st;
 
 

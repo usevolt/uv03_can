@@ -298,6 +298,14 @@ static void load_dispatch_step(void *ptr) {
 	bool uv = this->dispatch_uv;
 	bool block = this->dispatch_block;
 
+	// flash the node ids that were selected where this command stood on the
+	// command line, not the ones a later *nodeid* has since assigned. The current
+	// selection is put back afterwards, so it is the last one on the command line
+	// that the following commands (and the UI) see.
+	system_nodeids_st current;
+	system_nodeids_save(&dev.system, &current);
+	system_nodeids_restore(&dev.system, &this->dispatch_nodeids);
+
 	if (path_is_uvsys(arg)) {
 		uint8_t prev = dev.system.dev_count;
 		if (!system_set_file(&dev.system, arg)) {
@@ -342,6 +350,8 @@ static void load_dispatch_step(void *ptr) {
 				"a .uvdev / .uvsys package, the binary to flash with --firmware, or "
 				"load devices with --dev / --sys first.\n" PRINT_RESET);
 	}
+
+	system_nodeids_restore(&dev.system, &current);
 }
 
 
@@ -354,6 +364,9 @@ static bool load_dispatch(const char *arg, bool wfr, bool uv, bool block_transfe
 	this->dispatch_wfr = wfr;
 	this->dispatch_uv = uv;
 	this->dispatch_block = block_transfer;
+	// remember which node ids are selected at this point of the command line; the
+	// dispatch task runs only after the whole command line has been parsed
+	system_nodeids_save(&dev.system, &this->dispatch_nodeids);
 	add_task(load_dispatch_step);
 	uv_can_set_up(false);
 	return true;

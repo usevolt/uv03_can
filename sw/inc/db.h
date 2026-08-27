@@ -330,6 +330,17 @@ void db_set_nodeid(db_st *this, uint8_t value);
 
 void db_set_nodeid_force(db_st *this, uint8_t value);
 
+/// @brief: Reads the current node id selection: the node id itself, whether one
+/// has been set at all, and whether it was forced with db_set_nodeid_force().
+/// Together with db_set_nodeid_state() this lets a caller put the selection back
+/// the way it was, which is how the command tasks target the node id that was
+/// selected at their own place on the command line. Any of the output pointers
+/// may be NULL.
+void db_get_nodeid_state(db_st *this, uint8_t *nodeid, bool *is_set, bool *forced);
+
+/// @brief: Puts back a node id selection read with db_get_nodeid_state().
+void db_set_nodeid_state(db_st *this, uint8_t nodeid, bool is_set, bool forced);
+
 static inline uint32_t db_get_vendor_id(db_st *this) {
 	return this->vendor_id;
 }

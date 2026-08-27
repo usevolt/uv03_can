@@ -294,6 +294,26 @@ static void loadparam_run_files(const char *primary) {
 }
 
 
+// Captures the node id selection currently in effect: the system's (the devices'
+// node ids and the one selected with *nodeid*) plus this module's own target,
+// which the *nodeid* / *forcenodeid* commands set alongside it.
+static void nodeids_save(loadparam_nodeids_st *dest) {
+	system_nodeids_save(&dev.system, &dest->sys);
+	dest->forced_nodeid_set = this->forced_nodeid_set;
+	dest->forced_nodeid = this->forced_nodeid;
+	dest->forcenodeid = this->forcenodeid;
+}
+
+
+// Puts back a selection captured with nodeids_save().
+static void nodeids_restore(const loadparam_nodeids_st *src) {
+	system_nodeids_restore(&dev.system, &src->sys);
+	this->forced_nodeid_set = src->forced_nodeid_set;
+	this->forced_nodeid = src->forced_nodeid;
+	this->forcenodeid = src->forcenodeid;
+}
+
+
 // Task body for the --loadparam command. Dispatches on the effective argument:
 //   - a .uvsys package: load it and push each device's bundled parameters
 //   - a .uvdev package:  warns (device packages carry no parameters)
@@ -302,6 +322,14 @@ static void loadparam_run_files(const char *primary) {
 //   - no argument:       push bundled parameters for every --dev / --sys device
 static void loadparam_dispatch_step(void *ptr) {
 	const char *arg = cmdline_load_arg(this->dispatch_arg);
+
+	// load onto the node ids that were selected where this command stood on the
+	// command line, not the ones a later *nodeid* has since assigned. The current
+	// selection is put back afterwards, so it is the last one on the command line
+	// that the following commands (and the UI) see.
+	loadparam_nodeids_st current;
+	nodeids_save(&current);
+	nodeids_restore(&this->dispatch_nodeids);
 
 	if (path_is_uvsys(arg)) {
 		uint8_t prev = dev.system.dev_count;
@@ -328,6 +356,8 @@ static void loadparam_dispatch_step(void *ptr) {
 		ERRORSTR("ERROR: no parameter file given and no devices loaded with "
 				"--sys / --dev.\n");
 	}
+
+	nodeids_restore(&current);
 }
 
 
@@ -337,6 +367,9 @@ bool cmd_loadparam(const char *arg) {
 	strncpy(this->dispatch_arg, (arg != NULL) ? arg : "",
 			sizeof(this->dispatch_arg) - 1);
 	this->dispatch_arg[sizeof(this->dispatch_arg) - 1] = '\0';
+	// remember which node ids are selected at this point of the command line; the
+	// dispatch task runs only after the whole command line has been parsed
+	nodeids_save(&this->dispatch_nodeids);
 	add_task(loadparam_dispatch_step);
 	uv_can_set_up(false);
 	return true;

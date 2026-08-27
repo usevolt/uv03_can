@@ -433,6 +433,26 @@ device_st *system_set_cmdline_dev_nodeid(system_st *this, uint8_t nodeid) {
 }
 
 
+void system_nodeids_save(system_st *this, system_nodeids_st *dest) {
+	dest->count = this->dev_count;
+	for (uint8_t i = 0; i < this->dev_count; i++) {
+		dest->nodeids[i] = this->devs[i].nodeid;
+	}
+	db_get_nodeid_state(&dev.db, &dest->db_nodeid, &dest->db_nodeid_set,
+			&dest->db_nodeid_forced);
+}
+
+
+void system_nodeids_restore(system_st *this, const system_nodeids_st *src) {
+	uint8_t count = (src->count < this->dev_count) ? src->count : this->dev_count;
+	for (uint8_t i = 0; i < count; i++) {
+		this->devs[i].nodeid = src->nodeids[i];
+	}
+	db_set_nodeid_state(&dev.db, src->db_nodeid, src->db_nodeid_set,
+			src->db_nodeid_forced);
+}
+
+
 device_st *system_add_empty_device(system_st *this) {
 	device_st *ret = NULL;
 	if (!system_is_full(this)) {

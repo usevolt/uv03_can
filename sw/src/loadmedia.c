@@ -24,6 +24,7 @@
 #include <unistd.h>
 #include <dirent.h>
 #include "loadmedia.h"
+#include "find.h"
 #include "main.h"
 #include "uvdev.h"
 
@@ -41,6 +42,7 @@ static void run_media_path(const char *path, const char *strip_prefix);
 static void run_media_paths(const char *const *paths, uint32_t n,
 		const char *strip_prefix);
 static bool loadmedia_uvdev(const char *uvdev_path, uint8_t nodeid);
+static void wait_node_operational(uint8_t nodeid);
 static void loadmedia_devices(uint8_t start, uint8_t end);
 static void loadmedia_dispatch_step(void *ptr);
 
@@ -71,6 +73,9 @@ bool cmd_loadmedia(const char *arg) {
 	// scheduler is running
 	strncpy(this->file, (arg != NULL) ? arg : "", sizeof(this->file) - 1);
 	this->file[sizeof(this->file) - 1] = '\0';
+	// remember which node ids are selected at this point of the command line; the
+	// dispatch task runs only after the whole command line has been parsed
+	system_nodeids_save(&dev.system, &this->nodeids);
 	add_task(loadmedia_dispatch_step);
 	uv_can_set_up(false);
 	return true;
@@ -247,8 +252,52 @@ static void load(char *filename, const char *devname, uint32_t count, uint32_t i
 
 
 
+// How long the media load waits for the target node to report an OPERATIONAL
+// heartbeat before it starts the transfer anyway. A device which was just flashed
+// is reset and needs a few seconds to boot and mount its external memory.
+#define LOADMEDIA_OP_WAIT_MS	15000
+
+
+// Announces the wait and returns whether *nodeid* came operational within
+// LOADMEDIA_OP_WAIT_MS. Split out so the message is printed before the wait
+// starts: it is what tells the user why the load is not moving yet.
+static bool wait_for_op_heartbeat(uint8_t nodeid) {
+	printf("Waiting for node 0x%x to become operational...\n",
+			(unsigned int) nodeid);
+	fflush(stdout);
+	return find_wait_node_operational(nodeid, LOADMEDIA_OP_WAIT_MS);
+}
+
+
+// Waits for *nodeid* to come operational before anything is written to it. The
+// media protocol talks to the running application, so a load started while the
+// device is still booting - as it is right after a firmware flash, which resets
+// it - fails on the very first transfer. A timeout is only warned about and the
+// load is tried anyway: a device answers SDO requests in PRE-OPERATIONAL too, and
+// one whose firmware produces no heartbeat at all would otherwise never be
+// loadable. Nothing is waited for when no node is selected (node id 0).
+static void wait_node_operational(uint8_t nodeid) {
+	if (nodeid == 0) {
+		// no node selected; the transfer itself reports the failure
+	}
+	else if (wait_for_op_heartbeat(nodeid)) {
+		printf("Node 0x%x is operational, starting the media download.\n",
+				(unsigned int) nodeid);
+		fflush(stdout);
+	}
+	else {
+		printf(PRINT_BOLDYELLOW "WARNING: node 0x%x did not report an OPERATIONAL "
+				"heartbeat in %u seconds; loading the media anyway.\n" PRINT_RESET,
+				(unsigned int) nodeid,
+				(unsigned int) (LOADMEDIA_OP_WAIT_MS / 1000));
+		fflush(stdout);
+	}
+}
+
+
 static void loadmedia_step(void *ptr) {
 	// raw file/directory load: store the path as given (no package to relativize)
+	wait_node_operational(db_get_nodeid(&dev.db));
 	run_media_path(this->file, NULL);
 }
 
@@ -395,6 +444,9 @@ static bool loadmedia_uvdev(const char *uvdev_path, uint8_t nodeid) {
 			// loadmedia's transfer targets db_get_nodeid(&dev.db); force it to the
 			// device's node id so the media goes to the right device
 			db_set_nodeid_force(&dev.db, nodeid);
+			// the device runs the application which serves the media protocol only
+			// once it is up: wait for its heartbeat before writing anything to it
+			wait_node_operational(nodeid);
 			char mediadir[2048];
 			snprintf(mediadir, sizeof(mediadir), "%s/%s", pkg.dir, pkg.media);
 			// strip the package's extraction dir so the device stores the media
@@ -453,6 +505,14 @@ static void loadmedia_devices(uint8_t start, uint8_t end) {
 static void loadmedia_dispatch_step(void *ptr) {
 	const char *arg = cmdline_load_arg(this->file);
 
+	// load onto the node ids that were selected where this command stood on the
+	// command line, not the ones a later *nodeid* has since assigned. The current
+	// selection is put back afterwards, so it is the last one on the command line
+	// that the following commands (and the UI) see.
+	system_nodeids_st current;
+	system_nodeids_save(&dev.system, &current);
+	system_nodeids_restore(&dev.system, &this->nodeids);
+
 	if (path_is_uvsys(arg)) {
 		uint8_t prev = dev.system.dev_count;
 		if (!system_set_file(&dev.system, arg)) {
@@ -489,6 +549,7 @@ static void loadmedia_dispatch_step(void *ptr) {
 			paths[n++] = dev.nonopt_argv[i];
 		}
 		// legacy raw load: store paths as given (no package to relativize)
+		wait_node_operational(db_get_nodeid(&dev.db));
 		run_media_paths(paths, n, NULL);
 	}
 	else if (dev.system.dev_count != 0) {
@@ -500,6 +561,8 @@ static void loadmedia_dispatch_step(void *ptr) {
 				"directory, a .uvdev / .uvsys package, or load devices with "
 				"--dev / --sys first.\n" PRINT_RESET);
 	}
+
+	system_nodeids_restore(&dev.system, &current);
 }
 
 

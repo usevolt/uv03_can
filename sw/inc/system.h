@@ -150,6 +150,33 @@ typedef struct {
 } system_st;
 
 
+/// @brief: The node id selection in effect at one point of the command line: the
+/// node id of every device loaded so far, plus the node id selected with
+/// *nodeid* / *forcenodeid*. Captured with system_nodeids_save().
+typedef struct {
+	uint8_t nodeids[SYSTEM_DEV_MAX_COUNT];
+	uint8_t count;
+	uint8_t db_nodeid;
+	bool db_nodeid_set;
+	bool db_nodeid_forced;
+} system_nodeids_st;
+
+
+/// @brief: Captures the node id selection currently in effect.
+///
+/// The commands' callbacks all run while the command line is parsed, but the work
+/// itself runs later, from the tasks they register. A command therefore has to
+/// remember the node ids that were selected where it stands on the command line;
+/// otherwise a later *nodeid* would silently move its target, and
+/// '--dev d.uvdev -n 0x7f --loadbin -n 0xd --loadmedia' would flash the firmware
+/// to node 0xd instead of the bootloader's 0x7f.
+void system_nodeids_save(system_st *this, system_nodeids_st *dest);
+
+/// @brief: Puts back a node id selection captured with system_nodeids_save().
+/// Devices added after the capture keep their own node ids.
+void system_nodeids_restore(system_st *this, const system_nodeids_st *src);
+
+
 /// @brief: Resets the system to an empty, unconfigured state.
 void system_reset(system_st *this);
 

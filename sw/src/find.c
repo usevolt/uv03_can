@@ -50,6 +50,9 @@
 // it within this many milliseconds.
 #define FIND_ONLINE_TIMEOUT_MS	2000
 
+// Polling step while waiting for a node to come operational.
+#define FIND_OP_POLL_MS			100
+
 
 // Bitmap (one bit per node id 0..127) of nodes seen sending a heartbeat (any NMT
 // state). Written by the CAN rx callback (in the HAL task), read from the
@@ -100,6 +103,17 @@ bool find_node_is_online(uint8_t nodeid) {
 }
 
 
+/// @brief: Forgets the heartbeats received from *nodeid* so far, so only the ones
+/// received from now on count. Lets a wait for a node which is about to reboot
+/// (a freshly flashed device) ignore the state it reported before the reset.
+static void node_forget(uint8_t nodeid) {
+	last_seen_tick[nodeid] = 0;
+	operational_nodes[nodeid / 8] &= (uint8_t) ~(1u << (nodeid % 8));
+	// let the live discovery rediscover the node once it is back on the bus
+	live_added[nodeid] = 0;
+}
+
+
 /// @brief: Maps a CANopen NMT node-state byte (from a heartbeat) onto the device
 /// connection state shown in the UI. STOPPED is grouped with PRE-OPERATIONAL: in
 /// both the device is reachable over SDO but not exchanging PDOs. Any unknown
@@ -118,6 +132,27 @@ static dev_state_e nmt_to_dev_state(uint8_t nmt) {
 	default:
 		ret = DEV_STATE_BOOTUP;
 		break;
+	}
+	return ret;
+}
+
+
+/// @brief: The live state of *nodeid* as of its latest heartbeat: the heartbeat's
+/// NMT state mapped onto dev_state_e, or OFFLINE when none has been received
+/// within the timeout window. *now* is the current RTOS tick count, passed in so a
+/// whole system can be aged out against one reading.
+static dev_state_e node_live_state(uint8_t nodeid, uint32_t now) {
+	uint32_t seen = last_seen_tick[nodeid];
+	bool online = (seen != 0) &&
+			(((now - seen) * UV_RTOS_TICK_PERIOD_MS) < FIND_ONLINE_TIMEOUT_MS);
+	return online ? nmt_to_dev_state(last_nmt_state[nodeid]) : DEV_STATE_OFFLINE;
+}
+
+
+dev_state_e find_node_get_state(uint8_t nodeid) {
+	dev_state_e ret = DEV_STATE_OFFLINE;
+	if ((nodeid >= 1) && (nodeid <= NODEID_MAX)) {
+		ret = node_live_state(nodeid, uv_rtos_get_tick_count());
 	}
 	return ret;
 }
@@ -168,6 +203,40 @@ void find_start_monitor(void) {
 void find_reinstall_monitor(void) {
 	uv_canopen_set_can_callback(&find_can_callb);
 	monitor_installed = true;
+}
+
+
+bool find_wait_node_operational(uint8_t nodeid, uint32_t timeout_ms) {
+	bool ret = false;
+	if ((nodeid >= 1) && (nodeid <= NODEID_MAX)) {
+		// Bring the bus up and take the CAN callback back for the heartbeat
+		// sniffer: a firmware flash done before this (the wfr / uv bootloader
+		// paths) installs its own boot-up callback and clears it when it is done,
+		// which would leave find_start_monitor() thinking the monitor is still
+		// running while no heartbeat is recorded any more.
+		uv_can_set_up(false);
+		find_reinstall_monitor();
+		// only count the heartbeats received from here on: the node may have just
+		// been reset and still be sending, or have just sent, the heartbeat of the
+		// firmware that is being replaced
+		node_forget(nodeid);
+
+		uint32_t waited = 0;
+		while (true) {
+			if (find_node_get_state(nodeid) == DEV_STATE_OP) {
+				ret = true;
+				break;
+			}
+			else if (waited >= timeout_ms) {
+				break;
+			}
+			else {
+				uv_rtos_task_delay(FIND_OP_POLL_MS);
+				waited += FIND_OP_POLL_MS;
+			}
+		}
+	}
+	return ret;
 }
 
 
@@ -252,11 +321,7 @@ bool find_update_device_states(system_st *sys) {
 		}
 		// online while a heartbeat has been seen within the timeout window; the
 		// live state then follows the last heartbeat's NMT state
-		uint32_t seen = last_seen_tick[device->nodeid];
-		bool online = (seen != 0) &&
-				(((now - seen) * UV_RTOS_TICK_PERIOD_MS) < FIND_ONLINE_TIMEOUT_MS);
-		dev_state_e newstate = online ?
-				nmt_to_dev_state(last_nmt_state[device->nodeid]) : DEV_STATE_OFFLINE;
+		dev_state_e newstate = node_live_state(device->nodeid, now);
 
 		// read the software version once it is missing and the device is in a state
 		// that serves the object dictionary (OPERATIONAL / PRE-OPERATIONAL). A
