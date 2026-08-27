@@ -26,6 +26,8 @@
 #include <windows.h>
 #else
 #include <unistd.h>
+#include <sys/wait.h>
+#include <errno.h>
 #endif
 
 
@@ -75,15 +77,38 @@ bool archive_extract(const char *archive, const char *destdir) {
 
 void archive_rmtree(const char *dir) {
 	if ((dir != NULL) && (strlen(dir) != 0)) {
-		char cmd[1100];
 #if CONFIG_TARGET_WIN
+		char cmd[1100];
 		snprintf(cmd, sizeof(cmd), "rmdir /s /q \"%s\"", dir);
-#else
-		snprintf(cmd, sizeof(cmd), "rm -rf \"%s\"", dir);
-#endif
 		if (system(cmd)) {
 			// ignore failure; the OS reaps the temp area eventually
 		}
+#else
+		// Run rm directly instead of through system(): this also runs from the
+		// signal handler that cleans up on Ctrl-C and on the UI window closing,
+		// and system() is not async-signal-safe - it can deadlock on the glibc
+		// lock held by whichever thread the signal interrupted, leaving a program
+		// that prints "cleaning up" and never ends. fork(), execv() and waitpid()
+		// are all async-signal-safe, and with no shell in between there is no
+		// quoting to get wrong either.
+		pid_t pid = fork();
+		if (pid == 0) {
+			char *argv[] = { "rm", "-rf", "--", (char*) dir, NULL };
+			execv("/bin/rm", argv);
+			// no /bin/rm (a merged-/usr system without the compatibility link)
+			execv("/usr/bin/rm", argv);
+			_exit(127);
+		}
+		else if (pid > 0) {
+			// the FreeRTOS scheduler tick interrupts the wait every millisecond;
+			// keep waiting rather than leaving a zombie behind
+			while ((waitpid(pid, NULL, 0) == -1) && (errno == EINTR)) {
+			}
+		}
+		else {
+			// fork failed; the OS reaps the temp area eventually
+		}
+#endif
 	}
 }
 

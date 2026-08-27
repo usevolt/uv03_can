@@ -14,6 +14,7 @@
 #include <getopt.h>
 #include <signal.h>
 #include <unistd.h>
+#include <sys/time.h>
 #include <uv_rtos.h>
 #include "main.h"
 #include "help.h"
@@ -119,6 +120,13 @@ void step(void *me) {
 
 
 #if !CONFIG_TARGET_WIN
+/// @brief: How long the cleanup below may take before the process kills itself
+/// anyway. Long enough for the normal work (each simulator is given half a
+/// second to exit on SIGTERM before it is killed, and the temp dirs are removed
+/// with "rm -rf"), short enough that a cleanup which will never finish does not
+/// leave the user with a closed window and a program that never ends.
+#define CLEANUP_DEADLINE_S		5
+
 /// @brief: SIGINT/SIGTERM handler that removes the temporary directories we
 /// extracted (.uvsys / .uvdev packages, and the running simulators' dirs) before
 /// the process dies. The HAL installs its own SIGINT handler in uv_init() that
@@ -131,6 +139,29 @@ static void cleanup_signal_callb(int signum) {
 	if (write(STDERR_FILENO, msg, sizeof(msg) - 1)) {
 		// best effort; nothing to do if the message cannot be written
 	}
+
+	// Arm a deadline before touching anything: the cleanup below is not
+	// async-signal-safe. It waits for child processes and shells out through
+	// system() / popen(), so it can block on a lock (malloc, stdio, glibc's own
+	// system() lock) that the thread this handler interrupted already holds, or
+	// on a command that never answers - "pkexec ip link del", say, when the
+	// remote CAN bridge's interface needs a password nobody is there to type.
+	// A handler that blocks here wedges the whole program: the FreeRTOS Posix
+	// port runs one task thread at a time, so the interrupted task never yields
+	// and every other thread - the UI thread, whose own _exit() fallback is what
+	// otherwise saves the window-close path - stays parked. The window closes,
+	// this message is printed and the process never ends.
+	//
+	// So take SIGALRM back from the scheduler tick, put it on its default action
+	// (terminate the process) and re-arm the timer as a one-shot: whatever the
+	// cleanup blocks on, the process is gone CLEANUP_DEADLINE_S seconds from
+	// here. Stopping the tick also stops the task switching that would otherwise
+	// re-enter the scheduler from inside this handler; nothing below needs it.
+	// signal() and setitimer() are both async-signal-safe.
+	signal(SIGALRM, SIG_DFL);
+	struct itimerval deadline = { { 0, 0 }, { CLEANUP_DEADLINE_S, 0 } };
+	setitimer(ITIMER_REAL, &deadline, NULL);
+
 	simrun_kill_all();
 	system_remove_tmpdirs();
 	// the remote CAN bridge's network interface is on this machine, not in a

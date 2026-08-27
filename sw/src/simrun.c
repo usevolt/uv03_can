@@ -95,26 +95,101 @@ bool simrun_poll_changed(void) {
 }
 
 
+// How long a simulator is given to exit on SIGTERM before it is killed, and how
+// often it is checked on while that runs out.
+#define SIMRUN_TERM_GRACE_MS	500
+#define SIMRUN_TERM_POLL_MS		10
+
+
+// True when *p* has a process of its own to stop.
+static bool proc_is_running(const simproc_st *p) {
+	return (state_is_alive(p->state) && (p->pid > 0));
+}
+
+
+// Reaps *p*'s process if it has exited. Returns true once it is gone (or was
+// never ours to reap), false while it is still running.
+static bool reap_proc(simproc_st *p) {
+	int status;
+	pid_t r = waitpid(p->pid, &status, WNOHANG);
+	return ((r == p->pid) || ((r == -1) && (errno == ECHILD)));
+}
+
+
 // Stops *p*'s process if it is running: SIGTERM, then SIGKILL if it does not
 // exit, and reaps it. Does not change *p*'s state or remove its temp dir.
 static void terminate_proc(simproc_st *p) {
-	if (state_is_alive(p->state) && (p->pid > 0)) {
+	if (proc_is_running(p)) {
 		kill(p->pid, SIGTERM);
-		// wait up to ~500 ms for a graceful exit
 		bool reaped = false;
-		for (int i = 0; (i < 50) && !reaped; i++) {
-			int status;
-			pid_t r = waitpid(p->pid, &status, WNOHANG);
-			if ((r == p->pid) || ((r == -1) && (errno == ECHILD))) {
-				reaped = true;
+		for (uint16_t t = 0; (t < SIMRUN_TERM_GRACE_MS) && !reaped;
+				t += SIMRUN_TERM_POLL_MS) {
+			reaped = reap_proc(p);
+			if (!reaped) {
+				usleep(SIMRUN_TERM_POLL_MS * 1000);
 			}
 			else {
-				usleep(10000);
 			}
 		}
 		if (!reaped) {
 			kill(p->pid, SIGKILL);
-			waitpid(p->pid, NULL, 0);
+			while ((waitpid(p->pid, NULL, 0) == -1) && (errno == EINTR)) {
+			}
+		}
+		else {
+		}
+	}
+	else {
+	}
+}
+
+
+// Stops every tracked simulator: SIGTERM to all of them first, then one shared
+// wait for them to go, then SIGKILL to whatever is left. The wait is shared
+// rather than taken one simulator at a time so stopping a whole system takes the
+// same half second as stopping a single simulator - this is also the wait the
+// signal handler sits in when the user closes the window, where every extra half
+// second is one the program spends not ending.
+static void terminate_all(void) {
+	for (uint8_t i = 0; i < proc_count; i++) {
+		if (proc_is_running(&procs[i])) {
+			kill(procs[i].pid, SIGTERM);
+		}
+		else {
+		}
+	}
+
+	bool all_reaped = false;
+	for (uint16_t t = 0; (t < SIMRUN_TERM_GRACE_MS) && !all_reaped;
+			t += SIMRUN_TERM_POLL_MS) {
+		all_reaped = true;
+		for (uint8_t i = 0; i < proc_count; i++) {
+			if (proc_is_running(&procs[i])) {
+				if (reap_proc(&procs[i])) {
+					// gone: nothing left to wait for, and nothing to kill below
+					procs[i].pid = 0;
+				}
+				else {
+					all_reaped = false;
+				}
+			}
+			else {
+			}
+		}
+		if (!all_reaped) {
+			usleep(SIMRUN_TERM_POLL_MS * 1000);
+		}
+		else {
+		}
+	}
+
+	for (uint8_t i = 0; i < proc_count; i++) {
+		if (proc_is_running(&procs[i])) {
+			kill(procs[i].pid, SIGKILL);
+			while ((waitpid(procs[i].pid, NULL, 0) == -1) && (errno == EINTR)) {
+			}
+		}
+		else {
 		}
 	}
 }
@@ -123,10 +198,12 @@ static void terminate_proc(simproc_st *p) {
 // Stops every tracked simulator and removes all their temp dirs, emptying the
 // list. Used before a fresh run and on exit.
 static void clear_all(void) {
+	terminate_all();
 	for (uint8_t i = 0; i < proc_count; i++) {
-		terminate_proc(&procs[i]);
 		if (strlen(procs[i].pkg.dir) != 0) {
 			uvdev_close(&procs[i].pkg);
+		}
+		else {
 		}
 	}
 	proc_count = 0;
