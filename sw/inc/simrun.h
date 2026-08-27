@@ -45,7 +45,8 @@
 /// @brief: State of a tracked simulator. The states up to (and including)
 /// SIMRUN_RUNNING are "alive" (the process is running); KILLED and STOPPED are
 /// terminal. Stopped/killed simulators are kept in the list (so their final state
-/// and log stay visible) until the next simrun_start_system().
+/// and log stay visible, and so they can be restarted with simrun_restart())
+/// until the next simrun_start_system().
 typedef enum {
 	/// @brief: just launched, not yet confirmed running / before parameters
 	SIMRUN_STARTED = 0,
@@ -126,6 +127,11 @@ simrun_state_e simrun_get_state(uint8_t index);
 const char *simrun_get_state_str(uint8_t index);
 
 
+/// @brief: True while simulator *index* is alive, i.e. its process is running
+/// (it has started, is loading its parameters or is running normally).
+bool simrun_is_alive(uint8_t index);
+
+
 /// @brief: Returns (and clears) whether any simulator's state changed since the
 /// last call. Lets the UI rebuild the simulator list only when it actually
 /// changed (a sim started, loaded params, became running, was killed or exited).
@@ -176,6 +182,19 @@ void simrun_open_log(uint8_t index);
 /// @brief: Kills simulator *index* (SIGTERM, then SIGKILL if needed) and removes
 /// its temp dir. Remaining simulators keep their order, compacted down.
 void simrun_kill(uint8_t index);
+
+
+/// @brief: Relaunches simulator *index* after it has stopped (crashed, exited or
+/// been killed): starts its process again with the same arguments, in the same
+/// run directory, and loads the device's parameters onto it on its own task, the
+/// same way simrun_load_params_async() does after a start. The simulator moves
+/// STARTED -> PARAM -> RUNNING again. Poll simrun_load_params_is_finished() for
+/// the load, exactly as after a start.
+///
+/// Returns false (and does nothing) when *index* is invalid, when that simulator
+/// is still alive, when a parameter load is already running, or when the process
+/// could not be launched.
+bool simrun_restart(uint8_t index);
 
 
 /// @brief: Kills every running simulator and removes all temp dirs. Also cancels

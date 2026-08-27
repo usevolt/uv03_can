@@ -76,6 +76,12 @@ static void param_file_default_ext(char *path, size_t path_len) {
 #define FILEEDIT_H		56
 // Height of the "Search devices" button on the system tab.
 #define BUTTON_H		44
+// Gap in pixels between the running-simulator rows (and between the columns
+// inside a row) on the system tab's "Simulator" panel.
+#define SIM_ROW_GAP		4
+// Height of one running-simulator row: a full button tall, so its two-line
+// node/state label stays readable.
+#define SIM_ROW_H		BUTTON_H
 
 // Status-dot colours, by CAN-bus state: grey when offline, light yellow on
 // boot-up, strong yellow in pre-operational and green when operational.
@@ -311,8 +317,11 @@ static struct {
 
 	// Running-simulator list on the system tab: its own window holding one row per
 	// running simulator. Each row has a name/PID label, the node id, a "Log"
-	// button (opens a terminal on the simulator's output) and a "Kill" button.
-	// The rows are scaled to fit so every simulator is visible.
+	// button (opens a terminal on the simulator's output) and an action button
+	// that is a "Kill" while the simulator runs and a "Restart" once it has
+	// stopped. The rows keep a fixed height: when more simulators are running
+	// than fit, the window scrolls (by its scroll bar, by dragging, or with the
+	// mouse wheel over it - see sim_list_wheel_step()).
 	uv_uiwindow_st sim_window;
 	uv_uiobject_st *sim_window_buf[4 * SYSTEM_DEV_MAX_COUNT];
 	uv_uilabel_st sim_labels[SYSTEM_DEV_MAX_COUNT];
@@ -320,7 +329,7 @@ static struct {
 	uv_uilabel_st sim_node_labels[SYSTEM_DEV_MAX_COUNT];
 	char sim_node_strs[SYSTEM_DEV_MAX_COUNT][32];
 	uv_uibutton_st sim_log_btns[SYSTEM_DEV_MAX_COUNT];
-	uv_uibutton_st sim_kill_btns[SYSTEM_DEV_MAX_COUNT];
+	uv_uibutton_st sim_action_btns[SYSTEM_DEV_MAX_COUNT];
 
 	// "Account" panel on the system tab: a username and a password field whose
 	// values are stored on this computer and shared by every uvcan install (see
@@ -844,8 +853,8 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	}
 
 	// Running-simulator list in the right column: one row per running simulator,
-	// showing its device name and process id with a "Kill" button. Polled in
-	// devicetab_step().
+	// showing its device name and process id with a "Kill" / "Restart" button.
+	// Polled in devicetab_step().
 	uint8_t simcount = simrun_get_count();
 	if (simcount == 0) {
 		snprintf(content.info_str, sizeof(content.info_str),
@@ -867,22 +876,23 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 		uv_uiframewindow_addxy(&content.sim_frame, &content.sim_window,
 				right_x, 0, right_w, mc.h);
 
-		int16_t gap = 4;
-		int16_t row_h = BUTTON_H;
+		int16_t gap = SIM_ROW_GAP;
+		int16_t row_h = SIM_ROW_H;
 		// leave room for the vertical scroll bar when the rows overflow, so it does
-		// not sit on top of the Kill buttons
+		// not sit on top of the action buttons
 		int16_t rows_h = simcount * row_h + (simcount - 1) * gap;
 		int16_t list_w = right_w;
 		if (rows_h > mc.h) {
 			list_w -= CONFIG_UI_WINDOW_SCROLLBAR_WIDTH + gap;
 		}
-		// columns laid out from the right: Kill, Log, node id, then the name fills
-		// whatever is left
-		int16_t kill_w = 80;
+		// columns laid out from the right: Kill / Restart, Log, node id, then the
+		// name fills whatever is left. The action column fits the wider of the two
+		// labels, so the row does not change shape when the simulator stops.
+		int16_t action_w = 110;
 		int16_t log_w = 80;
 		int16_t node_w = 140;
-		int16_t kill_x = list_w - kill_w;
-		int16_t log_x = kill_x - gap - log_w;
+		int16_t action_x = list_w - action_w;
+		int16_t log_x = action_x - gap - log_w;
 		int16_t node_x = log_x - gap - node_w;
 		int16_t name_w = node_x - gap;
 		for (uint8_t i = 0; i < simcount; i++) {
@@ -910,12 +920,19 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 			uv_uiwindow_addxy(&content.sim_window, &content.sim_log_btns[i],
 					log_x, row_y, log_w, row_h);
 
-			uv_uibutton_init(&content.sim_kill_btns[i], "Kill", style);
-			uv_uiwindow_addxy(&content.sim_window, &content.sim_kill_btns[i],
-					kill_x, row_y, kill_w, row_h);
-			// a simulator that is no longer running cannot be killed again
-			if (simrun_get_state(i) != SIMRUN_RUNNING) {
-				uv_uiobject_disable(&content.sim_kill_btns[i]);
+			// while the simulator runs the button kills it; once it has stopped
+			// (killed, exited or crashed) the same button restarts it, launching
+			// it again and loading its parameters onto it
+			bool alive = simrun_is_alive(i);
+			uv_uibutton_init(&content.sim_action_btns[i],
+					alive ? "Kill" : "Restart", style);
+			uv_uiwindow_addxy(&content.sim_window, &content.sim_action_btns[i],
+					action_x, row_y, action_w, row_h);
+			// a simulator which is still starting up or loading its parameters is
+			// not killed from here (the "Force stop simulator" button does that),
+			// and nothing is restarted while a parameter load owns the bus
+			if (alive ? (simrun_get_state(i) != SIMRUN_RUNNING) : simparam_busy) {
+				uv_uiobject_disable(&content.sim_action_btns[i]);
 			}
 		}
 	}
@@ -1474,6 +1491,42 @@ static void refresh_search_btn_text(void) {
 }
 
 
+#if !CONFIG_TARGET_WIN
+/// @brief: Scrolls the running-simulator list with the mouse wheel while the
+/// pointer hovers over it.
+///
+/// A ui window scrolls itself by dragging only; the wheel arrives as a global
+/// notch counter which whoever the pointer is over has to drain (the device
+/// terminal and the log view do the same). Hence the hit test against the list
+/// window's global bounding box: it is what makes a notch belong to this list
+/// rather than to the log view below, which reads whatever is left over.
+static void sim_list_wheel_step(void) {
+	// the list window is built only while there is a simulator on the list, and
+	// the expanded log view covers the tab and takes the wheel for itself
+	if ((simrun_get_count() != 0) && !uvui_log_is_expanded()) {
+		int16_t x = 0;
+		int16_t y = 0;
+		// the position is reported whether or not a button is held down
+		uv_ui_get_touch(&x, &y);
+		int16_t gx = uv_ui_get_xglobal(&content.sim_window);
+		int16_t gy = uv_ui_get_yglobal(&content.sim_window);
+		uv_bounding_box_st *bb = uv_uibb(&content.sim_window);
+		if ((x >= gx) && (x < (gx + bb->width)) &&
+				(y >= gy) && (y < (gy + bb->height))) {
+			int16_t scroll = uv_ui_get_scroll();
+			if (scroll != 0) {
+				// a notch per row, positive (wheel up) moving the content down.
+				// content_move clamps to the content box, so a list that fits
+				// stays put
+				uv_uiwindow_content_move(&content.sim_window, 0,
+						scroll * (SIM_ROW_H + SIM_ROW_GAP));
+			}
+		}
+	}
+}
+#endif
+
+
 bool devicetab_step(void) {
 	bool ret = false;
 	// reap any device simulators that have exited, regardless of the current tab,
@@ -1558,6 +1611,15 @@ bool devicetab_step(void) {
 			account_refresh_status();
 		}
 	}
+
+#if !CONFIG_TARGET_WIN
+	// the mouse wheel scrolls the running-simulator list. Polled here, before the
+	// busy early-return, so the list scrolls while a simulator parameter load runs
+	// too - the panel stays on screen throughout it
+	if (showing_system) {
+		sim_list_wheel_step();
+	}
+#endif
 
 	if (busy) {
 		// while an async operation runs all input is ignored and the frames stay
@@ -1915,14 +1977,29 @@ bool devicetab_step(void) {
 		}
 		else {
 			// no system-level button clicked; check the per-simulator "Log" and
-			// "Kill" buttons
+			// "Kill" / "Restart" buttons
 			for (uint8_t i = 0; i < simrun_get_count(); i++) {
 				if (uv_uibutton_clicked(&content.sim_log_btns[i])) {
 					simrun_open_log(i);
 					break;
 				}
-				if (uv_uibutton_clicked(&content.sim_kill_btns[i])) {
-					simrun_kill(i);
+				if (uv_uibutton_clicked(&content.sim_action_btns[i])) {
+					if (simrun_is_alive(i)) {
+						simrun_kill(i);
+					}
+					else if (simrun_restart(i)) {
+						// the restart loads the simulator's parameters on its own
+						// task; go busy for it exactly as a start does, so nothing
+						// else touches the SDO client meanwhile
+						start_busy(OP_SIMPARAM);
+					}
+					else {
+						uv_uiacceptdialog_st dialog = { };
+						uv_uiacceptdialog_exec(&dialog,
+								"The simulator could not be restarted. Start the "
+								"simulators again to run it.", "OK", "OK",
+								&uv_uistyles[0]);
+					}
 					ret = true;
 					break;
 				}

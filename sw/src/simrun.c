@@ -53,6 +53,10 @@ typedef struct {
 	char name[128];
 	// CANopen node id the simulator was started with
 	uint8_t nodeid;
+	// the CAN channel it was started on and whether its node id was pinned with
+	// -n: kept so simrun_restart() can launch it again exactly the same way
+	char can_channel[64];
+	bool set_nodeid;
 	// running / killed / stopped. Stopped entries are kept (so their final state
 	// and log stay visible) until the next simrun_start_system().
 	simrun_state_e state;
@@ -62,6 +66,10 @@ typedef struct {
 static simproc_st procs[SIMRUN_MAX];
 static uint8_t proc_count;
 static bool atexit_registered;
+
+// the system the running simulators were started from, so simrun_restart() finds
+// the device (and its parameters) belonging to a simulator
+static system_st *sim_sys;
 
 // set whenever any simulator's state changes, so the UI can refresh only when
 // needed; read and cleared by simrun_poll_changed()
@@ -346,6 +354,7 @@ uint8_t simrun_start_system(system_st *sys, const char *can_channel) {
 	// the list is cleared only here: drop every previous entry (running, killed
 	// or stopped) and start fresh
 	clear_all();
+	sim_sys = sys;
 
 	// With no system configuration file the devices come from --dev (or from the
 	// UI) and nothing is loaded onto them afterwards, so nothing depends on a
@@ -400,7 +409,9 @@ uint8_t simrun_start_system(system_st *sys, const char *can_channel) {
 		// for it (system_add_device() then adopts the database's own)
 		bool is_default = (d->default_nodeid != 0) &&
 				(d->nodeid == d->default_nodeid);
-		if (spawn_proc(p, can_channel, !(free_default_nodeids && is_default))) {
+		strncpy(p->can_channel, can_channel, sizeof(p->can_channel) - 1);
+		p->set_nodeid = !(free_default_nodeids && is_default);
+		if (spawn_proc(p, p->can_channel, p->set_nodeid)) {
 			proc_count++;
 			started++;
 			PRINT("Started simulator for '%s' (node 0x%x), pid %d in '%s'\n",
@@ -508,6 +519,11 @@ const char *simrun_get_state_str(uint8_t index) {
 		}
 	}
 	return ret;
+}
+
+
+bool simrun_is_alive(uint8_t index) {
+	return (index < proc_count) && state_is_alive(procs[index].state);
 }
 
 
@@ -671,6 +687,41 @@ static void set_sim_state_by_nodeid(uint8_t nodeid, simrun_state_e st) {
 }
 
 
+/// @brief: Waits for the running loadparam system load to finish, but only while
+/// it is getting somewhere: a load which stops making progress (a device that
+/// never answers, a bug in the load itself) would otherwise keep the caller - and
+/// with it the UI's busy state - waiting forever, with no way to stop the
+/// simulators. Shared by the post-launch load and a single simulator's restart.
+static void wait_for_param_load(void) {
+	uint32_t last_progress = loadparam_get_progress_counter();
+	uint32_t stalled = 0;
+	while (!loadparam_load_system_is_finished() &&
+			(stalled < SIMRUN_PARAM_STALL_MS) && !pp_cancel) {
+		uv_rtos_task_delay(SIMRUN_PARAM_POLL_MS);
+		uint32_t progress = loadparam_get_progress_counter();
+		// a load which is waiting for the user to answer a prompt is not stalled,
+		// however long the user takes to answer it
+		if ((progress != last_progress) || uv_stdin_is_waiting()) {
+			last_progress = progress;
+			stalled = 0;
+		}
+		else {
+			stalled += SIMRUN_PARAM_POLL_MS;
+		}
+	}
+	if (!loadparam_load_system_is_finished() && !pp_cancel) {
+		PRINT("ERROR: the parameter load has not made any progress in "
+				"%u seconds and\n"
+				"is given up on. It is still running in the background; "
+				"stop the simulators\n"
+				"with \"Force stop simulator\" (or the Kill buttons) if "
+				"it does not recover.\n",
+				(unsigned int) (SIMRUN_PARAM_STALL_MS / 1000));
+		fflush(stdout);
+	}
+}
+
+
 /// @brief: Waits until every managed device (a simulator or a restored real
 /// device) is operational, then loads the devices' bundled parameters onto them.
 /// Called by postparam_task() when there is something to load.
@@ -738,37 +789,7 @@ static void postparam_load(system_st *sys) {
 		}
 		else {
 			loadparam_load_system_async(targets, n);
-			// Wait for the load, but only while it is getting somewhere: a load
-			// which stops making progress (a device that never answers, a bug in
-			// the load itself) would otherwise keep the caller - and with it the
-			// UI's busy state - waiting forever, with no way to stop the
-			// simulators.
-			uint32_t last_progress = loadparam_get_progress_counter();
-			uint32_t stalled = 0;
-			while (!loadparam_load_system_is_finished() &&
-					(stalled < SIMRUN_PARAM_STALL_MS) && !pp_cancel) {
-				uv_rtos_task_delay(SIMRUN_PARAM_POLL_MS);
-				uint32_t progress = loadparam_get_progress_counter();
-				// a load which is waiting for the user to answer a prompt is not
-				// stalled, however long the user takes to answer it
-				if ((progress != last_progress) || uv_stdin_is_waiting()) {
-					last_progress = progress;
-					stalled = 0;
-				}
-				else {
-					stalled += SIMRUN_PARAM_POLL_MS;
-				}
-			}
-			if (!loadparam_load_system_is_finished() && !pp_cancel) {
-				PRINT("ERROR: the parameter load has not made any progress in "
-						"%u seconds and\n"
-						"is given up on. It is still running in the background; "
-						"stop the simulators\n"
-						"with \"Force stop simulator\" (or the Kill buttons) if "
-						"it does not recover.\n",
-						(unsigned int) (SIMRUN_PARAM_STALL_MS / 1000));
-				fflush(stdout);
-			}
+			wait_for_param_load();
 		}
 	}
 }
@@ -843,6 +864,136 @@ static void postparam_task(void *ptr) {
 }
 
 
+// ---- restarting a single simulator ---------------------------------------
+
+// the simulator restart_task() is working on
+static volatile uint8_t restart_index;
+
+
+// The system's device sitting on node *nodeid*, or NULL when there is none.
+static device_st *sys_dev_by_nodeid(uint8_t nodeid) {
+	device_st *ret = NULL;
+	if (sim_sys != NULL) {
+		for (uint8_t i = 0; i < system_get_dev_count(sim_sys); i++) {
+			device_st *d = system_get_dev(sim_sys, i);
+			if ((d != NULL) && (d->nodeid == nodeid)) {
+				ret = d;
+				break;
+			}
+		}
+	}
+	return ret;
+}
+
+
+/// @brief: Task body for simrun_restart(): waits for the relaunched simulator to
+/// come operational, loads its device's parameters onto it and moves it
+/// STARTED -> PARAM -> RUNNING, the same way the post-launch load does after a
+/// start. Gives up on a simulator that does not come online (or is killed again
+/// while it is waited for), leaving it in whatever state it ended up in.
+static void restart_task(void *ptr) {
+	simproc_st *p = &procs[restart_index];
+	device_st *d = sys_dev_by_nodeid(p->nodeid);
+
+	// As after a start, the wait and the load are skipped when the device carries
+	// no parameters - the normal case when no system configuration file is
+	// loaded. Such a simulator may also have been started without -n and be free
+	// to boot on another node id than the one it is tracked with, so waiting for
+	// its node to answer would only stall the restart until the timeout.
+	if ((d == NULL) || (strlen(d->param_file) == 0)) {
+		PRINT("No parameters to load for '%s'; it runs with the settings stored "
+				"in its own run directory.\n", p->name);
+		fflush(stdout);
+	}
+	else {
+		// make sure heartbeats are tracked so the operational state can be seen
+		find_start_monitor();
+		// let the device drop off the bus before waiting for it to come back, so
+		// the loop below does not see the heartbeat state it had before it was
+		// stopped and load onto a device which is still booting
+		uv_rtos_task_delay(1500);
+
+		PRINT("Waiting for '%s' (node 0x%x) to come online...\n",
+				p->name, (unsigned int) p->nodeid);
+		fflush(stdout);
+		uint32_t waited = 0;
+		bool op = false;
+		while (!op && (waited < SIMRUN_OP_WAIT_MS) && !pp_cancel &&
+				state_is_alive(p->state)) {
+			find_update_device_states(sim_sys);
+			op = (d->state == DEV_STATE_OP);
+			if (!op) {
+				uv_rtos_task_delay(500);
+				waited += 500;
+			}
+		}
+
+		if (!op) {
+			PRINT("Simulator '%s' did not come online; its parameters are not "
+					"loaded.\n", p->name);
+			fflush(stdout);
+		}
+		else if (!pp_cancel && state_is_alive(p->state)) {
+			// the same EMCY-suppress / write / store / reset sequence the
+			// post-launch load runs, for this one device
+			set_state(p, SIMRUN_PARAM);
+			PRINT("Loading the parameters of '%s' (node 0x%x)...\n",
+					p->name, (unsigned int) p->nodeid);
+			fflush(stdout);
+			loadparam_load_system_async(&d, 1);
+			wait_for_param_load();
+		}
+		else {
+			// stopped again, or the whole run was cancelled, while waiting
+		}
+	}
+
+	// as after a start, a simulator that is still alive is now running - also when
+	// the load above was given up on, so the row's button works again. Not after a
+	// Force stop: the list has been cleared under us and this slot may already
+	// belong to a simulator of the next run.
+	if (!pp_cancel && state_is_alive(p->state)) {
+		set_state(p, SIMRUN_RUNNING);
+	}
+
+	pp_finished = true;
+	uv_rtos_task_delete(NULL);
+}
+
+
+bool simrun_restart(uint8_t index) {
+	bool ret = false;
+	// only a stopped simulator can be restarted, and only while no parameter load
+	// is running: the load owns the SDO client and the restart would fight it
+	if ((index < proc_count) && !state_is_alive(procs[index].state) &&
+			pp_finished && (strlen(procs[index].pkg.dir) != 0)) {
+		simproc_st *p = &procs[index];
+		PRINT("Restarting the simulator of '%s' (node 0x%x)...\n",
+				p->name, (unsigned int) p->nodeid);
+		// the run directory (and with it the device's stored settings) is still
+		// there, so the simulator is simply launched in it again
+		pp_cancel = false;
+		if (spawn_proc(p, p->can_channel, p->set_nodeid)) {
+			PRINT("Restarted simulator for '%s' (node 0x%x), pid %d in '%s'\n",
+					p->name, (unsigned int) p->nodeid, p->pid, p->pkg.dir);
+			restart_index = index;
+			pp_finished = false;
+			uv_rtos_task_create(&restart_task, "simrestart",
+					UV_RTOS_MIN_STACK_SIZE * 5, NULL,
+					UV_RTOS_IDLE_PRIORITY + 1, NULL);
+			ret = true;
+		}
+		else {
+			PRINT("Failed to relaunch the simulator of '%s'.\n", p->name);
+		}
+	}
+	else {
+		// invalid index, still running, or a parameter load is in progress
+	}
+	return ret;
+}
+
+
 void simrun_load_params_async(system_st *sys,
 		const uint8_t *restore_nodeids, uint8_t restore_count) {
 	pp_sys = sys;
@@ -914,6 +1065,11 @@ bool simrun_poll_changed(void) {
 	return false;
 }
 
+bool simrun_is_alive(uint8_t index) {
+	(void) index;
+	return false;
+}
+
 bool simrun_any_running(void) {
 	return false;
 }
@@ -935,6 +1091,11 @@ void simrun_open_log(uint8_t index) {
 
 void simrun_kill(uint8_t index) {
 	(void) index;
+}
+
+bool simrun_restart(uint8_t index) {
+	(void) index;
+	return false;
 }
 
 void simrun_kill_all(void) {
