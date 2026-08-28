@@ -7,10 +7,11 @@ Contents
   PCANBasic.dll                      PEAK PCAN-Basic API (CAN interface)
   fonts\LiberationSans-Regular.ttf   font used by the graphical UI
   uvcan-ui.bat                       double-click to open the configuration UI
-  uvcan-open.bat                     open handler for .uvsys files
+  uvcan-open.bat                     open handler for .uvsys/.uvdev files
   uvsys.ico                          icon shown for .uvsys files
-  install-association.bat            register the .uvsys file association
-  uninstall-association.bat          remove the .uvsys file association
+  uvdev.ico                          icon shown for .uvdev files
+  install-association.bat            register the file associations
+  uninstall-association.bat          remove the file associations
 
 Requirements
 ------------
@@ -26,11 +27,12 @@ Open the graphical UI
 ---------------------
   Double-click  uvcan-ui.bat
 
-Make .uvsys files double-clickable
-----------------------------------
-  Double-click  install-association.bat  once. After that, double-clicking any
-  .uvsys system package opens it directly in uvcan, and .uvsys files show the
-  Usevolt icon. This is a per-user setting and needs no administrator rights.
+Make .uvsys and .uvdev files double-clickable
+---------------------------------------------
+  Double-click  install-association.bat  once. After that, double-clicking a
+  .uvsys system package or a .uvdev device package opens it directly in uvcan,
+  and both show their Usevolt icon (purple for a system package, teal for a
+  device one). This is a per-user setting and needs no administrator rights.
 
   Keep this folder where it is after running the script. If you move it, run
   install-association.bat again from the new location. To undo the association,
@@ -41,6 +43,7 @@ Run command-line commands
   Open a Command Prompt in this folder, e.g.:
     uvcan.exe --help
     uvcan.exe --sys "C:\path\to\system.uvsys" --ui
+    uvcan.exe --dev "C:\path\to\device.uvdev" --ui
     uvcan.exe --can PCAN_USBBUS1 --listen 10
 
 Keep uvcan.exe, PCANBasic.dll and the fonts\ folder together in one folder.

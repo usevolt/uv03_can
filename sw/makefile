@@ -198,7 +198,7 @@ linux:
 	@$(MAKE) --no-print-directory OS=linux image
 
 # Per-user desktop install: builds (if needed) and registers the binary, the
-# .uvsys file association, icon and launcher. Use 'sudo make install ARGS=--system'
+# .uvsys and .uvdev file associations, icons and launcher. Use 'sudo make install ARGS=--system'
 # for a machine-wide install. See install.sh --help for all options.
 install: $(BINARY)
 	@./install.sh $(ARGS)
@@ -209,7 +209,7 @@ uninstall:
 # Builds the Linux target and packs the install tarball (the binary, install.sh
 # and packaging/) into $(PRODDIR). This is the whole of what a Linux user needs:
 # unpack it anywhere and run ./install.sh, which installs the runtime
-# dependencies and registers the .uvsys association. Needs no mingw toolchain,
+# dependencies and registers the .uvsys / .uvdev associations. Needs no mingw toolchain,
 # unlike 'publish', which builds the Windows package as well.
 linux-package:
 	@$(MAKE) --no-print-directory OS=linux image
@@ -242,6 +242,7 @@ win-package-stage:
 	cp packaging/uvcan-ui.bat "$(PKGDIR)/"
 	cp packaging/uvcan-open.bat "$(PKGDIR)/"
 	cp packaging/uvsys.ico "$(PKGDIR)/"
+	cp packaging/uvdev.ico "$(PKGDIR)/"
 	cp packaging/install-association.bat "$(PKGDIR)/"
 	cp packaging/uninstall-association.bat "$(PKGDIR)/"
 	cp packaging/README.txt "$(PKGDIR)/"

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- MIME type for Usevolt CANopen device packages (.uvdev).
+     A .uvdev file is a zip archive bundling a uvdev.json manifest plus the
+     object dictionary, firmware, bootloader and media files of one device. -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-uvdev">
+    <comment>Usevolt CANopen device package</comment>
+    <glob pattern="*.uvdev"/>
+    <icon name="application-x-uvdev"/>
+    <!-- .uvdev is a zip archive; match the PK header so content sniffing agrees -->
+    <sub-class-of type="application/zip"/>
+  </mime-type>
+</mime-info>

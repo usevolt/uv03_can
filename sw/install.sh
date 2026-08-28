@@ -3,11 +3,13 @@
 # uvcan installer
 # ----------------
 # Installs the uvcan binary plus the desktop integration that makes .uvsys
-# system packages double-clickable:
+# system packages and .uvdev device packages double-clickable:
 #   * the uvcan binary and a uvcan-open launcher wrapper
 #   * bash tab completion for uvcan's command line options
-#   * the application/x-uvsys MIME type and its file icon (Usevolt wordmark)
-#   * a .desktop entry registered as the default handler for .uvsys files
+#   * the application/x-uvsys and application/x-uvdev MIME types and their file
+#     icons (the Usevolt wordmark on a document sheet, purple for a system
+#     package, teal for a device package)
+#   * a .desktop entry registered as the default handler for both of them
 #
 # Default is a per-user install under ~/.local (no root needed for the files;
 # only the optional apt dependency step uses sudo). Pass --system for a
@@ -31,6 +33,14 @@ ACTION="install"     # install | uninstall
 
 ICON_SIZES=(16 24 32 48 64 128 256 512)
 
+# The two package kinds uvcan registers: a .uvsys holds a whole system, a .uvdev
+# a single device. Each gets a MIME type of its own with a file icon named after
+# it, and both are handled by the same .desktop entry. The names below index
+# packaging/<name>.svg, packaging/<name>.xml and packaging/icons/<size>/<name>.png
+# in lockstep, so adding a package kind is a matter of adding those three files.
+MIME_NAMES=(application-x-uvsys application-x-uvdev)
+MIME_TYPES=(application/x-uvsys application/x-uvdev)
+
 # ---- argument parsing -------------------------------------------------------
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -40,7 +50,7 @@ while [ $# -gt 0 ]; do
 		--build)     DO_BUILD="yes" ;;
 		--uninstall) ACTION="uninstall" ;;
 		-h|--help)
-			sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
+			sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
 			exit 0 ;;
 		*)
 			echo "Unknown option: $1" >&2
@@ -66,7 +76,11 @@ ICONS_ROOT="$DATA_DIR/icons"
 ICON_BASE="$ICONS_ROOT/hicolor"
 MIME_DIR="$DATA_DIR/mime"
 APPS_DIR="$DATA_DIR/applications"
-DESKTOP_NAME="uvcan-uvsys.desktop"
+DESKTOP_NAME="uvcan.desktop"
+# Up to the release that added .uvdev the entry was named after the one file type
+# it handled. Installing the new one on top would leave that file behind as a
+# second, stale handler, so install and uninstall both delete it.
+LEGACY_DESKTOP_NAME="uvcan-uvsys.desktop"
 # bash-completion reads the user's completions from XDG_DATA_HOME and the
 # system's from /usr/share, both under the same bash-completion/completions
 # subdirectory; a file named after the command is loaded when that command is
@@ -128,14 +142,14 @@ remove_path_block() {
 	say "Removed the PATH entry from $rc"
 }
 
-# Themes that must also carry the .uvsys mimetype icon.
+# Themes that must also carry the package mimetype icons.
 #
 # GTK4 (Nautilus on modern GNOME/Ubuntu) resolves a file's icon from a fallback
 # *chain* — [application-x-uvsys, application-x-generic, ...] — and searches it
 # THEME-MAJOR: it walks the active theme's inheritance chain (e.g. Yaru ->
 # Humanity -> Adwaita -> hicolor) and at each theme tries every name in the
 # chain. Because the generic "application-x-generic" exists in Adwaita, which is
-# searched before "hicolor", a uvsys icon installed ONLY in hicolor never wins —
+# searched before "hicolor", an icon installed ONLY in hicolor never wins —
 # Nautilus shows the plain document icon. To beat the generic we install the
 # specific icon into themes searched before hicolor: the user's current icon
 # theme (always searched first) and Adwaita (the universal default fallback).
@@ -152,24 +166,28 @@ fi
 # theme's mimetypes context. Theme dir definitions come from the theme's own
 # index.theme (merged across base dirs by name), so no index.theme is needed here.
 install_mime_icon() {
-	local root="$1"
+	local root="$1" name
 	priv install -d "$root/scalable/mimetypes"
-	priv install -m 0644 "$PKG_DIR/application-x-uvsys.svg" \
-		"$root/scalable/mimetypes/application-x-uvsys.svg"
-	for s in "${ICON_SIZES[@]}"; do
-		local src="$PKG_DIR/icons/$s/application-x-uvsys.png"
-		[ -f "$src" ] || continue
-		priv install -d "$root/${s}x${s}/mimetypes"
-		priv install -m 0644 "$src" "$root/${s}x${s}/mimetypes/application-x-uvsys.png"
+	for name in "${MIME_NAMES[@]}"; do
+		priv install -m 0644 "$PKG_DIR/$name.svg" \
+			"$root/scalable/mimetypes/$name.svg"
+		for s in "${ICON_SIZES[@]}"; do
+			local src="$PKG_DIR/icons/$s/$name.png"
+			[ -f "$src" ] || continue
+			priv install -d "$root/${s}x${s}/mimetypes"
+			priv install -m 0644 "$src" "$root/${s}x${s}/mimetypes/$name.png"
+		done
 	done
 }
 
 # remove_mime_icon <theme-root>  — undo install_mime_icon
 remove_mime_icon() {
-	local root="$1"
-	priv rm -f "$root/scalable/mimetypes/application-x-uvsys.svg"
-	for s in "${ICON_SIZES[@]}"; do
-		priv rm -f "$root/${s}x${s}/mimetypes/application-x-uvsys.png"
+	local root="$1" name
+	for name in "${MIME_NAMES[@]}"; do
+		priv rm -f "$root/scalable/mimetypes/$name.svg"
+		for s in "${ICON_SIZES[@]}"; do
+			priv rm -f "$root/${s}x${s}/mimetypes/$name.png"
+		done
 	done
 }
 
@@ -178,12 +196,14 @@ if [ "$ACTION" = "uninstall" ]; then
 	say "Uninstalling uvcan desktop integration ($MODE)"
 	priv rm -f "$BIN_DIR/uvcan" "$BIN_DIR/uvcan-open"
 	priv rm -f "$COMPLETION_DIR/uvcan"
-	priv rm -f "$APPS_DIR/$DESKTOP_NAME"
-	priv rm -f "$MIME_DIR/packages/application-x-uvsys.xml"
-	for ctx in mimetypes apps; do
-		priv rm -f "$ICON_BASE/scalable/$ctx/application-x-uvsys.svg"
-		for s in "${ICON_SIZES[@]}"; do
-			priv rm -f "$ICON_BASE/${s}x${s}/$ctx/application-x-uvsys.png"
+	priv rm -f "$APPS_DIR/$DESKTOP_NAME" "$APPS_DIR/$LEGACY_DESKTOP_NAME"
+	for name in "${MIME_NAMES[@]}"; do
+		priv rm -f "$MIME_DIR/packages/$name.xml"
+		for ctx in mimetypes apps; do
+			priv rm -f "$ICON_BASE/scalable/$ctx/$name.svg"
+			for s in "${ICON_SIZES[@]}"; do
+				priv rm -f "$ICON_BASE/${s}x${s}/$ctx/$name.png"
+			done
 		done
 	done
 	for theme in "${EXTRA_ICON_THEMES[@]}"; do
@@ -193,7 +213,7 @@ if [ "$ACTION" = "uninstall" ]; then
 	command -v update-desktop-database >/dev/null && priv update-desktop-database "$APPS_DIR" || true
 	command -v gtk-update-icon-cache   >/dev/null && priv gtk-update-icon-cache -f -t "$ICON_BASE" >/dev/null 2>&1 || true
 	if [ "$MODE" = "user" ]; then remove_path_block "$(shell_rc)"; fi
-	say "Done. The uvcan binary was removed; your .uvsys files are untouched."
+	say "Done. The uvcan binary was removed; your package files are untouched."
 	exit 0
 fi
 
@@ -229,10 +249,10 @@ if [ "$SCRIPT_DIR" = "$BIN_DIR" ]; then
 fi
 
 # ---- dependencies -----------------------------------------------------------
-# zenity/zip/unzip/shared-mime-info/desktop-file-utils: installer + .uvsys
-# handling. libglfw3/libglew2.2/libfreetype6/libreadline8/libmosquitto1: runtime
-# shared libs the binary links against for the OpenGL UI, the interactive
-# terminal and the fleet MQTT connection (not pulled in otherwise).
+# zenity/zip/unzip/shared-mime-info/desktop-file-utils: installer + .uvsys /
+# .uvdev handling. libglfw3/libglew2.2/libfreetype6/libreadline8/libmosquitto1:
+# runtime shared libs the binary links against for the OpenGL UI, the
+# interactive terminal and the fleet MQTT connection (not pulled in otherwise).
 RUNTIME_DEPS="zenity zip unzip shared-mime-info desktop-file-utils
 	libglfw3 libglew2.2 libfreetype6 libreadline8 libmosquitto1"
 # A source build additionally needs the development packages of everything the
@@ -289,8 +309,8 @@ fi
 # ---- install files ----------------------------------------------------------
 say "Installing into $MODE locations:"
 echo "    binary  -> $BIN_DIR/uvcan"
-echo "    icon    -> $ICON_BASE/.../application-x-uvsys.*"
-echo "    mime    -> $MIME_DIR/packages/application-x-uvsys.xml"
+echo "    icons   -> $ICON_BASE/.../application-x-uvsys.*, ...-uvdev.*"
+echo "    mime    -> $MIME_DIR/packages/application-x-uv{sys,dev}.xml"
 echo "    desktop -> $APPS_DIR/$DESKTOP_NAME"
 echo "    tab completion -> $COMPLETION_DIR/uvcan"
 
@@ -311,20 +331,23 @@ fi
 # from the installed binary's --help, so it stays right as commands are added.
 priv install -m 0644 "$PKG_DIR/uvcan-completion.bash" "$COMPLETION_DIR/uvcan"
 
-# icon: scalable SVG + pre-rendered PNG sizes. Installed into the "mimetypes"
-# context (where file managers look up a file's icon by its MIME-type name) and
-# also "apps" (used by the .desktop entry's Icon=). Without the mimetypes copy a
-# .uvsys file falls back to the generic document icon.
-for ctx in mimetypes apps; do
-	priv install -d "$ICON_BASE/scalable/$ctx"
-	priv install -m 0644 "$PKG_DIR/application-x-uvsys.svg" \
-		"$ICON_BASE/scalable/$ctx/application-x-uvsys.svg"
-	for s in "${ICON_SIZES[@]}"; do
-		src="$PKG_DIR/icons/$s/application-x-uvsys.png"
-		[ -f "$src" ] || continue
-		priv install -d "$ICON_BASE/${s}x${s}/$ctx"
-		priv install -m 0644 "$src" \
-			"$ICON_BASE/${s}x${s}/$ctx/application-x-uvsys.png"
+# icons: scalable SVG + pre-rendered PNG sizes, for both package kinds.
+# Installed into the "mimetypes" context (where file managers look up a file's
+# icon by its MIME-type name) and also "apps" (used by the .desktop entry's
+# Icon=). Without the mimetypes copy a .uvsys / .uvdev file falls back to the
+# generic document icon.
+for name in "${MIME_NAMES[@]}"; do
+	for ctx in mimetypes apps; do
+		priv install -d "$ICON_BASE/scalable/$ctx"
+		priv install -m 0644 "$PKG_DIR/$name.svg" \
+			"$ICON_BASE/scalable/$ctx/$name.svg"
+		for s in "${ICON_SIZES[@]}"; do
+			src="$PKG_DIR/icons/$s/$name.png"
+			[ -f "$src" ] || continue
+			priv install -d "$ICON_BASE/${s}x${s}/$ctx"
+			priv install -m 0644 "$src" \
+				"$ICON_BASE/${s}x${s}/$ctx/$name.png"
+		done
 	done
 done
 
@@ -332,17 +355,21 @@ done
 # theme-major fallback finds our specific icon before the generic one (see the
 # EXTRA_ICON_THEMES comment above). hicolor alone is not enough on GTK4.
 for theme in "${EXTRA_ICON_THEMES[@]}"; do
-	echo "    icon    -> $ICONS_ROOT/$theme/.../mimetypes/application-x-uvsys.*"
+	echo "    icons   -> $ICONS_ROOT/$theme/.../mimetypes/application-x-uv{sys,dev}.*"
 	install_mime_icon "$ICONS_ROOT/$theme"
 done
 
-# MIME type
-priv install -m 0644 "$PKG_DIR/application-x-uvsys.xml" \
-	"$MIME_DIR/packages/application-x-uvsys.xml"
+# MIME types
+for name in "${MIME_NAMES[@]}"; do
+	priv install -m 0644 "$PKG_DIR/$name.xml" "$MIME_DIR/packages/$name.xml"
+done
 
-# desktop entry: substitute the wrapper path into the template
+# desktop entry: substitute the wrapper path into the template. The entry of an
+# older install handled .uvsys under a name of its own; drop it so the two do not
+# compete for the association.
+priv rm -f "$APPS_DIR/$LEGACY_DESKTOP_NAME"
 tmp_desktop="$(mktemp)"
-sed "s|@BIN@|$BIN_DIR/uvcan-open|g" "$PKG_DIR/uvcan-uvsys.desktop.in" > "$tmp_desktop"
+sed "s|@BIN@|$BIN_DIR/uvcan-open|g" "$PKG_DIR/uvcan.desktop.in" > "$tmp_desktop"
 priv install -m 0644 "$tmp_desktop" "$APPS_DIR/$DESKTOP_NAME"
 rm -f "$tmp_desktop"
 
@@ -363,9 +390,12 @@ done
 [ "$MODE" = "user" ] && command -v nautilus >/dev/null && pgrep -x nautilus >/dev/null 2>&1 && \
 	(nautilus -q >/dev/null 2>&1 || true)
 
-# associate .uvsys with our entry (per-user setting; honoured in both modes)
+# associate both package types with our entry (per-user setting; honoured in
+# both modes)
 if command -v xdg-mime >/dev/null; then
-	xdg-mime default "$DESKTOP_NAME" application/x-uvsys || warn "xdg-mime default failed"
+	for type in "${MIME_TYPES[@]}"; do
+		xdg-mime default "$DESKTOP_NAME" "$type" || warn "xdg-mime default failed for $type"
+	done
 fi
 
 # ---- make sure the binary is actually reachable by name ---------------------
@@ -388,16 +418,18 @@ if [ "$MODE" = "user" ]; then
 			warn "'uvcan' is not on the PATH of THIS shell yet. Open a new"
 			warn "terminal, or make it visible here with:"
 			warn "    export PATH=\"$BIN_DIR:\$PATH\""
-			warn "Double-clicking a .uvsys file works either way — the desktop"
+			warn "Double-clicking a package file works either way — the desktop"
 			warn "entry calls the binary by its absolute path."
 			echo ;;
 	esac
 fi
 
 if [ "$PATH_OK" -eq 1 ]; then
-	say "Done. Double-click any .uvsys file to open it in uvcan, or run 'uvcan --ui'."
+	say "Done. Double-click any .uvsys or .uvdev file to open it in uvcan, or run 'uvcan --ui'."
 else
-	say "Done. Double-click any .uvsys file to open it in uvcan. Running"
+	say "Done. Double-click any .uvsys or .uvdev file to open it in uvcan. Running"
 	say "'uvcan --ui' from a terminal needs the PATH change noted above."
 fi
-say "Verify the association with: xdg-mime query default application/x-uvsys"
+# xdg-mime query default answers for one type at a time, so this is two commands
+say "Verify the associations with: xdg-mime query default application/x-uvsys"
+say "                              xdg-mime query default application/x-uvdev"

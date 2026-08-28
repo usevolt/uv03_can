@@ -1,8 +1,11 @@
 #!/bin/sh
-# Launcher wrapper for the uvcan .desktop entry / .uvsys file association.
+# Launcher wrapper for the uvcan .desktop entry / .uvsys + .uvdev file
+# associations.
 #
-# Double-clicking a .uvsys file invokes this with the file as $1, which becomes
-#     uvcan --sys <file> --ui
+# Double-clicking a package invokes this with the file as $1. Which option the
+# file is handed to follows from its extension:
+#     *.uvsys -> uvcan --sys <file> --ui      (a whole system of devices)
+#     *.uvdev -> uvcan --dev <file> --ui      (a single device package)
 # Launching the entry with no file (e.g. from the application menu) instead opens
 # the device/baudrate chooser and main display with no system preloaded:
 #     uvcan --ui
@@ -19,7 +22,12 @@ else
 fi
 
 if [ "$#" -ge 1 ] && [ -n "$1" ]; then
-	exec "$UVCAN" --sys "$1" --ui
+	# an unknown extension is treated as a system package, which is what every
+	# earlier version of this wrapper did with whatever it was handed
+	case "$1" in
+		*.uvdev|*.UVDEV) exec "$UVCAN" --dev "$1" --ui ;;
+		*)               exec "$UVCAN" --sys "$1" --ui ;;
+	esac
 else
 	exec "$UVCAN" --ui
 fi
