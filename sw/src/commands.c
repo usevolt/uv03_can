@@ -345,6 +345,17 @@ commands_st commands[] = {
 				.callback = &cmd_media
 		},
 		{
+				.cmd_long = "mediadir",
+				.str = "Sets the name which the media directory gets in the .uvdev package which\n"
+						"*makeuvdev* writes, i.e. the value of the manifest's MEDIA key. Optional,\n"
+						"defaults to 'media'. The device stores its media under names relative to\n"
+						"the package root, so this is the directory prefix which the firmware asks\n"
+						"its media by: a build asking for 'media_hd/icon_hd.png' needs its package\n"
+						"made with '--mediadir media_hd'.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_mediadir
+		},
+		{
 				.cmd_long = "fwversion",
 				.str = "Sets the firmware version string which *makeuvdev* stores in the .uvdev\n"
 						"package. Usually the same git describe based version which the firmware\n"

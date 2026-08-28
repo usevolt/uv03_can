@@ -46,6 +46,7 @@
 ///           --linuxbin uv0d_jhc
 ///           --bootloader bootloader_LPC4078.bin
 ///           --media media
+///           --mediadir media
 ///           --fwversion $(GIT_VERSION)
 ///           --makeuvdev ../prod/uv0d_jhc_uv0d1_$(GIT_VERSION).uvdev
 
@@ -62,6 +63,14 @@ bool cmd_bootloader(const char *arg);
 /// @brief: --media: A media file or a directory of media files. Optional, can
 /// be given more than once; all of them end up in the package's media directory.
 bool cmd_media(const char *arg);
+
+/// @brief: --mediadir: The name which the media directory gets in the package,
+/// i.e. the value of the manifest's MEDIA key. Optional, defaults to "media".
+/// The device stores its media under names relative to the package root, so
+/// this is the directory prefix which the firmware asks its media by: a build
+/// which asks for "media_hd/icon_hd.png" needs its package made with
+/// '--mediadir media_hd'.
+bool cmd_mediadir(const char *arg);
 
 /// @brief: --fwversion: The firmware version string stored in the manifest.
 /// Optional.

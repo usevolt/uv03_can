@@ -36,9 +36,9 @@
 
 /// @brief: Maximum count of --media options which can be given
 #define MEDIA_MAX_COUNT		32
-/// @brief: The name of the directory which the media files are packaged into,
-/// i.e. the value of the manifest's MEDIA key
-#define MEDIA_DIR			"media"
+/// @brief: The name which the media directory of the package gets when
+/// --mediadir is not given, i.e. the default value of the manifest's MEDIA key
+#define MEDIA_DIR_DEFAULT	"media"
 
 
 // The files which the package is assembled from, as given with the options of
@@ -49,6 +49,9 @@ static char bootloader[1024];
 static char version[128];
 static char media[MEDIA_MAX_COUNT][1024];
 static unsigned int media_count;
+// the name which the media directory gets in the package, given with
+// --mediadir. Empty when it was not given, i.e. MEDIA_DIR_DEFAULT is used.
+static char mediadir[256];
 
 
 
@@ -128,6 +131,30 @@ bool cmd_media(const char *arg) {
 	return ret;
 }
 
+
+bool cmd_mediadir(const char *arg) {
+	bool ret = false;
+	if ((arg != NULL) && (arg[0] == '/')) {
+		ERRORSTR("Give the 'mediadir' option a directory name inside the "
+				"package, not an absolute path.\n");
+	}
+	else {
+		ret = set_arg(arg, mediadir, sizeof(mediadir), "mediadir");
+		if (ret) {
+			PRINT("The media directory of the package set to '%s'\n", mediadir);
+		}
+	}
+	return ret;
+}
+
+
+// The name which the media directory has in the package: the one given with
+// --mediadir, or MEDIA_DIR_DEFAULT when it was not given. The device stores the
+// media under names relative to the package root (e.g. "media_hd/icon_hd.png"),
+// so this is the directory prefix which the firmware asks its media by.
+static const char *media_dirname(void) {
+	return (strlen(mediadir) != 0) ? mediadir : MEDIA_DIR_DEFAULT;
+}
 
 
 #if !CONFIG_TARGET_WIN
@@ -340,7 +367,7 @@ static bool write_manifest(const char *stage, const char *dbrel) {
 				path_basename(bootloader));
 	}
 	if (media_count != 0) {
-		e |= parser_writer_add_string(&writer, "MEDIA", MEDIA_DIR);
+		e |= parser_writer_add_string(&writer, "MEDIA", media_dirname());
 	}
 	e |= parser_writer_add_string(&writer, "DATABASE", dbrel);
 	e |= parser_writer_end(&writer);
@@ -500,14 +527,16 @@ bool cmd_makeuvdev(const char *arg) {
 
 			// the media assets are collected into a directory of their own
 			if (ok && (media_count != 0)) {
-				char mediadir[1100];
+				char mediapath[1100];
 				char cmd[1200];
-				snprintf(mediadir, sizeof(mediadir), "%s/%s", stage, MEDIA_DIR);
-				snprintf(cmd, sizeof(cmd), "mkdir -p \"%s\"", mediadir);
+				snprintf(mediapath, sizeof(mediapath), "%s/%s",
+						stage, media_dirname());
+				snprintf(cmd, sizeof(cmd), "mkdir -p \"%s\"", mediapath);
 				ok = run(cmd);
 				for (unsigned int i = 0; (i < media_count) && ok; i++) {
-					printf("Adding media '%s'\n", media[i]);
-					ok = stage_media(mediadir, media[i]);
+					printf("Adding media '%s' into '%s/'\n",
+							media[i], media_dirname());
+					ok = stage_media(mediapath, media[i]);
 				}
 			}
 

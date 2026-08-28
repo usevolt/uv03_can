@@ -126,6 +126,7 @@ plain zip archive holding a `uvdev.json` manifest plus the files it names:
 | `LINUX_BIN` | `--linuxbin` | optional, the desktop simulator executable |
 | `BOOTLOADER` | `--bootloader` | optional |
 | `MEDIA` | `--media` | optional, a media file or a directory of them; can be given more than once |
+| | `--mediadir` | optional, the name the media directory gets in the package (default `media`); the device stores its media under package-relative names, so this is the prefix the firmware asks its media by (e.g. `media_hd` for a high-resolution build) |
 | `VERSION` | `--fwversion` | optional, usually the `git describe` version the firmware was built with |
 
 The `"content"` files are not searched for again: `db` records each of them as
