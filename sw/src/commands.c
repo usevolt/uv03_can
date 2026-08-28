@@ -63,12 +63,22 @@ bool cmd_pwd(const char *arg);
 		"device; a device coming from *sys* uses the node id stored in the\n"\
 		"system file."
 
+// Node id note shared by the help of the load commands, which all take their
+// file argument with the same '<file>:<nodeid>' postfix as *dev* does.
+#define LOAD_NODEID_HELP \
+		"The file argument may carry a ':<nodeid>' postfix (e.g. 'file:0xd'),\n"\
+		"which selects the target node exactly as a *forcenodeid* option given\n"\
+		"before this command would."
+
 commands_st commands[] = {
 		{
 				.cmd_long = "help",
 				.cmd_short = 'h',
-				.str = "Displays application info and help.",
-				.args = ARG_NONE,
+				.str = "Displays application info and help. Given the name of a single "
+						"command as its argument (e.g. '--help loadparam', '-h loadparam' "
+						"or '--help --loadparam'), only that command's description is shown. "
+						"Without an argument every command is listed.",
+				.args = ARG_OPTIONAL,
 				.callback = &cmd_help
 		},
 		{
@@ -141,14 +151,23 @@ commands_st commands[] = {
 		},
 		{
 				.cmd_long = "forcenodeid",
-				.str = "Selects the CANopen Node via Node ID like *nodeid*, but in addition permits "
-						"*loadparam* to assign the node id found from the parameter file to the selected "
-						"device. The node id is written to the device only after the user has confirmed it "
-						"with an empty line, and it applies only after the device's settings have been "
-						"saved and the device rebooted. Ignored for parameter files which contain more "
-						"than one device. Like *nodeid*, when given after a *dev* file it also assigns "
-						"the node id to that device, i.e. '--dev file.uvdev --forcenodeid 0x14' means "
-						"the same as '--dev file.uvdev:0x14'.",
+				.str = "Selects the CANopen Node via Node ID like *nodeid*, but forces it: every "
+						"command which follows targets this node id instead of the one its device "
+						"package, system file or parameter file carries. A single node id cannot name "
+						"any one of several devices, so it is ignored, with a warning, by a command "
+						"which operates on more than one device (e.g. a whole *sys* system, or a "
+						"parameter file holding more than one device). "
+						"It also permits *loadparam* to assign the node id found from the parameter "
+						"file to the selected device. That node id is written to the device only after "
+						"the user has confirmed it with an empty line, and it applies only after the "
+						"device's settings have been saved and the device rebooted. "
+						"Like *nodeid*, when given after a *dev* file it also assigns the node id to "
+						"that device, i.e. '--dev file.uvdev --forcenodeid 0x14' means the same as "
+						"'--dev file.uvdev:0x14'. The load commands take the same node id in their own "
+						"'<file>:<nodeid>' postfix, i.e. '--loadparam params.json:0xd' means the same "
+						"as '--forcenodeid 0xd --loadparam params.json'. "
+						"The selection ends with the command line: it does not carry into *ui*, "
+						"where every device is addressed by its own node id.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_forcenode
 		},
@@ -161,7 +180,8 @@ commands_st commands[] = {
 						"flashed), or a .uvsys package (every device inside is flashed). If the "
 						"argument is omitted, the devices loaded earlier with --dev / --sys are flashed, "
 						"or, when no devices were given, the binary given with 'firmware'.\n"
-						DEV_NODEID_HELP,
+						DEV_NODEID_HELP "\n"
+						LOAD_NODEID_HELP,
 				.args = ARG_OPTIONAL,
 				.callback = &cmd_load
 		},
@@ -173,7 +193,8 @@ commands_st commands[] = {
 						"the devices loaded earlier with --dev / --sys, or the binary given with "
 						"'firmware' when no devices were given. "
 						"The device node id should be selected with 'node' option prior to this command.\n"
-						DEV_NODEID_HELP,
+						DEV_NODEID_HELP "\n"
+						LOAD_NODEID_HELP,
 				.args = ARG_OPTIONAL,
 				.callback = &cmd_loadwfr
 		},
@@ -185,6 +206,7 @@ commands_st commands[] = {
 						"'firmware' when no devices were given. "
 						"The device node id should be selected with 'node' option prior to this command.\n"
 						DEV_NODEID_HELP "\n"
+						LOAD_NODEID_HELP "\n"
 						"Uses the SDO segmented transfer to load the binary. Note that this is more "
 						"unsafe method compared to \"loadbin\".",
 				.args = ARG_OPTIONAL,
@@ -199,6 +221,7 @@ commands_st commands[] = {
 						"'firmware' when no devices were given. "
 						"The device node id should be selected with 'node' option prior to this command.\n"
 						DEV_NODEID_HELP "\n"
+						LOAD_NODEID_HELP "\n"
 						"Uses the SDO segmented transfer to load the binary. Note that this is more "
 						"unsafe method compared to \"loadbinwfr\".",
 				.args = ARG_OPTIONAL,
@@ -211,7 +234,8 @@ commands_st commands[] = {
 						"the devices loaded earlier with --dev / --sys, or the binary given with "
 						"'firmware' when no devices were given. "
 						"The device node id should be selected with 'node' option prior to this command.\n"
-						DEV_NODEID_HELP,
+						DEV_NODEID_HELP "\n"
+						LOAD_NODEID_HELP,
 				.args = ARG_OPTIONAL,
 				.callback = &cmd_uvload
 		},
@@ -223,7 +247,8 @@ commands_st commands[] = {
 						"the devices loaded earlier with --dev / --sys, or the binary given with "
 						"'firmware' when no devices were given. "
 						"The device node id should be selected with 'node' option prior to this command.\n"
-						DEV_NODEID_HELP,
+						DEV_NODEID_HELP "\n"
+						LOAD_NODEID_HELP,
 				.args = ARG_OPTIONAL,
 				.callback = &cmd_uvloadwfr
 		},
@@ -307,7 +332,8 @@ commands_st commands[] = {
 						".uvsys package (each device's bundled media is loaded). If the argument is\n"
 						"omitted, the bundled media of the devices loaded earlier with --dev / --sys is\n"
 						"loaded. Devices whose package bundles no media are reported with a warning.\n"
-						DEV_NODEID_HELP,
+						DEV_NODEID_HELP "\n"
+						LOAD_NODEID_HELP,
 				.args = ARG_OPTIONAL,
 				.callback = &cmd_loadmedia
 		},
@@ -437,7 +463,8 @@ commands_st commands[] = {
 						"which does not have the parameter is loaded anyway, with a warning. For a\n"
 						"whole system the devices are stored and reset together once all of them have\n"
 						"been written.\n"
-						DEV_NODEID_HELP,
+						DEV_NODEID_HELP "\n"
+						LOAD_NODEID_HELP,
 				.args = ARG_OPTIONAL,
 				.callback = &cmd_loadparam
 		},
@@ -530,6 +557,16 @@ static void select_cmdline_device(uint8_t nodeid) {
 	}
 }
 
+void commands_select_nodeid(uint8_t nodeid, bool force) {
+	db_set_nodeid_force(&dev.db, nodeid);
+	dev.system.forced_nodeid_set = true;
+	dev.system.forced_nodeid = nodeid;
+	// *nodeid* selects the device only, it never assigns a new node id; only
+	// *forcenodeid* overrides the node id a device package, a system file or a
+	// parameter file carries
+	dev.system.forcenodeid = force;
+}
+
 bool cmd_node(const char *arg) {
 	bool ret = true;
 	if (!arg) {
@@ -539,11 +576,7 @@ bool cmd_node(const char *arg) {
 	else {
 		uint8_t nodeid = strtol(arg, NULL, 0);
 		PRINT("Selected Node ID 0x%x\n", nodeid);
-		db_set_nodeid_force(&dev.db, nodeid);
-		dev.loadparam.forced_nodeid_set = true;
-		dev.loadparam.forced_nodeid = nodeid;
-		// *nodeid* selects the device only, it never assigns a new node id
-		dev.loadparam.forcenodeid = false;
+		commands_select_nodeid(nodeid, false);
 		select_cmdline_device(nodeid);
 	}
 
@@ -560,10 +593,7 @@ bool cmd_forcenode(const char *arg) {
 		uint8_t nodeid = strtol(arg, NULL, 0);
 		PRINT("Selected Node ID 0x%x. The node id from the parameter file will "
 				"be assigned to this device.\n", nodeid);
-		db_set_nodeid_force(&dev.db, nodeid);
-		dev.loadparam.forced_nodeid_set = true;
-		dev.loadparam.forced_nodeid = nodeid;
-		dev.loadparam.forcenodeid = true;
+		commands_select_nodeid(nodeid, true);
 		select_cmdline_device(nodeid);
 	}
 
@@ -611,6 +641,13 @@ bool cmd_pwd(const char *arg) {
 /// the HAL task pumps CAN/CANopen while the UI is open; this is what lets the UI
 /// monitor heartbeats and perform SDO reads (e.g. the "Search devices" button).
 static void ui_task(void *ptr) {
+	// A node id selected with *nodeid* / *forcenodeid* (or with a load command's
+	// ':<nodeid>' postfix) belongs to the commands which follow it on the command
+	// line. It stops here: in the UI every device is addressed by its own node id,
+	// so nothing the user does there is silently redirected to the node id which
+	// happened to be on the command line.
+	system_clear_forced_nodeid(&dev.system);
+
 	// Open the HAL graphical configuration window for selecting the CAN device
 	// and baudrate, unless --can / -c was already given on the command line (the
 	// user explicitly chose the device, so there is nothing to ask). This blocks

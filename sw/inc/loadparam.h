@@ -42,17 +42,6 @@ typedef struct {
 #define QUERY_COUNT			20
 
 
-/// @brief: The node id selection in effect at one point of the command line, as
-/// *loadparam* sees it: the system's own selection (see system_nodeids_st) plus
-/// the target which this module keeps of the *nodeid* / *forcenodeid* commands.
-typedef struct {
-	system_nodeids_st sys;
-	bool forced_nodeid_set;
-	uint8_t forced_nodeid;
-	bool forcenodeid;
-} loadparam_nodeids_st;
-
-
 typedef struct {
 	char files[64][256];
 	unsigned int current_file;
@@ -67,7 +56,7 @@ typedef struct {
 	// the duration of the load, so a *nodeid* given after the command (the node
 	// ids are positional, see load_st's dispatch_nodeids) does not move its
 	// target.
-	loadparam_nodeids_st dispatch_nodeids;
+	system_nodeids_st dispatch_nodeids;
 
 	query_st queries_buffer[QUERY_COUNT];
 	uv_vector_st queries;
@@ -75,16 +64,6 @@ typedef struct {
 	uint8_t modified_dev_nodeids[64];
 	uint8_t dev_count;
 
-	// true when the target node id was selected outside the parameter file:
-	// with the *nodeid* or *forcenodeid* command, or by the device package of
-	// the device being loaded (see load_device_db)
-	bool forced_nodeid_set;
-	// the node id which was selected outside the parameter file
-	uint8_t forced_nodeid;
-	// true when the node id was selected with the *forcenodeid* command, i.e.
-	// the user explicitly requested the node id found from the parameter file
-	// to be assigned to the device
-	bool forcenodeid;
 	// count of the devices in the parameter file which is currently parsed
 	uint8_t file_dev_count;
 

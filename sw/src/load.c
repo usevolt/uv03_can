@@ -258,6 +258,9 @@ static bool flash_uvdev_sync(const char *uvdev_path, uint8_t nodeid,
 // with a warning. Prints a per-run summary.
 static void flash_devices(uint8_t start, uint8_t end,
 		bool wfr, bool uv, bool block_transfer) {
+	// a node id forced on the command line (with *forcenodeid* or a
+	// '<file>:<nodeid>' suffix) wins over the device's own
+	system_apply_forced_nodeid(&dev.system, start, end);
 	uint8_t total = 0;
 	uint8_t ok = 0;
 	for (uint8_t i = start; i < end; i++) {
@@ -293,7 +296,6 @@ static void flash_devices(uint8_t start, uint8_t end,
 //   - no argument:       flash every device already loaded with --dev / --sys,
 //                        or the binary given with --firmware when there are none
 static void load_dispatch_step(void *ptr) {
-	const char *arg = cmdline_load_arg(this->dispatch_arg);
 	bool wfr = this->dispatch_wfr;
 	bool uv = this->dispatch_uv;
 	bool block = this->dispatch_block;
@@ -306,7 +308,16 @@ static void load_dispatch_step(void *ptr) {
 	system_nodeids_save(&dev.system, &current);
 	system_nodeids_restore(&dev.system, &this->dispatch_nodeids);
 
-	if (path_is_uvsys(arg)) {
+	// resolve the file to flash and, when it carries a ':<nodeid>' suffix, select
+	// that node id as *forcenodeid* would. Done after the restore above, which
+	// would otherwise undo the selection.
+	char argbuf[1024];
+	const char *arg = NULL;
+	if (!cmdline_load_arg_nodeid(this->dispatch_arg, argbuf, sizeof(argbuf),
+			&arg)) {
+		// the node id in the argument is out of range; already reported
+	}
+	else if (path_is_uvsys(arg)) {
 		uint8_t prev = dev.system.dev_count;
 		if (!system_set_file(&dev.system, arg)) {
 			printf(PRINT_BOLDRED "ERROR: failed to load system package '%s'.\n"

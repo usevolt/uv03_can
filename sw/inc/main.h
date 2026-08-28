@@ -151,6 +151,12 @@ struct _dev_st {
 	char **nonopt_argv;
 	uint32_t argv_count;
 
+	/// @brief: The program's own argument vector, stored before the options are
+	/// parsed so that a command callback can look at the tokens getopt has not
+	/// consumed yet (see cmd_help, which takes its command name from there).
+	int argc;
+	char **argv;
+
 };
 
 

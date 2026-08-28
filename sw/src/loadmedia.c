@@ -482,6 +482,9 @@ static void loadmedia_device_task(void *ptr) {
 // Each device's own .uvdev package supplies the media; a device with no package,
 // or whose package bundles no media, is skipped with a warning.
 static void loadmedia_devices(uint8_t start, uint8_t end) {
+	// a node id forced on the command line (with *forcenodeid* or a
+	// '<file>:<nodeid>' suffix) wins over the device's own
+	system_apply_forced_nodeid(&dev.system, start, end);
 	for (uint8_t i = start; i < end; i++) {
 		device_st *d = &dev.system.devs[i];
 		if (strlen(d->filepath) == 0) {
@@ -503,8 +506,6 @@ static void loadmedia_devices(uint8_t start, uint8_t end) {
 //   - any other path:    load it as a raw media file or directory (legacy)
 //   - no argument:       push bundled media for every --dev / --sys device
 static void loadmedia_dispatch_step(void *ptr) {
-	const char *arg = cmdline_load_arg(this->file);
-
 	// load onto the node ids that were selected where this command stood on the
 	// command line, not the ones a later *nodeid* has since assigned. The current
 	// selection is put back afterwards, so it is the last one on the command line
@@ -513,7 +514,15 @@ static void loadmedia_dispatch_step(void *ptr) {
 	system_nodeids_save(&dev.system, &current);
 	system_nodeids_restore(&dev.system, &this->nodeids);
 
-	if (path_is_uvsys(arg)) {
+	// resolve the media to load and, when it carries a ':<nodeid>' suffix, select
+	// that node id as *forcenodeid* would. Done after the restore above, which
+	// would otherwise undo the selection.
+	char argbuf[1024];
+	const char *arg = NULL;
+	if (!cmdline_load_arg_nodeid(this->file, argbuf, sizeof(argbuf), &arg)) {
+		// the node id in the argument is out of range; already reported
+	}
+	else if (path_is_uvsys(arg)) {
 		uint8_t prev = dev.system.dev_count;
 		if (!system_set_file(&dev.system, arg)) {
 			printf(PRINT_BOLDRED "ERROR: failed to load system package '%s'.\n"

@@ -182,6 +182,10 @@ int main(int argc, char *argv[]) {
 
 	init(this);
 
+	// keep the argument vector reachable from the command callbacks (see cmd_help)
+	this->argc = argc;
+	this->argv = argv;
+
 	// remove our own temp dir on a clean exit, and sweep stale ones left by a
 	// previous run that crashed or was killed
 	system_init_tmp_cleanup();
@@ -227,7 +231,7 @@ int main(int argc, char *argv[]) {
 						(commands[i].cmd_short == 0 && i == c)) {
 					if (!commands[i].callback(optarg)) {
 						printf("command '%s' returned with FALSE, terminating.\n",
-								commands[(unsigned int) c].cmd_long);
+								commands[i].cmd_long);
 						error = true;
 						break;
 					}

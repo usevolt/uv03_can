@@ -147,6 +147,19 @@ typedef struct {
 	/// a --dev (with -n / --forcenodeid) is assigned to that device, which makes
 	/// '--dev file.uvdev -n 0x14' equivalent to '--dev file.uvdev:0x14'.
 	uint8_t last_cmdline_dev;
+
+	/// @brief: True when a node id was selected on the command line with
+	/// *nodeid* / *forcenodeid*, or with a load command's '<file>:<nodeid>'
+	/// suffix, i.e. from outside the file being loaded.
+	bool forced_nodeid_set;
+	/// @brief: The node id which was selected that way.
+	uint8_t forced_nodeid;
+	/// @brief: True when the selection came from *forcenodeid* (or from a
+	/// '<file>:<nodeid>' suffix) rather than from *nodeid*: the node id then
+	/// overrides the one a device package or a system file carries, and
+	/// *loadparam* is in addition allowed to write the node id found in the
+	/// parameter file to the selected device.
+	bool forcenodeid;
 } system_st;
 
 
@@ -159,6 +172,9 @@ typedef struct {
 	uint8_t db_nodeid;
 	bool db_nodeid_set;
 	bool db_nodeid_forced;
+	bool forced_nodeid_set;
+	uint8_t forced_nodeid;
+	bool forcenodeid;
 } system_nodeids_st;
 
 
@@ -175,6 +191,24 @@ void system_nodeids_save(system_st *this, system_nodeids_st *dest);
 /// @brief: Puts back a node id selection captured with system_nodeids_save().
 /// Devices added after the capture keep their own node ids.
 void system_nodeids_restore(system_st *this, const system_nodeids_st *src);
+
+/// @brief: Gives the devices in the index range [start, end) the node id forced
+/// on the command line with *forcenodeid* (or with a load command's
+/// '<file>:<nodeid>' suffix), so that the forced node id wins over the one the
+/// device's package or the system file carries.
+///
+/// A single node id can only name a single device, so a range holding more than
+/// one device is left untouched and the user is told that the forced node id is
+/// ignored -- otherwise every device of a system would be written to that one
+/// node id. Does nothing when no node id was forced.
+void system_apply_forced_nodeid(system_st *this, uint8_t start, uint8_t end);
+
+/// @brief: Drops the node id selected on the command line, so that nothing
+/// after this point is addressed with it. Called when the UI takes over: a
+/// *nodeid* / *forcenodeid* selection belongs to the commands which follow it
+/// on the command line, while in the UI every device is addressed by its own
+/// node id.
+void system_clear_forced_nodeid(system_st *this);
 
 
 /// @brief: Resets the system to an empty, unconfigured state.
@@ -287,6 +321,16 @@ static inline bool path_is_uvsys(const char *path) {
 	return path_ends_with(path, ".uvsys");
 }
 
+/// @brief: Splits a command-line file argument of the form '<path>:<nodeid>'
+/// into its file path and node id, the way --dev takes its device file. The
+/// ':<nodeid>' suffix is optional: when it is absent, or when the part after
+/// the last colon is not a number (e.g. a Windows drive letter), *nodeid_out*
+/// is set to 0, meaning "no node id was given". Returns false when a node id is
+/// present but outside the valid CANopen range (1..127), in which case the
+/// argument should be rejected.
+bool cmdline_parse_nodeid_arg(const char *arg, char *path, size_t path_len,
+		uint8_t *nodeid_out);
+
 /// @brief: Resolves the effective file argument for the optional-argument load
 /// commands (--loadbin / --loadmedia / --loadparam). *stored* is the argument
 /// attached to the option (an empty string when the option was given no =value).
@@ -298,6 +342,24 @@ static inline bool path_is_uvsys(const char *path) {
 /// Must be called once the scheduler is running (i.e. from a task), since the
 /// non-option arguments are only known after the option parsing loop finishes.
 const char *cmdline_load_arg(const char *stored);
+
+/// @brief: Resolves the effective file argument of a load command with
+/// cmdline_load_arg() and splits off its optional ':<nodeid>' suffix, which the
+/// load commands take the same way --dev takes its device file. When a node id
+/// is present it is selected exactly as the *forcenodeid* command would, so
+/// '--loadparam params.json:0xd' does what '--forcenodeid 0xd --loadparam
+/// params.json' does.
+///
+/// *path* receives the file path with the suffix removed, and *file_out* is set
+/// to it -- or to NULL when no file was given at all (no argument, or an
+/// argument holding nothing but the ':<nodeid>' suffix), meaning the command
+/// should operate on the devices already loaded with --dev / --sys.
+///
+/// Returns false, having selected nothing, when a node id is given but is
+/// outside the valid CANopen range (1..127); the caller should then abort. Call
+/// from the command's task, like cmdline_load_arg() itself.
+bool cmdline_load_arg_nodeid(const char *stored, char *path, size_t path_len,
+		const char **file_out);
 
 
 #endif /* SYSTEM_H_ */

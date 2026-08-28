@@ -53,4 +53,14 @@ extern commands_st commands[];
 unsigned int commands_count(void);
 
 
+/// @brief: Selects *nodeid* as the CANopen node which the following commands
+/// operate on, exactly as the *nodeid* (force == false) and *forcenodeid*
+/// (force == true) commands do.
+///
+/// A forced selection in addition overrides the node id which a device package,
+/// a system file or a parameter file carries, so it is what the
+/// '<file>:<nodeid>' suffix of the load commands selects with.
+void commands_select_nodeid(uint8_t nodeid, bool force);
+
+
 #endif /* COMMANDS_H_ */

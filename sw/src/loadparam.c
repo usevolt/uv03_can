@@ -252,6 +252,9 @@ static bool loadparam_ask_continue(uint8_t nodeid, uint8_t remaining) {
 // reset together at the end, instead of each device running its own
 // suppress/write/store/reset cycle while the others are still live.
 static void loadparam_devices(uint8_t start, uint8_t end) {
+	// a node id forced on the command line (with *forcenodeid* or a
+	// '<file>:<nodeid>' suffix) wins over the device's own
+	system_apply_forced_nodeid(&dev.system, start, end);
 	device_st *devices[SYSTEM_DEV_MAX_COUNT];
 	uint8_t count = 0;
 	for (uint8_t i = start; (i < end) && (count < SYSTEM_DEV_MAX_COUNT); i++) {
@@ -294,26 +297,6 @@ static void loadparam_run_files(const char *primary) {
 }
 
 
-// Captures the node id selection currently in effect: the system's (the devices'
-// node ids and the one selected with *nodeid*) plus this module's own target,
-// which the *nodeid* / *forcenodeid* commands set alongside it.
-static void nodeids_save(loadparam_nodeids_st *dest) {
-	system_nodeids_save(&dev.system, &dest->sys);
-	dest->forced_nodeid_set = this->forced_nodeid_set;
-	dest->forced_nodeid = this->forced_nodeid;
-	dest->forcenodeid = this->forcenodeid;
-}
-
-
-// Puts back a selection captured with nodeids_save().
-static void nodeids_restore(const loadparam_nodeids_st *src) {
-	system_nodeids_restore(&dev.system, &src->sys);
-	this->forced_nodeid_set = src->forced_nodeid_set;
-	this->forced_nodeid = src->forced_nodeid;
-	this->forcenodeid = src->forcenodeid;
-}
-
-
 // Task body for the --loadparam command. Dispatches on the effective argument:
 //   - a .uvsys package: load it and push each device's bundled parameters
 //   - a .uvdev package:  warns (device packages carry no parameters)
@@ -321,17 +304,24 @@ static void nodeids_restore(const loadparam_nodeids_st *src) {
 //                        parameter JSON (legacy behavior)
 //   - no argument:       push bundled parameters for every --dev / --sys device
 static void loadparam_dispatch_step(void *ptr) {
-	const char *arg = cmdline_load_arg(this->dispatch_arg);
-
 	// load onto the node ids that were selected where this command stood on the
 	// command line, not the ones a later *nodeid* has since assigned. The current
 	// selection is put back afterwards, so it is the last one on the command line
 	// that the following commands (and the UI) see.
-	loadparam_nodeids_st current;
-	nodeids_save(&current);
-	nodeids_restore(&this->dispatch_nodeids);
+	system_nodeids_st current;
+	system_nodeids_save(&dev.system, &current);
+	system_nodeids_restore(&dev.system, &this->dispatch_nodeids);
 
-	if (path_is_uvsys(arg)) {
+	// resolve the parameter file and, when it carries a ':<nodeid>' suffix, select
+	// that node id as *forcenodeid* would. Done after the restore above, which
+	// would otherwise undo the selection.
+	char argbuf[1024];
+	const char *arg = NULL;
+	if (!cmdline_load_arg_nodeid(this->dispatch_arg, argbuf, sizeof(argbuf),
+			&arg)) {
+		// the node id in the argument is out of range; already reported
+	}
+	else if (path_is_uvsys(arg)) {
 		uint8_t prev = dev.system.dev_count;
 		if (!system_set_file(&dev.system, arg)) {
 			ERROR("ERROR: failed to load system package '%s'.\n", arg);
@@ -357,7 +347,7 @@ static void loadparam_dispatch_step(void *ptr) {
 				"--sys / --dev.\n");
 	}
 
-	nodeids_restore(&current);
+	system_nodeids_restore(&dev.system, &current);
 }
 
 
@@ -369,7 +359,7 @@ bool cmd_loadparam(const char *arg) {
 	this->dispatch_arg[sizeof(this->dispatch_arg) - 1] = '\0';
 	// remember which node ids are selected at this point of the command line; the
 	// dispatch task runs only after the whole command line has been parsed
-	nodeids_save(&this->dispatch_nodeids);
+	system_nodeids_save(&dev.system, &this->dispatch_nodeids);
 	add_task(loadparam_dispatch_step);
 	uv_can_set_up(false);
 	return true;
@@ -394,11 +384,15 @@ static bool load_device_db(device_st *device) {
 			}
 			if (ret && (device->nodeid != 0)) {
 				db_set_nodeid_force(&dev.db, device->nodeid);
-				// the device's own node id is the target; the node id stored in
-				// the parameter file never reprograms the device (see parse_dev)
-				this->forced_nodeid_set = true;
-				this->forced_nodeid = device->nodeid;
-				this->forcenodeid = false;
+				// The device's own node id is the target (a node id forced on the
+				// command line is already in it, see system_apply_forced_nodeid);
+				// the node id stored in the parameter file never reprograms the
+				// device (see parse_dev). This is also what keeps a *forcenodeid*
+				// given on the command line out of the loads the user starts from
+				// the UI, which always address a device by its own node id.
+				dev.system.forced_nodeid_set = true;
+				dev.system.forced_nodeid = device->nodeid;
+				dev.system.forcenodeid = false;
 			}
 		}
 		uvdev_close(&pkg);
@@ -1094,12 +1088,12 @@ static uv_errors_e parse_dev(parser_node_st devnode) {
 		// another device, which then collides on the bus with the real owner of
 		// that node id.
 		uint8_t target_nodeid = nodeid;
-		if (this->forced_nodeid_set &&
+		if (dev.system.forced_nodeid_set &&
 				(this->file_dev_count == 1) &&
-				(this->forced_nodeid != nodeid)) {
-			target_nodeid = this->forced_nodeid;
+				(dev.system.forced_nodeid != nodeid)) {
+			target_nodeid = dev.system.forced_nodeid;
 
-			if (!this->forcenodeid) {
+			if (!dev.system.forcenodeid) {
 				// the node id merely selects the device to talk to, the device is
 				// never reprogrammed
 				WARNING("The selected node id (0x%x) differs from the node id in "
@@ -1619,14 +1613,14 @@ void loadparam_step(void *ptr) {
 				// new protocol where each device's settings are stored in a DEVS-array
 				this->file_dev_count = parser_array_get_size(obj);
 				if ((this->file_dev_count > 1) &&
-						this->forced_nodeid_set) {
+						dev.system.forced_nodeid_set) {
 					// a single node id cannot refer to any one device of a
 					// multi-device file, see parse_dev
 					WARNING("The parameter file contains %u devices.\n"
 							"The selected node id 0x%x is ignored, each device is "
 							"addressed with the node id from the parameter file.\n",
 							(unsigned int) this->file_dev_count,
-							(unsigned int) this->forced_nodeid);
+							(unsigned int) dev.system.forced_nodeid);
 					fflush(stdout);
 				}
 				for (uint16_t i = 0; i < parser_array_get_size(obj); i++) {

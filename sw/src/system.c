@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include "parser.h"
 #include "ui/uv_uifileedit.h"
+#include "commands.h"
 
 // Platform null device, used to silence a child command's stdout.
 #if CONFIG_TARGET_WIN
@@ -440,6 +441,9 @@ void system_nodeids_save(system_st *this, system_nodeids_st *dest) {
 	}
 	db_get_nodeid_state(&dev.db, &dest->db_nodeid, &dest->db_nodeid_set,
 			&dest->db_nodeid_forced);
+	dest->forced_nodeid_set = this->forced_nodeid_set;
+	dest->forced_nodeid = this->forced_nodeid;
+	dest->forcenodeid = this->forcenodeid;
 }
 
 
@@ -450,6 +454,33 @@ void system_nodeids_restore(system_st *this, const system_nodeids_st *src) {
 	}
 	db_set_nodeid_state(&dev.db, src->db_nodeid, src->db_nodeid_set,
 			src->db_nodeid_forced);
+	this->forced_nodeid_set = src->forced_nodeid_set;
+	this->forced_nodeid = src->forced_nodeid;
+	this->forcenodeid = src->forcenodeid;
+}
+
+
+void system_apply_forced_nodeid(system_st *this, uint8_t start, uint8_t end) {
+	if (this->forcenodeid && (end > start)) {
+		if ((end - start) > 1) {
+			printf(PRINT_BOLDYELLOW
+					"WARNING: the node id forced on the command line (0x%x) cannot "
+					"name any one of the %u devices; ignoring it. Each device is "
+					"addressed with its own node id.\n" PRINT_RESET,
+					(unsigned int) this->forced_nodeid,
+					(unsigned int) (end - start));
+			fflush(stdout);
+			// really drop the selection, so that nothing further down (e.g.
+			// *loadparam* reprogramming a device's node id from its parameter
+			// file) still acts on it. The command's own save/restore puts the
+			// selection back once it is done.
+			this->forced_nodeid_set = false;
+			this->forcenodeid = false;
+		}
+		else {
+			this->devs[start].nodeid = this->forced_nodeid;
+		}
+	}
 }
 
 
@@ -591,6 +622,52 @@ const char *cmdline_load_arg(const char *stored) {
 }
 
 
+void system_clear_forced_nodeid(system_st *this) {
+	this->forced_nodeid_set = false;
+	this->forced_nodeid = 0;
+	this->forcenodeid = false;
+}
+
+
+bool cmdline_load_arg_nodeid(const char *stored, char *path, size_t path_len,
+		const char **file_out) {
+	bool ret = true;
+	const char *arg = cmdline_load_arg(stored);
+
+	*file_out = NULL;
+	path[0] = '\0';
+	if (arg != NULL) {
+		uint8_t nodeid = 0;
+		if (!cmdline_parse_nodeid_arg(arg, path, path_len, &nodeid)) {
+			printf(PRINT_BOLDRED
+					"ERROR: invalid node id in '%s'; it must be in the range "
+					"1..127 (0x1..0x7f).\n" PRINT_RESET, arg);
+			ret = false;
+		}
+		else {
+			if (nodeid != 0) {
+				// the ':<nodeid>' suffix selects the node the same way the
+				// *forcenodeid* command does
+				commands_select_nodeid(nodeid, true);
+				printf("Selected Node ID 0x%x\n", (unsigned int) nodeid);
+			}
+			if (strlen(path) != 0) {
+				*file_out = path;
+			}
+			else {
+				// nothing but the node id was given: operate on the devices
+				// already loaded with --dev / --sys
+			}
+		}
+	}
+	else {
+		// no file given at all
+	}
+
+	return ret;
+}
+
+
 bool cmd_system(const char *arg) {
 	bool ret = system_set_file(&dev.system, arg);
 	if (ret) {
@@ -600,13 +677,7 @@ bool cmd_system(const char *arg) {
 }
 
 
-/// @brief: Splits a --dev argument of the form "<path>:<nodeid>" into its file
-/// path and node id. The ":<nodeid>" suffix is optional: when absent (or when
-/// the part after the last colon is not a number, e.g. a Windows drive letter)
-/// *nodeid_out* is set to 0, meaning "read the default node id from the file".
-/// Returns false when an explicit node id is present but out of the valid
-/// CANopen range (1..127), in which case the device should be ignored.
-static bool parse_device_arg(const char *arg, char *path, size_t path_len,
+bool cmdline_parse_nodeid_arg(const char *arg, char *path, size_t path_len,
 		uint8_t *nodeid_out) {
 	bool ret = true;
 	*nodeid_out = 0;
@@ -650,7 +721,7 @@ bool cmd_device(const char *arg) {
 	char path[1024];
 	uint8_t nodeid;
 
-	if (!parse_device_arg(arg, path, sizeof(path), &nodeid)) {
+	if (!cmdline_parse_nodeid_arg(arg, path, sizeof(path), &nodeid)) {
 		// an explicit node id was given but it is out of range
 		PRINT(PRINT_BOLDRED
 				"ERROR: invalid node id in device '%s'; it must be in the range "
