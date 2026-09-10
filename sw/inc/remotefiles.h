@@ -34,8 +34,14 @@
 /// thread (from a task or a modal dialog's own loop).
 
 
-#define REMOTEFILES_MAX_PRODUCTS	24
-#define REMOTEFILES_MAX_VERSIONS	16
+/// @brief: Products and the files inside them are held in grown-on-demand
+/// arrays, so neither is capped: a fleet with more directories than any fixed
+/// bound would silently lose the rest, and a dropped firmware package is the
+/// kind of missing thing nobody notices until it is needed. Only the walk's
+/// depth is bounded (see RF_MAX_DEPTH in remotefiles.c), and that is a
+/// termination guard rather than a limit.
+
+
 /// @brief: How many fleets one account can hold, and how long a fleet name may
 /// be. Matches what the broker side tracks (MQTT_MAX_FLEETS / MQTT_NAME_MAX).
 #define REMOTEFILES_MAX_FLEETS		16
@@ -61,11 +67,23 @@ typedef struct {
 
 
 /// @brief: A product: a named group of versions.
+///
+/// One product is one directory on the server. The tree is walked recursively,
+/// so a nested directory becomes a product of its own, named by its path
+/// relative to the fleet (e.g. "uv0d/rev2"). Files sitting directly in the
+/// fleet's own folder are grouped under the fleet name.
 typedef struct {
-	char id[64];
+	// Doubles as the server-relative path this product's downloads are built
+	// from ("<fleet>/<nested/path>"), so it has to hold a whole nested path
+	// rather than just one name.
+	char id[256];
 	char name[128];
-	remotefiles_version_st versions[REMOTEFILES_MAX_VERSIONS];
-	uint8_t version_count;
+	// Grown as files are found; owned by remotefiles.c and valid until the next
+	// remotefiles_list() or remotefiles_logout(). Callers may read it (and hold
+	// pointers into `name`) only for that long.
+	remotefiles_version_st *versions;
+	uint16_t version_count;
+	uint16_t version_cap;
 } remotefiles_product_st;
 
 
@@ -113,10 +131,13 @@ bool remotefiles_list(char *err, unsigned int err_len);
 
 
 /// @brief: Number of products in the last successful remotefiles_list().
-uint8_t remotefiles_get_product_count(void);
+uint16_t remotefiles_get_product_count(void);
 
 /// @brief: Product at *index*, or NULL when out of range.
-const remotefiles_product_st *remotefiles_get_product(uint8_t index);
+///
+/// The returned pointer, and everything it points at, belongs to remotefiles.c
+/// and stays valid until the next remotefiles_list() or remotefiles_logout().
+const remotefiles_product_st *remotefiles_get_product(uint16_t index);
 
 
 /// @brief: Downloads the file at server-relative *path* to the local *dest_path*.
