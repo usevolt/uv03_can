@@ -56,6 +56,10 @@ static uint32_t error_count;
 // carried unless asked otherwise; extended ones are opt-in (see remotecan.h).
 static bool allow_std = true;
 static bool allow_ext;
+// Narrow the device's end to the SDO conversation and the frames that say the
+// node is alive. Off by default: the bridge is a window onto a bus, and one
+// that showed only half of it without being asked would be a trap.
+static bool sdo_only;
 
 // How many steps between checks that the device is still actually forwarding.
 // The step runs on the UI cycle (20 ms), so this is a couple of seconds.
@@ -255,7 +259,7 @@ bool remotecan_start(uint8_t fleet_index, uint8_t dev_index) {
 		else {
 		}
 		mqtt_set_can_callb(&can_from_dev, NULL);
-		(void) mqtt_dev_set_can_active(fleet_index, dev_index, true);
+		(void) mqtt_dev_set_can_active(fleet_index, dev_index, true, sdo_only);
 		send_filters();
 		printf("remote CAN: bridging '%s' to netdev %s\n",
 				mqtt_get_dev_name(fleet_index, dev_index), REMOTECAN_IFNAME);
@@ -286,7 +290,7 @@ void remotecan_stop(void) {
 			(void) mqtt_dev_send_rxclear((uint8_t) bridged_fleet,
 					(uint8_t) bridged_dev);
 			(void) mqtt_dev_set_can_active((uint8_t) bridged_fleet,
-					(uint8_t) bridged_dev, false);
+					(uint8_t) bridged_dev, false, sdo_only);
 		}
 		else {
 		}
@@ -354,7 +358,7 @@ void remotecan_step(void) {
 			if (!mqtt_dev_get_can_active((uint8_t) bridged_fleet,
 					(uint8_t) bridged_dev)) {
 				(void) mqtt_dev_set_can_active((uint8_t) bridged_fleet,
-						(uint8_t) bridged_dev, true);
+						(uint8_t) bridged_dev, true, sdo_only);
 				send_filters();
 			}
 			else {
@@ -475,6 +479,29 @@ void remotecan_set_allow_ext(bool value) {
 }
 
 
+bool remotecan_get_sdo_only(void) {
+	return sdo_only;
+}
+
+
+void remotecan_set_sdo_only(bool value) {
+	if (value != sdo_only) {
+		sdo_only = value;
+		// The filter table is untouched: this narrows by class, which no id
+		// mask can express, so it travels as a feature bit rather than as an
+		// rxconf round.
+		if (active && (bridged_fleet >= 0) && (bridged_dev >= 0)) {
+			(void) mqtt_dev_set_can_active((uint8_t) bridged_fleet,
+					(uint8_t) bridged_dev, true, sdo_only);
+		}
+		else {
+		}
+	}
+	else {
+	}
+}
+
+
 uint8_t remotecan_get_filter_count(void) {
 	return filter_count;
 }
@@ -576,6 +603,14 @@ bool remotecan_get_allow_ext(void) {
 }
 
 void remotecan_set_allow_ext(bool value) {
+	(void) value;
+}
+
+bool remotecan_get_sdo_only(void) {
+	return false;
+}
+
+void remotecan_set_sdo_only(bool value) {
 	(void) value;
 }
 

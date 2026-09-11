@@ -78,6 +78,8 @@ static uv_uimediabutton_st dev_remove_btn;
 static uv_uitogglebutton_st dev_can_btn;
 static uv_uicheckbox_st dev_std_cb;
 static uv_uicheckbox_st dev_ext_cb;
+// ...and the one that narrows what the device forwards to a parameter transfer
+static uv_uicheckbox_st dev_sdo_cb;
 // Which device the mirror window is showing, so the button on every other tab
 // reads "Open" and closing it targets the right device.
 static int16_t ui_fleet = -1;
@@ -165,11 +167,14 @@ static void build_dev_info_str(void) {
 			carried = "no";
 		}
 		snprintf(can_str, sizeof(can_str),
-				"\nRemote CAN: netdev %s, %s messages%s\n"
+				"\nRemote CAN: netdev %s, %s messages%s%s\n"
 				"%s"
 				"  to netdev %u   from netdev %u   filtered %u   failed %u\n",
 				remotecan_get_ifname(),
 				carried,
+				// the bulk class is where the saving shows: with this on its
+				// forwarded count stops rising while the other two carry on
+				remotecan_get_sdo_only() ? ", SDO only" : "",
 				// the device is the one that decides; while it says no, the
 				// interface is there but nothing is coming through it
 				mqtt_dev_get_can_active(f, d) ? "" :
@@ -189,7 +194,7 @@ static void build_dev_info_str(void) {
 			"Client id:  %s\n"
 			"State:      %u\n"
 			"Uptime:     %u h %02u min\n"
-			"Remote:     UI %s, CAN %s\n"
+			"Remote:     UI %s, CAN %s%s\n"
 			"Display:    %s\n"
 			"Messages:   %u\n"
 			"Last seen:  %u s ago\n"
@@ -201,6 +206,10 @@ static void build_dev_info_str(void) {
 			(unsigned int) (up / 3600u), (unsigned int) ((up / 60u) % 60u),
 			((feat & REMOTE_IOT_FEATURE_UI) != 0) ? "on" : "off",
 			((feat & REMOTE_IOT_FEATURE_CAN) != 0) ? "on" : "off",
+			// what the device says it is doing, which is the only account of
+			// it that counts: the device may have been told one thing and
+			// applied another
+			((feat & REMOTE_IOT_FEATURE_CAN_SDO) != 0) ? " (SDO only)" : "",
 			size_str,
 			(unsigned int) mqtt_get_dev_msg_count(f, d),
 			(unsigned int) mqtt_get_dev_age_s(f, d),
@@ -254,9 +263,11 @@ static void refresh_can_btn(void) {
 	uv_ui_set_enabled(&dev_can_btn, can || remotecan_is_active());
 	uv_uicheckbox_set_state(&dev_std_cb, remotecan_get_allow_std());
 	uv_uicheckbox_set_state(&dev_ext_cb, remotecan_get_allow_ext());
+	uv_uicheckbox_set_state(&dev_sdo_cb, remotecan_get_sdo_only());
 	uv_ui_refresh(&dev_can_btn);
 	uv_ui_refresh(&dev_std_cb);
 	uv_ui_refresh(&dev_ext_cb);
+	uv_ui_refresh(&dev_sdo_cb);
 }
 
 
@@ -288,6 +299,16 @@ static void ui_close_callb(uint8_t fleet_index, uint8_t dev_index, void *user) {
 				"request\n");
 		fflush(stdout);
 		remotecan_stop();
+		// The toggle has to come off with it. fleettab_step() compares the
+		// toggle against what is actually running and starts a bridge whenever
+		// the toggle is on and none is — self-correcting for a bridge that
+		// failed, and a way of undoing the operator's close if the button is
+		// left standing.
+		if (shown) {
+			refresh_can_btn();
+		}
+		else {
+		}
 	}
 	else {
 	}
@@ -415,7 +436,6 @@ static void ui_start(void) {
 	ui_dev = selected_dev;
 	mqtt_set_ui_frame_callb(&ui_frame_callb, NULL);
 	mqtt_set_asset_callb(&ui_asset_callb, NULL);
-	mqtt_set_close_callb(&ui_close_callb, NULL);
 	remoteui_win_set_asset_request_callb(&ui_asset_req_callb, NULL);
 	remoteui_win_set_input_callb(&ui_input_callb, NULL);
 	if (!mqtt_dev_set_ui_active((uint8_t) ui_fleet, (uint8_t) ui_dev, true)) {
@@ -581,21 +601,33 @@ static void show_active_dev_tab(void) {
 				MARGIN + 2 * (5 * BUTTON_H + MARGIN), btn_y,
 				5 * BUTTON_H, BUTTON_H);
 
-		// which frames the bridge carries, both ways. Standard on, extended
-		// off is what a CANopen machine wants; the boxes are here rather than
-		// behind a settings page because they are the difference between a
-		// usable link and one drowning in J1939 broadcasts.
+		// What the bridge carries. Standard on, extended off is what a CANopen
+		// machine wants, and "SDO only" narrows it further to the parameter
+		// transfer itself. The boxes are here rather than behind a settings
+		// page because they are the difference between a usable link and one
+		// drowning in broadcasts.
+		//
+		// Laid out from the end of the button row, three to a row of their own
+		// width: three boxes at the width the two used to have would run off
+		// the right hand edge.
+		int16_t cb_x = MARGIN + 3 * (5 * BUTTON_H + MARGIN);
+		int16_t cb_w = 3 * BUTTON_H;
 		uv_uicheckbox_init(&dev_std_cb, remotecan_get_allow_std(),
-				"STD messages", style);
-		uv_uitabwindow_addxy(&dev_tabs, &dev_std_cb,
-				MARGIN + 3 * (5 * BUTTON_H + MARGIN), btn_y,
-				4 * BUTTON_H, BUTTON_H);
+				"STD", style);
+		uv_uitabwindow_addxy(&dev_tabs, &dev_std_cb, cb_x, btn_y,
+				cb_w, BUTTON_H);
 
+		cb_x += cb_w + MARGIN;
 		uv_uicheckbox_init(&dev_ext_cb, remotecan_get_allow_ext(),
-				"EXT messages", style);
-		uv_uitabwindow_addxy(&dev_tabs, &dev_ext_cb,
-				MARGIN + 3 * (5 * BUTTON_H + MARGIN) + 4 * BUTTON_H + MARGIN,
-				btn_y, 4 * BUTTON_H, BUTTON_H);
+				"EXT", style);
+		uv_uitabwindow_addxy(&dev_tabs, &dev_ext_cb, cb_x, btn_y,
+				cb_w, BUTTON_H);
+
+		cb_x += cb_w + MARGIN;
+		uv_uicheckbox_init(&dev_sdo_cb, remotecan_get_sdo_only(),
+				"SDO only", style);
+		uv_uitabwindow_addxy(&dev_tabs, &dev_sdo_cb, cb_x, btn_y,
+				cb_w, BUTTON_H);
 		refresh_can_btn();
 
 		uv_uitabwindow_set_stepcallb(&dev_tabs, &dev_tabs_step, NULL);
@@ -633,6 +665,21 @@ static uv_uiobject_ret_e dev_tabs_step(void *me, const uint16_t step_ms) {
 
 bool fleettab_step(void) {
 	bool ret = false;
+
+	// A device ending the session from its own screen has to be heard whatever
+	// is open at this end, so this is registered once and for good rather than
+	// when a mirror is started. It used not to be, and the CAN bridge was the
+	// casualty: nothing was listening for the close, the bridge kept re-asking
+	// for the feature the operator had just refused, and the takeover bar they
+	// had touched to be rid of came straight back. The notification bar says
+	// touching it ends remote access; this is half of what makes that true.
+	static bool close_callb_set;
+	if (!close_callb_set) {
+		close_callb_set = true;
+		mqtt_set_close_callb(&ui_close_callb, NULL);
+	}
+	else {
+	}
 
 	// keep the client running whichever main tab is shown, so the connection
 	// survives a visit to the System tab and the fleet list keeps filling in
@@ -716,6 +763,18 @@ bool fleettab_step(void) {
 				(uv_uicheckbox_get_state(&dev_ext_cb) !=
 						remotecan_get_allow_ext())) {
 			remotecan_set_allow_ext(uv_uicheckbox_get_state(&dev_ext_cb));
+			refresh_can_btn();
+			ret = true;
+		}
+		else {
+		}
+
+		if ((dev_tab_count > 0) &&
+				(uv_uicheckbox_get_state(&dev_sdo_cb) !=
+						remotecan_get_sdo_only())) {
+			// re-asks the device on its own if a bridge is up; this one does
+			// not go through the filter table, it is a feature bit
+			remotecan_set_sdo_only(uv_uicheckbox_get_state(&dev_sdo_cb));
 			refresh_can_btn();
 			ret = true;
 		}

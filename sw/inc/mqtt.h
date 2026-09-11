@@ -275,8 +275,14 @@ void mqtt_set_can_callb(mqtt_can_callb_t callb, void *user);
 
 /// @brief: Starts or stops CAN forwarding on a device. Leaves the UI feature
 /// alone: the two are switched independently and neither owns the other.
+///
+/// *sdo_only* narrows what the device forwards to what a parameter transfer
+/// needs — the SDO conversation and the control frames that say the node is
+/// there — instead of its whole bus. A machine bus is almost entirely process
+/// data, so over a link this thin that is the difference between a load that
+/// finishes and one that crawls.
 bool mqtt_dev_set_can_active(uint8_t fleet_index, uint8_t dev_index,
-		bool active);
+		bool active, bool sdo_only);
 
 /// @brief: True while the CAN feature is in effect on a device, as the device
 /// itself last reported it.

@@ -693,6 +693,13 @@ static void dev_frame_callb(void *user, remote_msg_types_e type,
 		printf("MQTT: device '%s' closed the remote session from its own end\n",
 				d->name);
 		fflush(stdout);
+		// Answered at once, and whatever else is or is not open at this end.
+		// A close is the machine operator taking their machine back, and the
+		// device holds out against anything still being asked for until this
+		// arrives -- so an unanswered close would leave remote access dead
+		// with neither end able to start it again. This is what lets a press
+		// of the button start a new session.
+		(void) mqtt_dev_set_features(ctx->fleet_index, ctx->dev_index, 0);
 		if (close_callb != NULL) {
 			close_callb(ctx->fleet_index, ctx->dev_index, close_user);
 		}
@@ -1309,7 +1316,7 @@ static bool dev_publish(uint8_t fleet_index, uint8_t dev_index,
 
 
 bool mqtt_dev_set_can_active(uint8_t fleet_index, uint8_t dev_index,
-		bool active) {
+		bool active, bool sdo_only) {
 	mqtt_dev_st *d = dev_at(fleet_index, dev_index);
 	bool ret = false;
 	if (d != NULL) {
@@ -1318,9 +1325,18 @@ bool mqtt_dev_set_can_active(uint8_t fleet_index, uint8_t dev_index,
 		uint8_t mask = d->features;
 		if (active) {
 			mask |= REMOTE_IOT_FEATURE_CAN;
+			if (sdo_only) {
+				mask |= REMOTE_IOT_FEATURE_CAN_SDO;
+			}
+			else {
+				mask &= (uint8_t) ~REMOTE_IOT_FEATURE_CAN_SDO;
+			}
 		}
 		else {
-			mask &= (uint8_t) ~REMOTE_IOT_FEATURE_CAN;
+			// the narrowing goes with what it narrows; on its own it would
+			// only be a setting for a stream that is not running
+			mask &= (uint8_t) ~(REMOTE_IOT_FEATURE_CAN |
+					REMOTE_IOT_FEATURE_CAN_SDO);
 			d->can_stats_known = false;
 		}
 		ret = mqtt_dev_set_features(fleet_index, dev_index, mask);
@@ -1576,10 +1592,11 @@ void mqtt_set_can_callb(mqtt_can_callb_t callb, void *user) {
 }
 
 bool mqtt_dev_set_can_active(uint8_t fleet_index, uint8_t dev_index,
-		bool active) {
+		bool active, bool sdo_only) {
 	(void) fleet_index;
 	(void) dev_index;
 	(void) active;
+	(void) sdo_only;
 	return false;
 }
 
