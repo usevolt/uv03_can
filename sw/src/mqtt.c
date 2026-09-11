@@ -139,6 +139,48 @@ static uint8_t fleet_count;
 // Set whenever the state or the tree changed, cleared by mqtt_poll_changed().
 static bool changed;
 
+// ---- the network task ---------------------------------------------------
+//
+// libmosquitto's loop is where the blocking work lives: the broker's DNS lookup
+// and the TLS handshake both happen inside it. Driven from the UI's own step --
+// as this was -- a machine with no route to the internet stops the entire
+// interface for as long as the resolver takes, which is tens of seconds per
+// attempt, over and over. So the socket lives on a task of its own.
+//
+// The device tree stays where it was, owned by the UI thread: the network task
+// only copies arriving messages into this queue, and mqtt_step() parses them on
+// the UI side exactly as before. Nothing that the UI reads is written by the
+// other thread, which is what keeps the tree free of locking.
+#define MQTT_RX_QUEUE_LEN		64
+#define MQTT_RX_TOPIC_MAX		(MQTT_NAME_MAX * 2 + 32)
+#define MQTT_RX_PAYLOAD_MAX		1024
+/// How long the loop may wait in select(). Off the UI thread this can block
+/// properly rather than spin, which is also what keeps a bridged CAN bus
+/// keeping up.
+#define MQTT_NET_LOOP_MS		50
+
+typedef struct {
+	char topic[MQTT_RX_TOPIC_MAX];
+	uint8_t payload[MQTT_RX_PAYLOAD_MAX];
+	uint16_t payloadlen;
+} mqtt_rxmsg_st;
+
+static mqtt_rxmsg_st rx_queue[MQTT_RX_QUEUE_LEN];
+static volatile uint16_t rx_head;	///< written by the network task
+static volatile uint16_t rx_tail;	///< written by the UI thread
+static uint32_t rx_dropped;
+
+/// Guards the handle against being used while the network task replaces it,
+/// and the queue's bookkeeping. Never held across mosquitto_loop(): that is
+/// the call that blocks, and holding it there would hand the freeze straight
+/// back to whichever thread publishes next.
+static uv_mutex_st mqtt_mutex;
+static bool mqtt_mutex_inited;
+
+static volatile bool net_task_started;
+static volatile bool net_connect_req;
+static volatile bool net_disconnect_req;
+
 // Devices the user has removed from the view. A removed device is still out
 // there publishing, so without this it would be back in the tree on its next
 // heartbeat. Session scoped: cleared on every connect (see mqtt_remove_dev()).

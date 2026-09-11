@@ -545,12 +545,18 @@ typedef enum {
 	OP_SYSPARAM,
 	OP_SYSLOAD,
 	OP_SIMPARAM,
+	OP_DOWNLOAD,
 } busy_op_e;
 
 // While an operation is in progress the device frames are disabled and the
 // device state is not updated (see devicetab_is_busy()).
 static bool busy;
 static busy_op_e busy_op;
+
+// The device a package is being downloaded for (OP_DOWNLOAD). Remembered because
+// the download finishes some cycles after it was started, by which time the tab
+// the user is looking at - and with it *current_device* - may be another one.
+static device_st *download_device;
 
 
 bool devicetab_is_busy(void) {
@@ -600,6 +606,9 @@ static bool busy_finished(void) {
 		break;
 	case OP_SIMPARAM:
 		ret = simrun_load_params_is_finished();
+		break;
+	case OP_DOWNLOAD:
+		ret = remotefiles_download_is_finished();
 		break;
 	default:
 		break;
@@ -1667,13 +1676,38 @@ bool devicetab_step(void) {
 			// the single-device save/load set the log title themselves; restore it
 			// to the default now they are done (the system save/load reset it from
 			// within their own task)
-			if ((busy_op == OP_SAVE) || (busy_op == OP_LOAD)) {
+			if ((busy_op == OP_SAVE) || (busy_op == OP_LOAD) ||
+					(busy_op == OP_DOWNLOAD)) {
 				uvui_reset_log_title();
 			}
 			// the flash (wfr / uv paths) took the CAN callback over to watch for the
 			// device's boot-up; restore the heartbeat monitor and terminal sniffer
 			if (busy_op == OP_FLASH) {
 				find_reinstall_monitor();
+			}
+			// a package downloaded from the file server is what its device is
+			// configured from - the whole reason for fetching one - so it is
+			// taken into use as soon as it is here. Anything else the account
+			// holds (a raw firmware binary, say) is left where it was downloaded;
+			// the log says where that is.
+			if (busy_op == OP_DOWNLOAD) {
+				char pkg[1024] = "";
+				char derr[256] = "";
+				if (!remotefiles_download_result(pkg, sizeof(pkg),
+						derr, sizeof(derr))) {
+					uv_uiacceptdialog_st dialog = { };
+					uv_uiacceptdialog_exec(&dialog, derr, "OK", "OK",
+							&uv_uistyles[0]);
+				}
+				else if (path_is_uvdev(pkg) &&
+						system_holds_device(&dev.system, download_device)) {
+					system_set_device_file(download_device, pkg);
+				}
+				else {
+					// not a device package, or the device it was fetched for is
+					// gone: the file is downloaded and that is all
+				}
+				download_device = NULL;
 			}
 			busy = false;
 			busy_op = OP_NONE;
@@ -2021,8 +2055,19 @@ bool devicetab_step(void) {
 						"panel on the System tab first.", "OK", "OK",
 						&uv_uistyles[0]);
 			}
+			else if (serverfiles_win_exec(&uv_uistyles[0])) {
+				// The window closed on a "Download" click and the transfer is
+				// running on its own task. The panel goes busy for it, exactly as
+				// it does for a flash or a parameter load, so the UI keeps
+				// drawing (and showing the transfer's log) meanwhile; the file is
+				// taken into use where the operation is reaped.
+				download_device = current_device;
+				uvui_set_log_title("Downloading package from the file server...");
+				start_busy(OP_DOWNLOAD);
+				ret = true;
+			}
 			else {
-				serverfiles_win_exec(&uv_uistyles[0]);
+				// the window was closed without downloading anything
 			}
 		}
 		// "Flash firmware": confirm, then flash the package's firmware to the

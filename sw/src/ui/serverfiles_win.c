@@ -19,10 +19,11 @@
 #include "ui/serverfiles_win.h"
 #include "ui/uv_uidialog.h"
 #include "ui/uv_uitreeview.h"
+#include "ui/uv_uitabwindow.h"
 #include "ui/uv_uiacceptdialog.h"
-#include "ui/uv_uifileedit.h"
 #include "remotefiles.h"
 #include "credentials.h"
+#include "system.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -33,6 +34,16 @@
 // height of one version row (metadata label + download button) inside a product
 #define SFW_VROW_H		66
 #define SFW_DL_W		130
+// Where a downloaded package is put: a temporary directory of this run's own,
+// created on the first download. A package is downloaded to be used now - it
+// becomes the device's configuration file, and is read from there for as long as
+// uvcan runs - so it is tracked with the rest of this run's temporary
+// directories and removed when uvcan exits, on Ctrl-C as well, and swept out of
+// /tmp by a later run if this one is killed outright. Keeping the downloads
+// instead filled the user's config directory with a copy of every version they
+// ever looked at, none of which they had asked to keep.
+#define SFW_PKG_DIR_PREFIX	"uvcan_pkg"
+static char sfw_pkg_dir[1024];
 
 
 // The dialog and its persistent widgets. Kept file-scope (static) so they outlive
@@ -48,6 +59,19 @@ static uv_uibutton_st close_btn;
 #define SFW_VSTR_LEN	512
 #define SFW_NAME_LEN	176
 
+// One tab per fleet, holding the tree of that fleet's products. An account may
+// hold several fleets and they are separate collections of machines; showing
+// them in one list only made the user read the fleet off every row.
+static uv_uitabwindow_st fleet_tabs;
+// the tab window holds exactly one child: the tree of the active fleet, or the
+// label saying that fleet has no files
+static uv_uiobject_st *fleet_tabs_buf[2];
+static char *fleet_names[REMOTEFILES_MAX_FLEETS];
+static uint8_t fleet_count;
+static uv_uilabel_st fleet_empty_label;
+
+// The tree of the fleet currently on show. One tree serves every tab: switching
+// tabs rebuilds it from the products of the fleet that was picked.
 static uv_uitreeview_st tree;
 
 // The per-product UI, allocated for exactly as many products as the listing
@@ -75,17 +99,24 @@ typedef struct {
 	// keeps the name BY POINTER - it has to stay put for the dialog's lifetime.
 	char name[SFW_NAME_LEN];
 	uint16_t versions;
+	// which fleet's tab this product belongs on
+	uint8_t fleet;
 } sfw_product_ui_st;
 
 static sfw_product_ui_st *prods;
-// the pointer array uv_uitreeview_init() keeps; one entry per product
+// the pointer array uv_uitreeview_init() keeps. One entry per product: a single
+// fleet can hold all of them, and the tree only ever shows one fleet's worth.
 static uv_uitreeobject_st **tree_buf;
 static uint16_t prod_n;
 
-static const uv_uistyle_st *win_style;
+// What the user clicked "Download" on, as product / version index, or -1 when
+// the window was closed without downloading anything. The click closes the
+// window and the transfer runs after it is gone, so the choice has to outlive
+// the dialog's step loop.
+static int sel_prod;
+static int sel_ver;
 
-// All-files filter for the "save as" picker.
-static const uv_uifileedit_filter_st SFW_ALL_FILES[] = { { "All files", "*" } };
+static const uv_uistyle_st *win_style;
 
 
 // Releases the whole per-product UI. Idempotent, and safe to call when nothing
@@ -131,6 +162,7 @@ static bool sfw_alloc_ui(uint16_t n) {
 		const remotefiles_product_st *prod = remotefiles_get_product(p);
 		uint16_t v = (prod != NULL) ? prod->version_count : 0;
 		prods[p].versions = v;
+		prods[p].fleet = (prod != NULL) ? prod->fleet : 0;
 		prod_n = (uint16_t) (p + 1);
 		// +2 of slack matches what the fixed array carried; uv_uiwindow wants
 		// room for the children a show callback adds.
@@ -193,35 +225,55 @@ static void sfw_fmt_size(uint64_t bytes, char *out, size_t out_len) {
 }
 
 
-// Runs the "save as" picker and downloads version *j* of product *p* to the chosen
-// location, showing the outcome.
-static void sfw_download(uint16_t p, uint16_t j) {
-	const remotefiles_product_st *prod = remotefiles_get_product(p);
-	if ((prod == NULL) || (j >= prod->version_count)) {
-		return;
-	}
-	const remotefiles_version_st *v = &prod->versions[j];
-
-	// default the save name to the file's base name
-	const char *base = strrchr(v->path, '/');
-	base = (base != NULL) ? (base + 1) : v->path;
-	char dest[1024];
-	strncpy(dest, base, sizeof(dest) - 1);
-	dest[sizeof(dest) - 1] = '\0';
-
-	if (uv_uifiledialog_exec("Save file as", SFW_ALL_FILES, 1, true,
-			dest, sizeof(dest))) {
-		char err[256] = "";
-		bool ok = remotefiles_download(v->path, dest, err, sizeof(err));
-		char msg[640];
-		if (ok) {
-			snprintf(msg, sizeof(msg), "Downloaded '%s'.", base);
+// The directory this run downloads into, created on the first call. Returns NULL
+// if it cannot be created.
+static const char *sfw_pkg_dir_get(void) {
+	if (strlen(sfw_pkg_dir) == 0) {
+		if (!system_mktempdir(SFW_PKG_DIR_PREFIX,
+				sfw_pkg_dir, sizeof(sfw_pkg_dir))) {
+			sfw_pkg_dir[0] = '\0';
 		}
 		else {
-			snprintf(msg, sizeof(msg), "%s", err);
 		}
-		sfw_message(msg);
 	}
+	else {
+	}
+	return (strlen(sfw_pkg_dir) != 0) ? sfw_pkg_dir : NULL;
+}
+
+
+// Starts the download of version *j* of product *p* into this run's download
+// directory. Returns true when the transfer was started; the caller waits for it
+// with remotefiles_download_is_finished().
+//
+// Started once the window is closed, and on a task of its own: the transfer takes
+// as long as it takes and reports how far it has got on stdout, which the UI's
+// log view shows only while the UI keeps running.
+static bool sfw_start_fetch(uint16_t p, uint16_t j) {
+	bool ret = false;
+	const remotefiles_product_st *prod = remotefiles_get_product(p);
+	if ((prod != NULL) && (j < prod->version_count)) {
+		const remotefiles_version_st *v = &prod->versions[j];
+		// the file keeps the name it has on the server; that name carries the
+		// product and the version, so two downloads only collide when they are
+		// the same package
+		const char *base = strrchr(v->path, '/');
+		base = (base != NULL) ? (base + 1) : v->path;
+		const char *dir = sfw_pkg_dir_get();
+		if (dir == NULL) {
+			sfw_message("There is nowhere to download to: a temporary directory "
+					"could not be created.");
+		}
+		else {
+			// room for the download directory and the longest name a version's
+			// path (remotefiles_version_st.path) can end with
+			char path[sizeof(sfw_pkg_dir) + 520];
+			snprintf(path, sizeof(path), "%s/%s", dir, base);
+			remotefiles_download_async(v->path, path, v->size);
+			ret = true;
+		}
+	}
+	return ret;
 }
 
 
@@ -245,8 +297,12 @@ static void product_show(uv_uitreeobject_st *obj) {
 	// the object its +/- marker, its name and its separator line the instant a
 	// product was opened.
 	uv_uitreeobject_clear(obj);
-	int16_t w = uv_uibb(obj)->width;
-	int16_t label_w = w - SFW_DL_W - 3 * SFW_MARGIN;
+	// The content's own coordinate space: it starts below the header row and
+	// indented under the header's name, and is that much narrower than the
+	// object itself. Taking the object's width instead would run every row
+	// past the right edge by the indent.
+	int16_t w = uv_uitreeobject_get_content_bb(obj).width;
+	int16_t label_w = w - SFW_DL_W - SFW_MARGIN;
 
 	for (uint16_t j = 0; j < prods[p].versions; j++) {
 		const remotefiles_version_st *v = &prod->versions[j];
@@ -262,21 +318,66 @@ static void product_show(uv_uitreeobject_st *obj) {
 				sz, v->notes);
 
 		// NOT offset by CONFIG_UI_TREEVIEW_ITEM_HEIGHT. uv_uitreeobject_init()
-		// already calls uv_uiwindow_set_content_bb_default_pos(0, ITEM_HEIGHT),
-		// so this coordinate space starts below the header row; adding it again
+		// already calls uv_uiwindow_set_content_bb_default_pos(), so this
+		// coordinate space starts below the header row; adding it again
 		// pushed every row down by a header's height and ran the last row past
 		// the object's own height, which clipped it to a sliver.
 		int16_t y = (int16_t) j * SFW_VROW_H;
 		uv_uilabel_init(&prods[p].ver_labels[j], win_style->font,
 				ALIGN_CENTER_LEFT, win_style->text_color, str);
 		uv_uitreeobject_addxy(obj, &prods[p].ver_labels[j],
-				SFW_MARGIN, y, label_w, SFW_VROW_H);
+				0, y, label_w, SFW_VROW_H);
 
 		uv_uibutton_init(&prods[p].dl_btns[j], "Download", win_style);
 		uv_uitreeobject_addxy(obj, &prods[p].dl_btns[j],
-				w - SFW_DL_W - SFW_MARGIN, y + (SFW_VROW_H - SFW_BTN_H) / 2,
+				w - SFW_DL_W, y + (SFW_VROW_H - SFW_BTN_H) / 2,
 				SFW_DL_W, SFW_BTN_H);
 	}
+}
+
+
+// Fills the fleet tab window with the products of fleet *f*: a tree with one row
+// per product, or a label when that fleet holds no files at all.
+//
+// Called every time a tab is picked. The tree objects are re-initialised rather
+// than kept, because a tree object belongs to the tree it was added to - the
+// previous fleet's tree is exactly what this replaces.
+static void sfw_show_fleet(uint8_t f) {
+	uv_uitabwindow_clear(&fleet_tabs);
+	uv_bounding_box_st cbb = uv_uitabwindow_get_contentbb(&fleet_tabs);
+
+	uint16_t count = 0;
+	for (uint16_t p = 0; p < prod_n; p++) {
+		if (prods[p].fleet == f) {
+			count++;
+		}
+	}
+
+	if (count == 0) {
+		uv_uilabel_init(&fleet_empty_label, win_style->font, ALIGN_CENTER,
+				C(0xFFFFFFFF), "No files in this fleet.");
+		uv_uitabwindow_addxy(&fleet_tabs, &fleet_empty_label,
+				0, 0, cbb.width, cbb.height);
+	}
+	else {
+		uv_uitreeview_init(&tree, tree_buf, win_style);
+		uv_uitabwindow_addxy(&fleet_tabs, &tree, 0, 0, cbb.width, cbb.height);
+		bool first = true;
+		for (uint16_t p = 0; p < prod_n; p++) {
+			if (prods[p].fleet != f) {
+				continue;
+			}
+			uv_uitreeobject_init(&prods[p].obj, prods[p].child_buf,
+					prods[p].name, &product_show, win_style);
+			// Content height is one row per version. The fleet's first product
+			// opens expanded, so the tab shows actual files without a click -
+			// the treeview keeps one product open at a time anyway.
+			uv_uitreeview_add(&tree, &prods[p].obj,
+					(int16_t) prods[p].versions * SFW_VROW_H, first);
+			first = false;
+		}
+	}
+	uv_ui_refresh(&fleet_tabs);
 }
 
 
@@ -288,14 +389,24 @@ static uv_uiobject_ret_e sfw_step(void *user_ptr, uint16_t step_ms) {
 	if (uv_uibutton_clicked(&close_btn)) {
 		ret = UIOBJECT_RETURN_KILLED;
 	}
+	else if ((fleet_count > 0) && uv_uitabwindow_tab_changed(&fleet_tabs)) {
+		sfw_show_fleet((uint8_t) uv_uitabwindow_get_tab(&fleet_tabs));
+	}
 	else {
-		// poll every version's Download button (un-opened products' buttons were
-		// never added to a window, so they simply never report a click)
+		// poll every version's Download button (products not on the active tab,
+		// and un-opened ones, were never added to a window, so they simply never
+		// report a click)
 		bool handled = false;
 		for (uint16_t p = 0; (p < prod_n) && !handled; p++) {
 			for (uint16_t j = 0; j < prods[p].versions; j++) {
 				if (uv_uibutton_clicked(&prods[p].dl_btns[j])) {
-					sfw_download(p, j);
+					// The window closes and the download runs after it: it is
+					// the caller that does something with the file, and a modal
+					// dialog frozen for the length of a transfer shows nothing
+					// the log does not show better.
+					sel_prod = (int) p;
+					sel_ver = (int) j;
+					ret = UIOBJECT_RETURN_KILLED;
 					handled = true;
 					break;
 				}
@@ -306,19 +417,22 @@ static uv_uiobject_ret_e sfw_step(void *user_ptr, uint16_t step_ms) {
 }
 
 
-void serverfiles_win_exec(const uv_uistyle_st *style) {
+bool serverfiles_win_exec(const uv_uistyle_st *style) {
+	bool ret = false;
 	win_style = style;
+	sel_prod = -1;
+	sel_ver = -1;
 
 	// 1. log in and fetch the file list (blocks; failures are reported and abort)
 	char err[256] = "";
 	if (!remotefiles_login(credentials_get_url(), credentials_get_username(),
 			credentials_get_password(), err, sizeof(err))) {
 		sfw_message(err);
-		return;
+		return false;
 	}
 	if (!remotefiles_list(err, sizeof(err))) {
 		sfw_message(err);
-		return;
+		return false;
 	}
 
 	// 2. build the modal window
@@ -334,45 +448,50 @@ void serverfiles_win_exec(const uv_uistyle_st *style) {
 	uv_uidialog_addxy(&dialog, &title_label,
 			SFW_MARGIN, SFW_MARGIN, w - 2 * SFW_MARGIN, SFW_TITLE_H);
 
-	int16_t tree_y = SFW_MARGIN + SFW_TITLE_H + SFW_MARGIN;
-	int16_t tree_h = h - tree_y - (SFW_BTN_H + 2 * SFW_MARGIN);
+	int16_t tabs_y = SFW_MARGIN + SFW_TITLE_H + SFW_MARGIN;
+	int16_t tabs_h = h - tabs_y - (SFW_BTN_H + 2 * SFW_MARGIN);
 
 	uint16_t n = remotefiles_get_product_count();
 	if (!sfw_alloc_ui(n)) {
 		sfw_message("Not enough memory to show the file list.");
-		return;
+		return false;
 	}
-	if (n == 0) {
+	for (uint16_t p = 0; p < prod_n; p++) {
+		const remotefiles_product_st *prod = remotefiles_get_product(p);
+		// The count is in the row itself: a product with no files then reads
+		// as "(no files)" rather than as a row that refuses to open, which
+		// is indistinguishable from something being broken.
+		if (prods[p].versions > 0) {
+			snprintf(prods[p].name, SFW_NAME_LEN, "%s  (%u)",
+					prod->name, (unsigned int) prods[p].versions);
+		}
+		else {
+			snprintf(prods[p].name, SFW_NAME_LEN, "%s  (no files)",
+					prod->name);
+		}
+	}
+
+	// 3. one tab per fleet. The tab names point straight at the fleet names
+	// remotefiles keeps, which outlive this window.
+	fleet_count = remotefiles_get_fleet_count();
+	if (fleet_count > REMOTEFILES_MAX_FLEETS) {
+		fleet_count = REMOTEFILES_MAX_FLEETS;
+	}
+	for (uint8_t f = 0; f < fleet_count; f++) {
+		fleet_names[f] = (char*) remotefiles_get_fleet(f);
+	}
+	if (fleet_count == 0) {
 		uv_uilabel_init(&empty_label, style->font, ALIGN_CENTER,
 				C(0xFFFFFFFF), "No files are available for this account.");
 		uv_uidialog_addxy(&dialog, &empty_label,
-				SFW_MARGIN, tree_y, w - 2 * SFW_MARGIN, tree_h);
+				SFW_MARGIN, tabs_y, w - 2 * SFW_MARGIN, tabs_h);
 	}
 	else {
-		uv_uitreeview_init(&tree, tree_buf, style);
-		uv_uidialog_addxy(&dialog, &tree,
-				SFW_MARGIN, tree_y, w - 2 * SFW_MARGIN, tree_h);
-		for (uint16_t p = 0; p < n; p++) {
-			const remotefiles_product_st *prod = remotefiles_get_product(p);
-			// The count is in the row itself: a product with no files then reads
-			// as "(no files)" rather than as a row that refuses to open, which
-			// is indistinguishable from something being broken.
-			if (prods[p].versions > 0) {
-				snprintf(prods[p].name, SFW_NAME_LEN, "%s  (%u)",
-						prod->name, (unsigned int) prods[p].versions);
-			}
-			else {
-				snprintf(prods[p].name, SFW_NAME_LEN, "%s  (no files)",
-						prod->name);
-			}
-			uv_uitreeobject_init(&prods[p].obj, prods[p].child_buf,
-					prods[p].name, &product_show, style);
-			// Content height is one row per version. The first product opens
-			// expanded, so the panel shows actual files without a click - the
-			// treeview keeps one product open at a time anyway.
-			uv_uitreeview_add(&tree, &prods[p].obj,
-					(int16_t) prods[p].versions * SFW_VROW_H, (p == 0));
-		}
+		uv_uitabwindow_init(&fleet_tabs, fleet_count, style,
+				fleet_tabs_buf, fleet_names);
+		uv_uidialog_addxy(&dialog, &fleet_tabs,
+				SFW_MARGIN, tabs_y, w - 2 * SFW_MARGIN, tabs_h);
+		sfw_show_fleet(0);
 	}
 
 	uv_uibutton_init(&close_btn, "Close", style);
@@ -385,5 +504,14 @@ void serverfiles_win_exec(const uv_uistyle_st *style) {
 	// Only now: uv_uidialog_exec() runs the modal's own loop and returns when
 	// the dialog is closed, so up to this point the dialog still holds pointers
 	// to everything allocated above.
+	int p = sel_prod;
+	int j = sel_ver;
 	sfw_free_ui();
+
+	// The listing itself is not freed with the UI, so the chosen file is still
+	// known here - and the window is gone while the transfer runs.
+	if ((p >= 0) && (j >= 0)) {
+		ret = sfw_start_fetch((uint16_t) p, (uint16_t) j);
+	}
+	return ret;
 }

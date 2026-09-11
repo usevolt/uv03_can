@@ -32,7 +32,9 @@
 /// @brief: Creates a fresh, uniquely-named temporary directory under the
 /// system temp location and writes its absolute path into *dest*. *prefix* is a
 /// short tag (e.g. "uvcan_uvsys") embedded in the name so leftovers are
-/// identifiable. Returns true on success.
+/// identifiable, and so is the process id, which is what lets
+/// archive_sweep_stale_tmpdirs() tell a leftover from a directory in use.
+/// Returns true on success.
 bool archive_mktempdir(const char *prefix, char *dest, size_t dest_len);
 
 /// @brief: Extracts the zip archive *archive* into the existing directory
@@ -43,10 +45,15 @@ bool archive_extract(const char *archive, const char *destdir);
 /// are ignored since the OS reaps the temp area eventually).
 void archive_rmtree(const char *dir);
 
-/// @brief: Best-effort removal of stale uvcan extraction directories left behind
-/// by an earlier run that crashed or was killed before its atexit cleanup ran.
-/// Only sweeps directories older than a day so concurrently running uvcan
-/// instances are left untouched. A no-op where no safe sweep is available.
+/// @brief: Best-effort removal of stale uvcan temporary directories left behind
+/// by an earlier run that crashed or was killed before its cleanup could run.
+/// A directory is swept once the uvcan whose process id its name carries is gone,
+/// so a crashed run's leftovers (an extraction directory, or a package the server
+/// files window downloaded) are reclaimed by the next run and not a day later,
+/// while the directories of a uvcan which is still running are left alone. Only
+/// directories whose name says nothing about their owner -- from a uvcan older
+/// than that naming -- keep the age guard of a day. A no-op where no safe sweep
+/// is available.
 void archive_sweep_stale_tmpdirs(void);
 
 #endif /* UVCAN_ARCHIVE_H_ */

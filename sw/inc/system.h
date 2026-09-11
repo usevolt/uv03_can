@@ -215,16 +215,26 @@ void system_clear_forced_nodeid(system_st *this);
 void system_reset(system_st *this);
 
 /// @brief: Installs temporary-directory cleanup. Call once at startup. Registers
-/// an atexit handler that removes the active .uvsys extraction directory on a
-/// clean exit, and sweeps stale extraction directories left behind by earlier
-/// runs that crashed or were killed (which bypass the atexit handler).
+/// an atexit handler that removes this run's temporary directories on a clean
+/// exit, and sweeps stale ones left behind by earlier runs that crashed or were
+/// killed (which bypass the atexit handler).
 void system_init_tmp_cleanup(void);
 
-/// @brief: Removes every .uvsys extraction directory created during this run.
+/// @brief: Removes every temporary directory created during this run.
 /// Same work as the registered atexit handler, but callable directly from a
 /// signal handler (the HAL's SIGINT handler _exit()s and so skips atexit).
 /// Idempotent: a second call has nothing left to remove.
 void system_remove_tmpdirs(void);
+
+/// @brief: Creates a temporary directory named after *prefix* (see
+/// archive_mktempdir()) and tracks it, so that it is removed with the rest of
+/// this run's temporary directories -- at exit, and from the Ctrl-C handler via
+/// system_remove_tmpdirs(). Returns true and writes the path into *dest* on
+/// success.
+///
+/// For files that are only wanted for as long as this run lasts. The .uvsys and
+/// .uvdev extraction directories are tracked the same way.
+bool system_mktempdir(const char *prefix, char *dest, size_t dest_len);
 
 /// @brief: Assigns a system configuration file.
 ///
@@ -293,6 +303,17 @@ static inline uint8_t system_get_dev_count(system_st *this) {
 /// @brief: Returns the device at *index*, or NULL if out of range.
 static inline device_st *system_get_dev(system_st *this, uint8_t index) {
 	return (index < this->dev_count) ? &this->devs[index] : NULL;
+}
+
+/// @brief: True when *device* is (still) one of this system's devices. Used by
+/// callers that hold a device pointer across something long-running - a device
+/// removed meanwhile leaves them with a pointer to a slot that is no longer in
+/// use, or to another device altogether.
+static inline bool system_holds_device(system_st *this,
+		const device_st *device) {
+	return (device != NULL) &&
+			(device >= this->devs) &&
+			(device < &this->devs[this->dev_count]);
 }
 
 /// @brief: Returns true when no more devices can be added.

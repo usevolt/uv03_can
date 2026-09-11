@@ -26,9 +26,12 @@
 #if !CONFIG_TARGET_WIN
 
 #include <unistd.h>
+#include <errno.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <strings.h>
+#include <uv_rtos.h>
 #include "parser.h"
 
 
@@ -145,6 +148,107 @@ static long rf_run_curl(const char *cfg_path) {
 }
 
 
+// How often a running download's progress is logged, and how many percentage
+// points it has to have advanced since the last line for another one to be worth
+// printing. The log is read line by line (in the terminal and in the UI's log
+// view), so a line per quarter second would bury everything else in it.
+#define RF_PROGRESS_MS			250
+#define RF_PROGRESS_STEP		5
+
+
+// Logs one progress line for a transfer that has *got* of *expected* bytes
+// (*expected* 0 when the size is not known in advance).
+static void rf_log_progress(uint64_t got, uint64_t expected) {
+	if (expected > 0) {
+		printf("  %3u %%   %llu / %llu KB\n",
+				(unsigned int) ((got * 100u) / expected),
+				(unsigned long long) (got / 1024u),
+				(unsigned long long) (expected / 1024u));
+	}
+	else {
+		printf("  %llu KB\n", (unsigned long long) (got / 1024u));
+	}
+	fflush(stdout);
+}
+
+
+// Runs `curl -K <cfg_path>` like rf_run_curl(), logging the transfer's progress
+// to stdout while it runs.
+//
+// curl is started with fork() and execvp() rather than through the shell, so
+// that its stdout (which carries the write-out status code) can be sent to the
+// code file while its stderr stays where the program's own output goes. Its own
+// progress meter is left off on purpose: it redraws one line with carriage
+// returns, which the line-based log capture would turn into one enormous line.
+// The progress below is measured from the size the destination file has reached
+// instead, which is what the user is waiting for anyway.
+static long rf_run_curl_logged(const char *cfg_path, const char *dest_path,
+		uint64_t expected) {
+	long code = 0;
+	char code_path[256];
+	rf_tmp_path(code_path, sizeof(code_path), "code");
+	remove(code_path);
+
+	pid_t pid = fork();
+	if (pid == 0) {
+		// curl's stdout is the status code, and nothing else: the parent reads
+		// this file once curl is done
+		if (freopen(code_path, "w", stdout) == NULL) {
+			_exit(127);
+		}
+		char *argv[] = { "curl", "-K", (char*) cfg_path, NULL };
+		execvp("curl", argv);
+		// no curl on this machine; the parent sees the empty code file and
+		// reports it as "could not reach the server"
+		_exit(127);
+	}
+	else if (pid > 0) {
+		unsigned int logged_pct = 0;
+		uint64_t logged_got = 0;
+		int rc;
+		do {
+			// the FreeRTOS scheduler tick interrupts the wait; keep waiting
+			// rather than leaving a zombie behind
+			rc = waitpid(pid, NULL, WNOHANG);
+			if (rc == 0) {
+				uv_rtos_task_delay(RF_PROGRESS_MS);
+				struct stat st;
+				if (stat(dest_path, &st) == 0) {
+					uint64_t got = (uint64_t) st.st_size;
+					if (expected > 0) {
+						unsigned int pct = (unsigned int) ((got * 100u) / expected);
+						if (pct >= (logged_pct + RF_PROGRESS_STEP)) {
+							rf_log_progress(got, expected);
+							logged_pct = pct;
+						}
+					}
+					else if (got >= (logged_got + 1024u * 1024u)) {
+						// nothing to measure against: a line per megabyte then
+						rf_log_progress(got, 0);
+						logged_got = got;
+					}
+					else {
+					}
+				}
+			}
+			else {
+			}
+		} while ((rc == 0) || ((rc == -1) && (errno == EINTR)));
+
+		char *body = rf_read_file(code_path);
+		if (body != NULL) {
+			code = strtol(body, NULL, 10);
+			free(body);
+		}
+	}
+	else {
+		// fork failed; nothing was transferred
+	}
+	remove(code_path);
+	return code;
+}
+
+
 // Common helper: writes *cfg* to a temp config file, runs curl, removes the config
 // file (it may hold the bearer token) and returns the HTTP status code.
 static long rf_curl_with_cfg(const char *cfg) {
@@ -153,6 +257,20 @@ static long rf_curl_with_cfg(const char *cfg) {
 	long code = 0;
 	if (rf_write_file(cfg_path, cfg)) {
 		code = rf_run_curl(cfg_path);
+	}
+	remove(cfg_path);
+	return code;
+}
+
+
+// As rf_curl_with_cfg(), for a download whose progress is logged.
+static long rf_curl_logged_with_cfg(const char *cfg, const char *dest_path,
+		uint64_t expected) {
+	char cfg_path[256];
+	rf_tmp_path(cfg_path, sizeof(cfg_path), "cfg");
+	long code = 0;
+	if (rf_write_file(cfg_path, cfg)) {
+		code = rf_run_curl_logged(cfg_path, dest_path, expected);
 	}
 	remove(cfg_path);
 	return code;
@@ -511,12 +629,14 @@ static bool rf_versions_reserve(remotefiles_product_st *p) {
 
 /// @brief: Starts a product for directory *rel* of *fleet* ("" for the fleet's
 /// own folder). Returns NULL when out of memory.
-static remotefiles_product_st *rf_new_product(const char *fleet,
-		const char *rel, bool prefix_names) {
+static remotefiles_product_st *rf_new_product(uint8_t fleet_i,
+		const char *rel) {
+	const char *fleet = remotefiles_get_fleet(fleet_i);
 	remotefiles_product_st *p = NULL;
 	if (rf_products_reserve()) {
 		p = &rf_products[rf_product_count];
 		memset(p, 0, sizeof(*p));
+		p->fleet = fleet_i;
 		// The id doubles as the server-relative path every download of this
 		// product is built from, so it carries the fleet and the whole nested
 		// path, untruncated.
@@ -527,13 +647,12 @@ static remotefiles_product_st *rf_new_product(const char *fleet,
 			strncpy(p->id, fleet, sizeof(p->id) - 1);
 		}
 		// Nested directories are named by their path relative to the fleet, so
-		// "uv0d/rev2" reads as what it is. The fleet's own folder is named
-		// after the fleet, prefixed or not - it is already the fleet.
+		// "uv0d/rev2" reads as what it is. The fleet's own folder is named after
+		// the fleet - it is already the fleet. The fleet is not prefixed onto the
+		// others: the panel shows one fleet per tab, so the name would repeat
+		// what the tab above it says.
 		if (rel[0] == '\0') {
 			strncpy(p->name, fleet, sizeof(p->name) - 1);
-		}
-		else if (prefix_names) {
-			snprintf(p->name, sizeof(p->name), "%.60s / %.60s", fleet, rel);
 		}
 		else {
 			strncpy(p->name, rel, sizeof(p->name) - 1);
@@ -558,8 +677,9 @@ static remotefiles_product_st *rf_new_product(const char *fleet,
 /// readable as an array. Only the top-level call cares; nested calls pass NULL,
 /// because one unreadable subdirectory must not blank the whole panel.
 /// @return: the HTTP status of *this* directory's listing.
-static long rf_walk_dir(const char *fleet, const char *rel, bool prefix_names,
+static long rf_walk_dir(uint8_t fleet_i, const char *rel,
 		unsigned int depth, bool *parsed) {
+	const char *fleet = remotefiles_get_fleet(fleet_i);
 	if (parsed != NULL) {
 		*parsed = false;
 	}
@@ -586,7 +706,7 @@ static long rf_walk_dir(const char *fleet, const char *rel, bool prefix_names,
 				continue;
 			}
 			if (p == NULL) {
-				p = rf_new_product(fleet, rel, prefix_names);
+				p = rf_new_product(fleet_i, rel);
 				if (p == NULL) {
 					break;
 				}
@@ -625,7 +745,7 @@ static long rf_walk_dir(const char *fleet, const char *rel, bool prefix_names,
 				else {
 					snprintf(child, sizeof(child), "%s", dname);
 				}
-				rf_walk_dir(fleet, child, prefix_names, depth + 1, NULL);
+				rf_walk_dir(fleet_i, child, depth + 1, NULL);
 			}
 		}
 	}
@@ -643,11 +763,10 @@ static long rf_walk_dir(const char *fleet, const char *rel, bool prefix_names,
 ///
 /// @return: false only when the fleet could not be listed at all. A failure
 /// further down the tree is skipped quietly.
-static bool rf_list_fleet(const char *fleet, bool prefix_names, char *err,
-		unsigned int err_len) {
+static bool rf_list_fleet(uint8_t fleet_i, char *err, unsigned int err_len) {
 	bool ret = false;
 	bool parsed = false;
-	long code = rf_walk_dir(fleet, "", prefix_names, 0, &parsed);
+	long code = rf_walk_dir(fleet_i, "", 0, &parsed);
 	if (code != 200) {
 		rf_http_err(code, "listing files", err, err_len);
 	}
@@ -676,14 +795,13 @@ bool remotefiles_list(char *err, unsigned int err_len) {
 	}
 	else {
 		// One account may hold several fleets. Listing them all keeps the file
-		// view whole rather than making the user pick a fleet first; the fleet
-		// is shown in the product name only when there is more than one, so the
-		// common single-fleet account reads exactly as it did before.
-		bool prefix = (rf_fleet_count > 1);
+		// view whole rather than making the user pick a fleet first; each
+		// product remembers which fleet it came from, which is what the panel
+		// puts on a tab of its own.
 		char first_err[256] = { '\0' };
 		for (uint8_t i = 0; i < rf_fleet_count; i++) {
 			char one_err[256] = { '\0' };
-			if (rf_list_fleet(rf_fleets[i], prefix, one_err, sizeof(one_err))) {
+			if (rf_list_fleet(i, one_err, sizeof(one_err))) {
 				// a single readable fleet is enough for the list to be usable
 				ret = true;
 			}
@@ -705,7 +823,7 @@ bool remotefiles_list(char *err, unsigned int err_len) {
 
 
 bool remotefiles_download(const char *path, const char *dest_path,
-		char *err, unsigned int err_len) {
+		uint64_t size, char *err, unsigned int err_len) {
 	bool ret = false;
 	if (!rf_logged_in) {
 		rf_err(err, err_len, "Not logged in.");
@@ -728,17 +846,103 @@ bool remotefiles_download(const char *path, const char *dest_path,
 				"output = \"%s\"\n"
 				"write-out = \"%%{http_code}\"\n",
 				rf_url, epath, dest);
-		long code = rf_curl_with_cfg(cfg);
+
+		// The transfer is the one thing here that takes long enough for the user
+		// to wonder whether anything is happening, so it says what it is doing on
+		// stdout - which is the terminal, and the UI's log view.
+		const char *base = strrchr(path, '/');
+		base = (base != NULL) ? (base + 1) : path;
+		if (size > 0) {
+			printf("Downloading '%s' (%llu KB) to '%s'...\n", base,
+					(unsigned long long) (size / 1024u), dest_path);
+		}
+		else {
+			printf("Downloading '%s' to '%s'...\n", base, dest_path);
+		}
+		fflush(stdout);
+
+		long code = rf_curl_logged_with_cfg(cfg, dest_path, size);
 
 		if (code == 200) {
+			printf("Downloaded '%s'.\n", dest_path);
+			fflush(stdout);
 			ret = true;
 		}
 		else {
 			rf_http_err(code, "downloading the file", err, err_len);
 			remove(dest_path);
+			printf("Download of '%s' failed: %s\n", base,
+					(err != NULL) ? err : "");
+			fflush(stdout);
 		}
 	}
 	return ret;
+}
+
+
+// The asynchronous download's job and its outcome. One at a time, so a single
+// set of these serves: the task is started by remotefiles_download_async() and
+// read back by remotefiles_download_result() once it has finished.
+static char rf_async_path[512];
+static char rf_async_dest[1024];
+static uint64_t rf_async_size;
+static bool rf_async_finished = true;
+static bool rf_async_ok;
+static char rf_async_err[256];
+
+
+// Task body: the transfer, off the caller's thread. Everything it says goes to
+// stdout, which is where the user reads it - in the terminal, and in the UI's
+// log view, which keeps updating because this is not the UI's own task.
+static void rf_download_task(void *ptr) {
+	(void) ptr;
+	rf_async_err[0] = '\0';
+	rf_async_ok = remotefiles_download(rf_async_path, rf_async_dest,
+			rf_async_size, rf_async_err, sizeof(rf_async_err));
+	rf_async_finished = true;
+	uv_rtos_task_delete(NULL);
+}
+
+
+void remotefiles_download_async(const char *path, const char *dest_path,
+		uint64_t size) {
+	if (!rf_async_finished) {
+		// a download is already running; starting a second one would have the
+		// two of them writing over each other's job here
+	}
+	else {
+		strncpy(rf_async_path, (path != NULL) ? path : "",
+				sizeof(rf_async_path) - 1);
+		rf_async_path[sizeof(rf_async_path) - 1] = '\0';
+		strncpy(rf_async_dest, (dest_path != NULL) ? dest_path : "",
+				sizeof(rf_async_dest) - 1);
+		rf_async_dest[sizeof(rf_async_dest) - 1] = '\0';
+		rf_async_size = size;
+		rf_async_ok = false;
+		// marked in-progress before the task starts, so a caller can poll
+		// immediately
+		rf_async_finished = false;
+		uv_rtos_task_create(&rf_download_task, "rf_download",
+				UV_RTOS_MIN_STACK_SIZE * 5, NULL,
+				UV_RTOS_IDLE_PRIORITY + 1, NULL);
+	}
+}
+
+
+bool remotefiles_download_is_finished(void) {
+	return rf_async_finished;
+}
+
+
+bool remotefiles_download_result(char *dest, unsigned int dest_len,
+		char *err, unsigned int err_len) {
+	if ((dest != NULL) && (dest_len > 0)) {
+		snprintf(dest, dest_len, "%s", rf_async_ok ? rf_async_dest : "");
+	}
+	if ((err != NULL) && (err_len > 0)) {
+		snprintf(err, err_len, "%s", rf_async_ok ? "" : rf_async_err);
+	}
+	return rf_async_ok;
 }
 
 
@@ -814,10 +1018,35 @@ const remotefiles_product_st *remotefiles_get_product(uint16_t index) {
 	return NULL;
 }
 
-bool remotefiles_download(const char *path, const char *dest_path,
-		char *err, unsigned int err_len) {
+void remotefiles_download_async(const char *path, const char *dest_path,
+		uint64_t size) {
 	(void) path;
 	(void) dest_path;
+	(void) size;
+}
+
+bool remotefiles_download_is_finished(void) {
+	return true;
+}
+
+bool remotefiles_download_result(char *dest, unsigned int dest_len,
+		char *err, unsigned int err_len) {
+	if ((dest != NULL) && (dest_len > 0)) {
+		dest[0] = '\0';
+	}
+	if ((err != NULL) && (err_len > 0)) {
+		strncpy(err, "The server file browser is not available in the Windows "
+				"build yet.", err_len - 1);
+		err[err_len - 1] = '\0';
+	}
+	return false;
+}
+
+bool remotefiles_download(const char *path, const char *dest_path,
+		uint64_t size, char *err, unsigned int err_len) {
+	(void) path;
+	(void) dest_path;
+	(void) size;
 	(void) err;
 	(void) err_len;
 	return false;

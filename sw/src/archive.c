@@ -27,6 +27,11 @@
 #else
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <time.h>
 #include <errno.h>
 #endif
 
@@ -50,8 +55,12 @@ bool archive_mktempdir(const char *prefix, char *dest, size_t dest_len) {
 		}
 	}
 #else
+	// The owner's process id goes into the name (as it does on Windows), so that
+	// a later run can tell a directory belonging to a uvcan which is still
+	// running from one a killed run left behind. See
+	// archive_sweep_stale_tmpdirs().
 	char tmpl[1024];
-	snprintf(tmpl, sizeof(tmpl), "/tmp/%s.XXXXXX", prefix);
+	snprintf(tmpl, sizeof(tmpl), "/tmp/%s.%ld.XXXXXX", prefix, (long) getpid());
 	if (mkdtemp(tmpl) != NULL) {
 		strncpy(dest, tmpl, dest_len - 1);
 		dest[dest_len - 1] = '\0';
@@ -113,20 +122,140 @@ void archive_rmtree(const char *dir) {
 }
 
 
+#if !CONFIG_TARGET_WIN
+// How old a temporary directory whose name does not say who made it has to be
+// before it is swept: long enough that no run still going on can own it.
+#define TMPDIR_STALE_AGE_S		(24 * 60 * 60)
+
+// The temporary directories uvcan creates, named "<prefix><pid>.XXXXXX" under
+// /tmp. Nothing outside this list is ever swept.
+static const char *const tmpdir_prefixes[] = {
+		"uvcan_uvsys.", "uvcan_uvdev.", "uvcan_pkg." };
+
+
+// Recognises one of our temporary directory names. Returns the process id part
+// of *name* -- the digits which follow the prefix -- or "" when the name carries
+// no process id (a directory from a uvcan older than this naming), or NULL when
+// the name is not one of ours at all.
+static const char *tmpdir_pid_part(const char *name) {
+	const char *ret = NULL;
+	for (size_t i = 0; (i < (sizeof(tmpdir_prefixes) /
+			sizeof(tmpdir_prefixes[0]))) && (ret == NULL); i++) {
+		size_t len = strlen(tmpdir_prefixes[i]);
+		if (strncmp(name, tmpdir_prefixes[i], len) == 0) {
+			// only digits followed by the mkdtemp part count as a process id;
+			// the random part of an old-style name can start with digits too
+			const char *p = &name[len];
+			size_t digits = strspn(p, "0123456789");
+			ret = ((digits != 0u) && (p[digits] == '.')) ? p : "";
+		}
+		else {
+		}
+	}
+	return ret;
+}
+
+
+// Reads /proc/<pid>/comm (with *pid* NULL for our own) into *dest*. Plain
+// open()/read() rather than stdio: this also runs before the scheduler is up,
+// and there is no need to pull a FILE buffer in for 16 bytes.
+static bool proc_comm(const char *pid, char *dest, size_t dest_len) {
+	bool ret = false;
+	char path[64];
+	snprintf(path, sizeof(path), "/proc/%s/comm",
+			(pid != NULL) ? pid : "self");
+	int fd = open(path, O_RDONLY);
+	if (fd >= 0) {
+		ssize_t n = read(fd, dest, dest_len - 1);
+		while ((n < 0) && (errno == EINTR)) {
+			n = read(fd, dest, dest_len - 1);
+		}
+		if (n > 0) {
+			dest[n] = '\0';
+			dest[strcspn(dest, "\n")] = '\0';
+			ret = true;
+		}
+		else {
+		}
+		close(fd);
+	}
+	else {
+	}
+	return ret;
+}
+
+
+// True when the process id at the front of *pidpart* is a uvcan which is still
+// running. The id alone does not say that: ids are reused, and the one in a
+// leftover directory's name may by now belong to anything at all. The program's
+// name in /proc tells uvcan from a stranger, and comparing it against our own
+// rather than against a literal keeps working for a renamed binary.
+static bool tmpdir_owner_is_alive(const char *pidpart) {
+	bool ret = false;
+	char pid[16];
+	size_t digits = strspn(pidpart, "0123456789");
+	if ((digits != 0u) && (digits < sizeof(pid))) {
+		memcpy(pid, pidpart, digits);
+		pid[digits] = '\0';
+		char self[64];
+		char other[64];
+		if (proc_comm(NULL, self, sizeof(self)) &&
+				proc_comm(pid, other, sizeof(other))) {
+			ret = (strcmp(self, other) == 0);
+		}
+		else {
+		}
+	}
+	else {
+	}
+	return ret;
+}
+#endif
+
+
 void archive_sweep_stale_tmpdirs(void) {
 #if !CONFIG_TARGET_WIN
-	// A hard crash (SIGSEGV / SIGKILL) and the HAL's SIGINT handler (which uses
-	// _exit()) skip atexit, so an extraction directory can be left behind. Sweep
-	// such leftovers from earlier runs. The age guard (older than a day) keeps
-	// this from disturbing the fresh directories of another uvcan instance that
-	// may be running concurrently (CLI alongside an open UI).
-	if (system("find /tmp -maxdepth 1 -type d "
-			"\\( -name 'uvcan_uvsys.*' -o -name 'uvcan_uvdev.*' \\) "
-			"-mmin +1440 -exec rm -rf {} + 2>/dev/null")) {
-		// best effort; nothing to do if the sweep fails
+	// A hard crash (SIGSEGV / SIGKILL) skips both atexit and the SIGINT/SIGTERM
+	// cleanup, so an extraction directory - or the directory the server files
+	// window downloads its packages into - can be left behind. Sweep such
+	// leftovers from earlier runs.
+	DIR *dir = opendir("/tmp");
+	if (dir != NULL) {
+		struct dirent *entry = readdir(dir);
+		while (entry != NULL) {
+			const char *pidpart = tmpdir_pid_part(entry->d_name);
+			char path[1100];
+			struct stat st;
+			if (pidpart == NULL) {
+				// not one of ours
+			}
+			else if (snprintf(path, sizeof(path), "/tmp/%s", entry->d_name) < 0) {
+			}
+			else if ((stat(path, &st) != 0) || !S_ISDIR(st.st_mode)) {
+			}
+			else if (tmpdir_owner_is_alive(pidpart)) {
+				// another uvcan is running and this is its directory
+			}
+			else if ((*pidpart == '\0') &&
+					((time(NULL) - st.st_mtime) < TMPDIR_STALE_AGE_S)) {
+				// No owner in the name: a directory from a uvcan older than this
+				// naming, or the staging directory savesys assembles a package
+				// in. Nothing says whether it is in use, so the age guard is all
+				// that keeps this from pulling the ground from under a run that
+				// is going on right now.
+			}
+			else {
+				archive_rmtree(path);
+			}
+			entry = readdir(dir);
+		}
+		closedir(dir);
+	}
+	else {
+		// no /tmp to sweep; nothing to do
 	}
 #else
-	// No equally safe one-liner on Windows; rely on the atexit cleanup for normal
+	// No equally safe sweep on Windows; rely on the atexit cleanup for normal
 	// exits and on Windows' own %TEMP% housekeeping for crash leftovers.
 #endif
 }

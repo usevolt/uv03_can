@@ -66,6 +66,9 @@ void credentials_init(void);
 /// directory is known from the environment, in which case *out* is untouched.
 /// Used for the other small per-user files uvcan keeps beside the account, e.g.
 /// the MQTT broker's CA certificate.
+///
+/// *filename* may name a subdirectory of its own ("certs/uvca.crt"); that
+/// directory is created too.
 bool credentials_config_path(char *out, size_t len, const char *filename);
 
 

@@ -43,6 +43,54 @@ The application uses a global `struct _dev_st dev` instance (defined via `CONFIG
 
 **Task system** (`src/main.c`): Up to 5 concurrent tasks with mutex-based round-robin execution. Commands register step callbacks that run each cycle.
 
+**Help** (`src/help.c`): `--help` lists every command; given the name of one
+(`--help loadparam`, `--help=loadparam`, `-h loadparam`, `--help --loadparam`,
+case-insensitive, short names accepted) it prints only that command's entry.
+getopt does not attach a space-separated value to an optional-argument option,
+so the name is taken from the next unconsumed token -- but only when it really
+names a command, which is what keeps `--loadbin fw.bin --help` printing the full
+listing instead of erroring on the file name. The listing is marked up: the
+option names are printed bold, and so are the `*name*` / `**name**` command
+references the descriptions are written with (the asterisks themselves are
+dropped). Write new descriptions with those markers.
+
+### Node id selection
+
+Every command which talks to a device gets its node id from one of three places,
+in this order: the `<file>:<nodeid>` postfix of the argument, a `--nodeid` /
+`--forcenodeid` option, or the device's own node id (from its `.uvdev` package or
+the `.uvsys` system file).
+
+- `--dev`, `--loadbin` (and the whole `loadbin` family), `--loadmedia` and
+  `--loadparam` all take the postfix, split by the shared
+  `cmdline_parse_nodeid_arg()`. For the load commands
+  `cmdline_load_arg_nodeid()` resolves the argument and its postfix together, in
+  both the attached and the space-separated form, for raw files as well as for
+  `.uvdev` / `.uvsys` packages. `--loadparam params.json:0xd` means the same as
+  `--forcenodeid 0xd --loadparam params.json`; an argument holding nothing but
+  the postfix (`--loadbin :0x22`) selects the node and operates on the devices
+  already loaded with `--dev` / `--sys`.
+- The selection lives in `system_st` (`forced_nodeid_set` / `forced_nodeid` /
+  `forcenodeid`) and is captured into `system_nodeids_st` by
+  `system_nodeids_save()`. The command callbacks all run while the command line
+  is parsed but the work runs later from their tasks, so each load command saves
+  the selection in effect at its own place on the command line and restores it
+  for the duration of its dispatch. That is what makes the node ids positional.
+- `--nodeid` only selects the node to talk to. `--forcenodeid` in addition
+  overrides the node id a device package or system file carries:
+  `system_apply_forced_nodeid()` writes it into the devices which `loadbin`,
+  `loadmedia` and `loadparam` are about to operate on. A single node id cannot
+  name one of several devices, so an operation spanning more than one device
+  reports that the forced node id is ignored and drops the selection rather than
+  writing every device to that one node.
+- `--forcenodeid` also lets a raw `--loadparam` file reprogram the device's node
+  id from the file's `NODEID` (after a confirmation prompt). A device's *bundled*
+  parameters never do: `load_device_db()` targets the device's own node id and
+  clears the flag.
+- The selection stops at the command line. `ui_task()` calls
+  `system_clear_forced_nodeid()` before the UI opens, so a device the user picks
+  there is always addressed by its own node id.
+
 ### Key Modules
 
 | Module | File | Purpose |

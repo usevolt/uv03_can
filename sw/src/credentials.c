@@ -98,8 +98,22 @@ bool credentials_config_path(char *out, size_t len, const char *filename) {
 	}
 #endif
 	if (ret) {
-		cred_mkdir_p(dir);
 		snprintf(out, len, "%s%c%s", dir, CRED_SEP, filename);
+		// *filename* may name a subdirectory of its own ("certs/uvca.crt"),
+		// so what has to exist is everything up to the last separator rather
+		// than always *dir* - the caller opens the path it is handed here.
+		char parent[1024];
+		strncpy(parent, out, sizeof(parent) - 1);
+		parent[sizeof(parent) - 1] = '\0';
+		char *sep = strrchr(parent, '/');
+		char *back = strrchr(parent, '\\');
+		if ((sep == NULL) || ((back != NULL) && (back > sep))) {
+			sep = back;
+		}
+		if (sep != NULL) {
+			*sep = '\0';
+		}
+		cred_mkdir_p(parent);
 	}
 	return ret;
 }

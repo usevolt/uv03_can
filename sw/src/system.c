@@ -61,11 +61,13 @@ void system_reset(system_st *this) {
 }
 
 
-// Temp directories the loaded .uvsys packages were extracted into. Their .uvdev
-// files back the loaded devices (device->filepath points into them), so they must
-// outlive the devices. Because loading a system file appends to (rather than
-// replaces) the device list, several may be alive at once; they are all removed
-// at program exit.
+// The temporary directories this run created: the ones the loaded .uvsys packages
+// were extracted into, plus whatever system_mktempdir() was asked for elsewhere
+// (the packages the server files window downloads). The extraction dirs hold the
+// .uvdev files backing the loaded devices (device->filepath points into them), so
+// they must outlive the devices. Because loading a system file appends to (rather
+// than replaces) the device list, several may be alive at once; they are all
+// removed at program exit.
 #define SYSFILE_TMPDIR_MAX		16
 static char sysfile_tmpdirs[SYSFILE_TMPDIR_MAX][1024];
 static uint8_t sysfile_tmpdir_count;
@@ -108,6 +110,17 @@ void system_init_tmp_cleanup(void) {
 
 void system_remove_tmpdirs(void) {
 	sysfile_remove_all_tmpdirs();
+}
+
+
+bool system_mktempdir(const char *prefix, char *dest, size_t dest_len) {
+	bool ret = archive_mktempdir(prefix, dest, dest_len);
+	if (ret) {
+		sysfile_track_tmpdir(dest);
+	}
+	else {
+	}
+	return ret;
 }
 
 

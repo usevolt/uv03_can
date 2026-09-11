@@ -78,6 +78,11 @@ typedef struct {
 	// rather than just one name.
 	char id[256];
 	char name[128];
+	// Which of this account's fleets the product came from, as an index into
+	// remotefiles_get_fleet(). The name does not carry the fleet - the panel
+	// shows one fleet per tab, and prefixing it there would only say twice what
+	// the tab already says.
+	uint8_t fleet;
 	// Grown as files are found; owned by remotefiles.c and valid until the next
 	// remotefiles_list() or remotefiles_logout(). Callers may read it (and hold
 	// pointers into `name`) only for that long.
@@ -141,9 +146,36 @@ const remotefiles_product_st *remotefiles_get_product(uint16_t index);
 
 
 /// @brief: Downloads the file at server-relative *path* to the local *dest_path*.
-/// When the version carries a SHA-256 it is verified after the transfer. Returns
-/// true on success; fills *err* on failure (including a checksum mismatch).
+/// Returns true on success; fills *err* on failure.
+///
+/// Blocks until the transfer is done, logging what it is doing and how far it
+/// has got to stdout, which is both the terminal and the UI's log view. *size*
+/// is the file's size as the listing reported it, which is what the percentage
+/// is measured against; pass 0 when it is not known.
 bool remotefiles_download(const char *path, const char *dest_path,
+		uint64_t size, char *err, unsigned int err_len);
+
+
+/// @brief: Starts remotefiles_download() on a task of its own and returns at
+/// once, so the caller's UI keeps drawing (and showing the transfer's log) while
+/// the file comes down. Poll remotefiles_download_is_finished(), then take the
+/// outcome from remotefiles_download_result().
+///
+/// One download at a time: starting another while one runs is the caller's
+/// mistake, and is refused (the running one is left alone).
+void remotefiles_download_async(const char *path, const char *dest_path,
+		uint64_t size);
+
+
+/// @brief: True when no asynchronous download is running, i.e. the one started
+/// with remotefiles_download_async() is done (or none was ever started).
+bool remotefiles_download_is_finished(void);
+
+
+/// @brief: How the last asynchronous download ended. Returns true when it
+/// succeeded, with *dest* holding the local path of the file it wrote; on
+/// failure *err* holds the reason, as a sentence fit for an error dialog.
+bool remotefiles_download_result(char *dest, unsigned int dest_len,
 		char *err, unsigned int err_len);
 
 
