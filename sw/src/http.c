@@ -23,8 +23,14 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#if !CONFIG_TARGET_WIN
+// fork()/waitpid() and the scheduler delay, for the progress-logged download
+// only. Everything else here is written against what mingw has too, because
+// the Windows build compiles this file even though nothing on it fetches
+// anything yet.
 #include <sys/wait.h>
 #include <uv_rtos.h>
+#endif
 
 
 // How often a running download's progress is logged, and how many percentage
@@ -147,6 +153,8 @@ static long http_run_curl(const char *cfg_path, const char *tag) {
 }
 
 
+#if !CONFIG_TARGET_WIN
+
 // Logs one progress line for a transfer that has *got* of *expected* bytes
 // (*expected* 0 when the size is not known in advance).
 static void http_log_progress(uint64_t got, uint64_t expected) {
@@ -239,6 +247,9 @@ static long http_run_curl_logged(const char *cfg_path, const char *tag,
 }
 
 
+#endif /* !CONFIG_TARGET_WIN -- the progress-logged download's machinery */
+
+
 long uvhttp_curl(const char *cfg) {
 	char cfg_path[256];
 	uvhttp_tmp_path(cfg_path, sizeof(cfg_path), "http", "cfg");
@@ -251,6 +262,8 @@ long uvhttp_curl(const char *cfg) {
 }
 
 
+#if !CONFIG_TARGET_WIN
+
 long uvhttp_curl_logged(const char *cfg, const char *dest_path,
 		uint64_t expected) {
 	char cfg_path[256];
@@ -262,6 +275,20 @@ long uvhttp_curl_logged(const char *cfg, const char *dest_path,
 	remove(cfg_path);
 	return code;
 }
+
+#else /* CONFIG_TARGET_WIN */
+
+// No fork() to watch the destination file grow with, so the transfer runs
+// silently. Nothing on the Windows build downloads anything yet; when
+// something does, the progress is what it loses, not the download.
+long uvhttp_curl_logged(const char *cfg, const char *dest_path,
+		uint64_t expected) {
+	(void) dest_path;
+	(void) expected;
+	return uvhttp_curl(cfg);
+}
+
+#endif
 
 
 void uvhttp_err(char *err, unsigned int err_len, const char *msg) {
