@@ -166,9 +166,12 @@ PKG_FULL_NAME := $(APP_NAME)_$(GIT_REV_ID)-g$(GIT_HASH)$(GIT_DIRTY)
 
 
 
-CFLAGS := $(PLATFORM_CFLAGS) -D$(TARGET)=1 -D__UV_PROJECT_NAME=$(FULL_NAME) -D__UV_PROGRAM_VERSION=$(GIT_REV_ID) $(INCLUDEDIRS) -D$(CORE) -$(O) -g3 -Wall -fmessage-length=0 -fno-builtin -ffunction-sections -fdata-sections
+# __UV_APP_VERSION is a CFLAG, not an LDFLAG: -D on the link command defines
+# nothing (there is no source being compiled there), and --version and the
+# self-updater need the string in the objects themselves.
+CFLAGS := $(PLATFORM_CFLAGS) -D$(TARGET)=1 -D__UV_PROJECT_NAME=$(FULL_NAME) -D__UV_PROGRAM_VERSION=$(GIT_REV_ID) -D__UV_APP_VERSION=\"$(GIT_VERSION)\" $(INCLUDEDIRS) -D$(CORE) -$(O) -g3 -Wall -fmessage-length=0 -fno-builtin -ffunction-sections -fdata-sections
 
-LDFLAGS := -D__UV_APP_VERSION=\"$(GIT_VERSION)\"
+LDFLAGS :=
 
 
 
@@ -191,7 +194,7 @@ PKGDIR  := $(BUILDDIR)/$(PKGNAME)
 PRODDIR     := ../prod
 PUBLISH_TAR := $(PRODDIR)/$(PKG_FULL_NAME)-linux.tar.gz
 
-.PHONY: linux linux-package linux-package-stage win windows win-package win-package-stage image post-build clean install uninstall publish
+.PHONY: linux linux-package linux-package-stage win windows win-package win-package-stage image post-build clean install uninstall package publish
 
 # Bare 'make' builds the Linux target.
 linux:
@@ -257,18 +260,130 @@ win-package-stage:
 # OS targets cannot coexist there — we 'clean' between them (and stash the win
 # zip in prod before the second clean removes it). PKGNAME/PKGDIR/PKG_FULL_NAME are
 # OS-independent, so the paths resolve the same in either sub-make.
-publish:
+package:
 	@mkdir -p "$(PRODDIR)"
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory OS=win win-package
 	@cp "$(PKGDIR).zip" "$(PRODDIR)/"
 	@$(MAKE) --no-print-directory clean
 	@echo ""
-	@echo "Publishing to $(PRODDIR)"
+	@echo "Packaging into $(PRODDIR)"
 	@$(MAKE) --no-print-directory linux-package
+	@$(MAKE) --no-print-directory update-manifest
 	@echo "Created:"
+	@echo "    $(PUBLISH_BIN)"
+	@echo "    $(PUBLISH_MANIFEST)"
 	@echo "    $(PUBLISH_TAR)"
 	@echo "    $(PRODDIR)/$(PKGNAME).zip"
+
+# ---- publish: push the packaged files to the public shelf on the file server --
+#
+# uvcan goes on the file server's PUBLIC path, which is served to anyone with no
+# credentials: uvcan is free software, the people who need it are not all
+# account holders, and the self-updater in a freshly downloaded uvcan has no
+# account to log in with. That path is the fleet named $(UPLOAD_FLEET), which
+# the Caddyfile answers itself ahead of the generated per-fleet blocks; writing
+# to it is an ordinary uvupload.
+#
+# What goes up, and why each of them:
+#   uvcan_<build>         the bare Linux binary, which is what --update pulls
+#   latest.json           the manifest --checkupdate reads
+#   *-linux.tar.gz        the whole Linux install (binary + install.sh +
+#                         packaging/), which is what a FIRST install needs and
+#                         what an update that changes the desktop integration
+#                         needs re-run
+#   *.zip                 the Windows package
+#   get-uvcan.sh          the one-command first install on Linux, which reads
+#                         the manifest to find the package above
+#   get-uvcan.ps1         the same for Windows, and the Windows UPDATER too:
+#                         uvcan.exe cannot replace itself (it is a folder of
+#                         files, not one binary), so re-running the script is
+#                         how a Windows install moves forward
+UPLOAD_FLEET := pub
+UPLOAD_SUBDIR := uvcan
+UVUPLOAD := uvupload
+# The binary under the name it is published as. The build number is what the
+# updater compares, and the hash is what pins it to one commit; both come from
+# the same PKG_FULL_NAME the packages are named after.
+PUBLISH_BIN := $(PRODDIR)/uvcan_$(GIT_REV_ID)-g$(GIT_HASH)
+PUBLISH_MANIFEST := $(PRODDIR)/latest.json
+# Recursively assigned (=, not :=) on purpose, so `make package publish` sees
+# what package has just created instead of the empty parse-time expansion.
+# Named exactly, not globbed: $(PRODDIR) accumulates the packages of every
+# release ever built here, and a glob would push all of them up every time.
+PUBLISH_FILES = $(wildcard $(PUBLISH_BIN)) $(wildcard $(PUBLISH_MANIFEST)) \
+	$(wildcard $(PUBLISH_TAR)) $(wildcard $(PRODDIR)/$(PKGNAME).zip) \
+	packaging/get-uvcan.sh packaging/get-uvcan.ps1
+# Set YES=1 for an unattended run: it answers uvupload's overwrite prompt.
+UPLOAD_YES = $(if $(YES),-y,)
+
+# Copies the built binary under its published name and writes the manifest
+# beside it. Run by 'package'; also runnable on its own after a plain 'make'.
+#
+# A -dirty build is refused: what is published has to be one commit that anyone
+# can check out again, and the build number of a dirty tree says nothing about
+# what is actually in it.
+.PHONY: update-manifest
+update-manifest:
+	@if [ -n "$(GIT_DIRTY)" ]; then \
+		echo "Refusing to publish a -dirty build: commit first."; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(BINARY)" ]; then \
+		echo "No $(BINARY) to publish — run 'make' first."; \
+		exit 1; \
+	fi
+	@mkdir -p "$(PRODDIR)"
+	@cp "$(BINARY)" "$(PUBLISH_BIN)"
+	@chmod 0755 "$(PUBLISH_BIN)"
+	@printf '{\n' > "$(PUBLISH_MANIFEST)"
+	@printf '\t"version": %s,\n' "$(GIT_REV_ID)" >> "$(PUBLISH_MANIFEST)"
+	@printf '\t"name": "%s",\n' "$(GIT_VERSION)" >> "$(PUBLISH_MANIFEST)"
+	@printf '\t"file": "%s",\n' "$$(basename $(PUBLISH_BIN))" >> "$(PUBLISH_MANIFEST)"
+	@printf '\t"sha256": "%s",\n' "$$(sha256sum $(PUBLISH_BIN) | cut -d' ' -f1)" >> "$(PUBLISH_MANIFEST)"
+	@printf '\t"size": %s,\n' "$$(stat -c %s $(PUBLISH_BIN))" >> "$(PUBLISH_MANIFEST)"
+	@printf '\t"released": "%s",\n' "$$(date -u +%Y-%m-%d)" >> "$(PUBLISH_MANIFEST)"
+	@# The Linux install package, for get-uvcan.sh. Named here rather than
+	@# guessed from a directory listing: the shelf keeps every release, and the
+	@# newest by name is not the newest by build number. Empty when this run
+	@# built no package (plain 'make' then 'make update-manifest'), which is
+	@# what makes get-uvcan.sh say so instead of downloading nothing.
+	@printf '\t"package": "%s",\n' \
+		"$$([ -f "$(PUBLISH_TAR)" ] && basename "$(PUBLISH_TAR)")" >> "$(PUBLISH_MANIFEST)"
+	@printf '\t"package_sha256": "%s",\n' \
+		"$$([ -f "$(PUBLISH_TAR)" ] && sha256sum "$(PUBLISH_TAR)" | cut -d' ' -f1)" >> "$(PUBLISH_MANIFEST)"
+	@# The Windows package, for get-uvcan.ps1, which is both the installer and
+	@# the updater there.
+	@printf '\t"package_win": "%s",\n' \
+		"$$([ -f "$(PRODDIR)/$(PKGNAME).zip" ] && echo "$(PKGNAME).zip")" >> "$(PUBLISH_MANIFEST)"
+	@printf '\t"package_win_sha256": "%s",\n' \
+		"$$([ -f "$(PRODDIR)/$(PKGNAME).zip" ] && sha256sum "$(PRODDIR)/$(PKGNAME).zip" | cut -d' ' -f1)" >> "$(PUBLISH_MANIFEST)"
+	@printf '\t"notes": "%s"\n' "$(NOTES)" >> "$(PUBLISH_MANIFEST)"
+	@printf '}\n' >> "$(PUBLISH_MANIFEST)"
+	@echo "Manifest for build $(GIT_REV_ID) ($(GIT_VERSION)):"
+	@cat "$(PUBLISH_MANIFEST)"
+
+publish:
+	@if ! command -v $(UVUPLOAD) >/dev/null 2>&1; then \
+		echo "publish: '$(UVUPLOAD)' is not on PATH."; \
+		echo "         Install it once per workstation, from the uv3b_iotbrkr checkout:"; \
+		echo "           ./install_uvupload.sh            # or --user for ~/.local/bin"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(PUBLISH_MANIFEST)" ]; then \
+		echo "publish: no $(PUBLISH_MANIFEST) — nothing to publish."; \
+		echo "         Build the packages first:  make package"; \
+		exit 1; \
+	fi
+	@files="$(PUBLISH_FILES)"; \
+	echo ""; \
+	echo "=== publish: $(UPLOAD_FLEET)/$(UPLOAD_SUBDIR) (public — readable by anyone) ==="; \
+	for f in $$files; do echo "    $$(basename $$f)"; done; \
+	echo ""; \
+	$(UVUPLOAD) $(UPLOAD_YES) -d $(UPLOAD_SUBDIR) $(UPLOAD_FLEET) $$files; \
+	echo ""; \
+	echo "=== published to https://files.usevolt.fi/$(UPLOAD_FLEET)/$(UPLOAD_SUBDIR)/ ==="; \
+	echo ""
 
 # Internal target that performs the actual build for the selected OS.
 image: $(BINARY)

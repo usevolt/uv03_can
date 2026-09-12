@@ -18,6 +18,13 @@ make
 
 # Clean and rebuild
 make clean && make
+
+# Build both shippable packages (Windows .zip + Linux tarball) plus the
+# self-update binary and manifest, all into ../prod
+make package
+
+# Push what ../prod holds to the file server's public shelf
+make publish
 ```
 
 The binary is output as `./uvcan`. Build artifacts go to `release/`. Version is derived from git tags/commits automatically.
@@ -28,6 +35,59 @@ is there yet, and installs it into `~/.local` along with the `.uvsys` / `.uvdev`
 desktop integration (MIME types, file icons and the handler entry). `--system`
 installs machine-wide, `--build` forces a rebuild and `--no-deps` skips the apt
 step.
+
+## Versions and self-update
+
+uvcan reports two versions: the readable git-describe name (`1.1.1-204-g5746`)
+and a build number. `--version` prints both. The build number is
+`__UV_PROGRAM_VERSION`, i.e. `git rev-list --count HEAD`, and it is the one
+compared when looking for an update, because it grows with every commit for the
+life of the project; the name counts commits since the nearest tag and restarts
+at every release, so it cannot be compared at all.
+
+uvcan is published on the file server's **public** shelf,
+`https://files.usevolt.fi/pub/uvcan/` — served to anyone with no credentials,
+because uvcan is free software and a freshly downloaded one has no account to
+log in with. `pub` is a reserved fleet name: the Caddyfile answers `/pub/`
+itself, ahead of the generated per-fleet blocks, and `uvfleetctl` refuses to
+grant it to an account (see the uv3b_iotbrkr checkout). Nothing secret may go
+there.
+
+- `--checkupdate` reads `latest.json` from that path and reports what it finds.
+  The UI makes the same check once in the background when it opens and writes
+  the result into its log; a failed check there is silent.
+- `--update` downloads the published binary, verifies it against the size and
+  SHA-256 in the manifest, and `rename()`s it over the running one — a running
+  executable cannot be written to (`ETXTBSY`) but can be renamed away from. The
+  binary it replaces is kept as `uvcan.old`. The running process keeps running
+  from the file it started with, so it has to be restarted.
+- There is no signature on the manifest. The checksum and the binary come from
+  the same origin, so it guards against a corrupt download and not against a
+  compromised server.
+
+`make package` builds the packages, copies the binary under its published name
+and writes `latest.json`; `make publish` uploads them with `uvupload`. A
+`-dirty` build is refused: what is published has to be a commit anybody can
+check out again.
+
+A machine that has no uvcan yet installs one with:
+
+```bash
+curl -fsSL https://files.usevolt.fi/pub/uvcan/get-uvcan.sh | sh
+```
+
+`packaging/get-uvcan.sh` reads `latest.json`, downloads the Linux package it
+names, and runs the `install.sh` inside it. Arguments reach install.sh, so
+`| sh -s -- --system` installs machine-wide. This is why the manifest carries
+`package` and `package_sha256` as well as the bare binary the updater uses: the
+shelf keeps every release, and the newest by filename is not the newest by build
+number.
+
+`src/http.c` holds the curl plumbing shared by `remotefiles.c` (the per-fleet,
+authenticated file panel) and `selfupdate.c` (the public, unauthenticated
+updater). Every request is made through a curl **config file** rather than a
+command line, so nothing user- or server-supplied reaches a shell and no
+credentials appear in the process arguments. Redirects are never followed.
 
 ## Architecture
 

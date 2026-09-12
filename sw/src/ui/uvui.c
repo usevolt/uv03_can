@@ -29,6 +29,7 @@
 #include "system.h"
 #include "find.h"
 #include "logcap.h"
+#include "selfupdate.h"
 #include "uvstdin.h"
 #include "ui/devicetab.h"
 #include "ui/fleettab.h"
@@ -281,6 +282,13 @@ void uvui_exec(void) {
 	// stays responsive while a prompt waits; uv_stdin_feed() then supplies the
 	// typed answer. See uvstdin.c.
 	uv_stdin_use_pipe();
+
+	// Ask the file server once, in the background, whether a newer uvcan has
+	// been published; update_notice_step() says so in the log when the answer
+	// comes back. Started here so the request runs while the UI is being built
+	// and nothing waits for it -- a failed check is silent, because a machine
+	// on a CAN bus in a field has no network and has not asked about this.
+	selfupdate_check_async();
 
 	uv_ui_init();
 
@@ -810,7 +818,34 @@ static void show_active_tab(void) {
 }
 
 
+// Says once, in the log, that a newer uvcan is out. The log is where uvcan
+// already talks to the user, and a line there needs no room made for it in a
+// panel that is laid out to the pixel.
+static void update_notice_step(void) {
+	static bool told;
+	selfupdate_info_st info;
+	if (!told && selfupdate_available(&info)) {
+		told = true;
+		printf("A newer uvcan is available: %s (build %u); this is %s (build %u).\n",
+				info.name, (unsigned int) info.version,
+				selfupdate_this_name(),
+				(unsigned int) selfupdate_this_version());
+		if (info.notes[0] != '\0') {
+			printf("  %s\n", info.notes);
+		}
+		else {
+		}
+		printf("  Install it by running 'uvcan --update' in a terminal.\n");
+		fflush(stdout);
+	}
+	else {
+	}
+}
+
+
 static uv_uiobject_ret_e tabwindow_step(void *me, const uint16_t step_ms) {
+	update_notice_step();
+
 	if (uv_uitabwindow_tab_changed(&this->tabwindow)) {
 		if (uv_uitabwindow_get_tab(&this->tabwindow) == this->add_tab_index &&
 				this->add_tab_index >= 0) {

@@ -35,6 +35,7 @@
 #include "system.h"
 #include "simrun.h"
 #include "credentials.h"
+#include "selfupdate.h"
 #include "ui/uvui.h"
 #include <uv_ui.h>
 #include <uv_rtos.h>
@@ -53,6 +54,9 @@ bool cmd_ui(const char *arg);
 bool cmd_sim(const char *arg);
 bool cmd_user(const char *arg);
 bool cmd_pwd(const char *arg);
+bool cmd_version(const char *arg);
+bool cmd_checkupdate(const char *arg);
+bool cmd_update(const char *arg);
 
 // Node id note shared by the help of the commands which operate on the devices
 // loaded with *dev* / *sys*, so each of them tells where a device's node id comes
@@ -80,6 +84,42 @@ commands_st commands[] = {
 						"Without an argument every command is listed.",
 				.args = ARG_OPTIONAL,
 				.callback = &cmd_help
+		},
+		{
+				.cmd_long = "version",
+				.cmd_short = 'V',
+				.str = "Prints this uvcan's version and exits. Two numbers: the readable "
+						"release name (e.g. '1.1.1-204-g5746') and, in brackets, the build "
+						"number that *checkupdate* compares against. The build number counts "
+						"every commit in the version's history, so it only ever grows; the "
+						"name counts commits since the last release and restarts at each one.",
+				.args = ARG_NONE,
+				.callback = &cmd_version
+		},
+		{
+				.cmd_long = "checkupdate",
+				.str = "Asks the Usevolt file server whether a newer uvcan has been published "
+						"and reports what it finds, without installing anything. uvcan is "
+						"public software, so this needs no account and ignores the one in "
+						"*user* / *pwd*. Install what it finds with *update*.\n"
+						"The UI makes the same check once in the background when it opens "
+						"and writes what it finds into its log; a check that fails there is "
+						"silent, which is what this command is for.",
+				.args = ARG_NONE,
+				.callback = &cmd_checkupdate
+		},
+		{
+				.cmd_long = "update",
+				.str = "Downloads the newest published uvcan and installs it over this one.\n"
+						"The download is checked against the size and the checksum the server "
+						"publishes before anything is replaced, and the uvcan it replaces is "
+						"kept next to it as 'uvcan.old', so a bad build can be put back by "
+						"hand. The running uvcan keeps running from the file it started with: "
+						"restart it to use the new one.\n"
+						"A machine-wide install (install.sh --system) is owned by root, so it "
+						"takes 'sudo uvcan --update'. A per-user install needs no privileges.",
+				.args = ARG_NONE,
+				.callback = &cmd_update
 		},
 		{
 				.cmd_long = "ui",
@@ -660,6 +700,83 @@ static void ui_task(void *ptr) {
 	// Blocks until that window is closed.
 	uvui_exec();
 }
+
+bool cmd_version(const char *arg) {
+	(void) arg;
+	printf("uvcan %s (build %u)\n",
+			selfupdate_this_name(), (unsigned int) selfupdate_this_version());
+	return true;
+}
+
+
+bool cmd_checkupdate(const char *arg) {
+	(void) arg;
+	selfupdate_info_st info;
+	bool newer = false;
+	char err[256] = "";
+	if (!selfupdate_check(&info, &newer, err, sizeof(err))) {
+		printf("%s\n", err);
+	}
+	else if (!newer) {
+		printf("uvcan %s (build %u) is the newest published version.\n",
+				selfupdate_this_name(),
+				(unsigned int) selfupdate_this_version());
+	}
+	else {
+		printf("uvcan %s (build %u) is available; this is %s (build %u).\n",
+				info.name, (unsigned int) info.version,
+				selfupdate_this_name(),
+				(unsigned int) selfupdate_this_version());
+		if (info.released[0] != '\0') {
+			printf("  released %s\n", info.released);
+		}
+		if (info.notes[0] != '\0') {
+			printf("  %s\n", info.notes);
+		}
+		printf("Install it with 'uvcan --update'.\n");
+	}
+	return true;
+}
+
+
+/// @brief: Task body for --update.
+///
+/// A task rather than the command callback itself, because the download logs
+/// its progress and sleeps between the lines, and a command callback runs
+/// BEFORE the scheduler is started -- where uv_rtos_task_delay() has no
+/// scheduler to yield to and takes the process down with it. Everything else
+/// here that waits on something (--ui, --sim) is a task for the same reason.
+static void update_task(void *ptr) {
+	(void) ptr;
+	selfupdate_info_st info;
+	bool newer = false;
+	char err[256] = "";
+	if (!selfupdate_check(&info, &newer, err, sizeof(err))) {
+		printf("%s\n", err);
+	}
+	else if (!newer) {
+		printf("uvcan %s (build %u) is already the newest published version.\n",
+				selfupdate_this_name(),
+				(unsigned int) selfupdate_this_version());
+	}
+	else if (!selfupdate_apply(&info, err, sizeof(err))) {
+		printf("%s\n", err);
+	}
+	else {
+		printf("Updated to uvcan %s (build %u). "
+				"Restart uvcan to use it.\n",
+				info.name, (unsigned int) info.version);
+	}
+	fflush(stdout);
+}
+
+
+bool cmd_update(const char *arg) {
+	(void) arg;
+	add_task(&update_task);
+	return true;
+}
+
 
 bool cmd_ui(const char *arg) {
 	// Enable verbose PRINT output (as if -s/--silent were given) so the UI's log

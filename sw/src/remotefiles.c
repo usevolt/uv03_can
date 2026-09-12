@@ -33,6 +33,7 @@
 #include <strings.h>
 #include <uv_rtos.h>
 #include "parser.h"
+#include "http.h"
 
 
 // Session state for the current login. The token is kept in RAM only (never
@@ -59,230 +60,39 @@ static uint16_t rf_product_count;
 static uint16_t rf_product_cap;
 
 
-// Builds a per-process temp path "/tmp/uvcan_rf_<pid>_<suffix>" into *out*. The
-// paths are fixed (no user input), so the shell commands built from them are
-// injection-safe; everything user- or server-supplied goes through the curl config
-// or a data file instead.
+// The HTTP plumbing all of this is built on lives in http.c, shared with the
+// self-updater: the curl-config discipline, the temp paths, the progress
+// logging and the status wording are the same job in both places. What stays
+// here is what is particular to the per-fleet file areas -- the credentials,
+// the fleet list, the directory walk.
 static void rf_tmp_path(char *out, size_t len, const char *suffix) {
-	snprintf(out, len, "/tmp/uvcan_rf_%d_%s", (int) getpid(), suffix);
+	uvhttp_tmp_path(out, len, "rf", suffix);
 }
 
 
-// Writes *content* to *path* with 0600 permissions. Returns true on success.
-static bool rf_write_file(const char *path, const char *content) {
-	bool ret = false;
-	FILE *f = fopen(path, "w");
-	if (f != NULL) {
-		fputs(content, f);
-		fclose(f);
-		chmod(path, 0600);
-		ret = true;
-	}
-	return ret;
-}
-
-
-// Reads the whole file at *path* into a freshly malloc'd, null-terminated buffer
-// (caller frees). Returns NULL on error.
 static char *rf_read_file(const char *path) {
-	char *ret = NULL;
-	FILE *f = fopen(path, "rb");
-	if (f != NULL) {
-		fseek(f, 0, SEEK_END);
-		long size = ftell(f);
-		rewind(f);
-		if (size >= 0) {
-			ret = malloc((size_t) size + 1);
-			if (ret != NULL) {
-				size_t rd = fread(ret, 1, (size_t) size, f);
-				ret[rd] = '\0';
-			}
-		}
-		fclose(f);
-	}
-	return ret;
+	return uvhttp_read_file(path);
 }
 
 
-// (The JSON string escaper that used to live here built the login request body.
-// Basic auth has no body, so nothing needs escaping any more.)
-
-
-// Copies *src* into *dst* (size *dstlen*) dropping characters that could break out
-// of a curl config-file quoted value (double quote, CR, LF). Used for the URL and
-// bearer token, which curl - not the shell - parses.
 static void rf_cfg_sanitize(char *dst, size_t dstlen, const char *src) {
-	size_t d = 0;
-	for (size_t i = 0; (src[i] != '\0') && (d + 1 < dstlen); i++) {
-		char c = src[i];
-		if ((c != '"') && (c != '\r') && (c != '\n')) {
-			dst[d++] = c;
-		}
-	}
-	dst[d] = '\0';
+	uvhttp_cfg_sanitize(dst, dstlen, src);
 }
 
 
-// Runs `curl -K <cfg_path>` (the config file carries the URL, method, headers,
-// data and output paths) and returns the HTTP status code curl reports via its
-// write-out, or 0 when curl could not be run. The command line contains only our
-// fixed temp paths, so nothing user- or server-supplied reaches the shell.
-static long rf_run_curl(const char *cfg_path) {
-	long code = 0;
-	char code_path[256];
-	rf_tmp_path(code_path, sizeof(code_path), "code");
-
-	char cmd[1024];
-	snprintf(cmd, sizeof(cmd), "curl -K '%s' > '%s' 2>/dev/null",
-			cfg_path, code_path);
-	int rc = system(cmd);
-	if (rc != -1) {
-		char *body = rf_read_file(code_path);
-		if (body != NULL) {
-			code = strtol(body, NULL, 10);
-			free(body);
-		}
-	}
-	remove(code_path);
-	return code;
-}
-
-
-// How often a running download's progress is logged, and how many percentage
-// points it has to have advanced since the last line for another one to be worth
-// printing. The log is read line by line (in the terminal and in the UI's log
-// view), so a line per quarter second would bury everything else in it.
-#define RF_PROGRESS_MS			250
-#define RF_PROGRESS_STEP		5
-
-
-// Logs one progress line for a transfer that has *got* of *expected* bytes
-// (*expected* 0 when the size is not known in advance).
-static void rf_log_progress(uint64_t got, uint64_t expected) {
-	if (expected > 0) {
-		printf("  %3u %%   %llu / %llu KB\n",
-				(unsigned int) ((got * 100u) / expected),
-				(unsigned long long) (got / 1024u),
-				(unsigned long long) (expected / 1024u));
-	}
-	else {
-		printf("  %llu KB\n", (unsigned long long) (got / 1024u));
-	}
-	fflush(stdout);
-}
-
-
-// Runs `curl -K <cfg_path>` like rf_run_curl(), logging the transfer's progress
-// to stdout while it runs.
-//
-// curl is started with fork() and execvp() rather than through the shell, so
-// that its stdout (which carries the write-out status code) can be sent to the
-// code file while its stderr stays where the program's own output goes. Its own
-// progress meter is left off on purpose: it redraws one line with carriage
-// returns, which the line-based log capture would turn into one enormous line.
-// The progress below is measured from the size the destination file has reached
-// instead, which is what the user is waiting for anyway.
-static long rf_run_curl_logged(const char *cfg_path, const char *dest_path,
-		uint64_t expected) {
-	long code = 0;
-	char code_path[256];
-	rf_tmp_path(code_path, sizeof(code_path), "code");
-	remove(code_path);
-
-	pid_t pid = fork();
-	if (pid == 0) {
-		// curl's stdout is the status code, and nothing else: the parent reads
-		// this file once curl is done
-		if (freopen(code_path, "w", stdout) == NULL) {
-			_exit(127);
-		}
-		char *argv[] = { "curl", "-K", (char*) cfg_path, NULL };
-		execvp("curl", argv);
-		// no curl on this machine; the parent sees the empty code file and
-		// reports it as "could not reach the server"
-		_exit(127);
-	}
-	else if (pid > 0) {
-		unsigned int logged_pct = 0;
-		uint64_t logged_got = 0;
-		int rc;
-		do {
-			// the FreeRTOS scheduler tick interrupts the wait; keep waiting
-			// rather than leaving a zombie behind
-			rc = waitpid(pid, NULL, WNOHANG);
-			if (rc == 0) {
-				uv_rtos_task_delay(RF_PROGRESS_MS);
-				struct stat st;
-				if (stat(dest_path, &st) == 0) {
-					uint64_t got = (uint64_t) st.st_size;
-					if (expected > 0) {
-						unsigned int pct = (unsigned int) ((got * 100u) / expected);
-						if (pct >= (logged_pct + RF_PROGRESS_STEP)) {
-							rf_log_progress(got, expected);
-							logged_pct = pct;
-						}
-					}
-					else if (got >= (logged_got + 1024u * 1024u)) {
-						// nothing to measure against: a line per megabyte then
-						rf_log_progress(got, 0);
-						logged_got = got;
-					}
-					else {
-					}
-				}
-			}
-			else {
-			}
-		} while ((rc == 0) || ((rc == -1) && (errno == EINTR)));
-
-		char *body = rf_read_file(code_path);
-		if (body != NULL) {
-			code = strtol(body, NULL, 10);
-			free(body);
-		}
-	}
-	else {
-		// fork failed; nothing was transferred
-	}
-	remove(code_path);
-	return code;
-}
-
-
-// Common helper: writes *cfg* to a temp config file, runs curl, removes the config
-// file (it may hold the bearer token) and returns the HTTP status code.
 static long rf_curl_with_cfg(const char *cfg) {
-	char cfg_path[256];
-	rf_tmp_path(cfg_path, sizeof(cfg_path), "cfg");
-	long code = 0;
-	if (rf_write_file(cfg_path, cfg)) {
-		code = rf_run_curl(cfg_path);
-	}
-	remove(cfg_path);
-	return code;
+	return uvhttp_curl(cfg);
 }
 
 
-// As rf_curl_with_cfg(), for a download whose progress is logged.
 static long rf_curl_logged_with_cfg(const char *cfg, const char *dest_path,
 		uint64_t expected) {
-	char cfg_path[256];
-	rf_tmp_path(cfg_path, sizeof(cfg_path), "cfg");
-	long code = 0;
-	if (rf_write_file(cfg_path, cfg)) {
-		code = rf_run_curl_logged(cfg_path, dest_path, expected);
-	}
-	remove(cfg_path);
-	return code;
+	return uvhttp_curl_logged(cfg, dest_path, expected);
 }
 
 
-// Fills *err* with *msg* when *err* is non-NULL.
 static void rf_err(char *err, unsigned int err_len, const char *msg) {
-	if ((err != NULL) && (err_len > 0)) {
-		strncpy(err, msg, err_len - 1);
-		err[err_len - 1] = '\0';
-	}
+	uvhttp_err(err, err_len, msg);
 }
 
 
@@ -294,45 +104,17 @@ static void rf_fleet_url(char *dst, size_t dstlen, const char *fleet) {
 }
 
 
-/// @brief: Emits the curl config lines every request shares: the timeouts and
-/// the Basic credentials.
+/// @brief: Emits the curl config lines every request here shares: the timeouts
+/// and this account's Basic credentials.
 static int rf_cfg_common(char *dst, size_t dstlen, int timeout_s) {
-	char user[CREDENTIALS_MAX];
-	char pass[CREDENTIALS_MAX];
-	rf_cfg_sanitize(user, sizeof(user), rf_user);
-	rf_cfg_sanitize(pass, sizeof(pass), rf_pass);
-	return snprintf(dst, dstlen,
-			"silent\nshow-error\n"
-			"connect-timeout = 15\nmax-time = %d\n"
-			"user = \"%s:%s\"\n",
-			timeout_s, user, pass);
+	return uvhttp_cfg_common(dst, dstlen, timeout_s, rf_user, rf_pass);
 }
 
 
-/// @brief: Turns an HTTP status into the reason the caller shows. Shared so the
-/// three calls describe the same failure the same way.
+/// @brief: Turns an HTTP status into the reason the caller shows.
 static void rf_http_err(long code, const char *what, char *err,
 		unsigned int err_len) {
-	if (code == 0) {
-		rf_err(err, err_len,
-				"Could not reach the server (is curl installed and the URL "
-				"correct?).");
-	}
-	else if (code == 401) {
-		rf_err(err, err_len, "Invalid username or password.");
-	}
-	else if (code == 403) {
-		rf_err(err, err_len, "This account may not read that fleet's files.");
-	}
-	else if (code == 404) {
-		rf_err(err, err_len,
-				"No such fleet on the file server, or it has no files area yet.");
-	}
-	else {
-		char m[128];
-		snprintf(m, sizeof(m), "Server returned HTTP %ld %s.", code, what);
-		rf_err(err, err_len, m);
-	}
+	uvhttp_status_err(code, what, err, err_len);
 }
 
 
@@ -755,6 +537,109 @@ static long rf_walk_dir(uint8_t fleet_i, const char *rel,
 }
 
 
+/// @brief: The timestamp two listing entries are ordered by: what the server
+/// reports as the file's modification time, which for a package that is
+/// uploaded once and never touched again is when it was created.
+///
+/// Compared as text, because the server writes it as an ISO-8601 timestamp
+/// ("2026-09-11T10:21:33Z") -- fixed width, largest field first -- and such a
+/// string sorts the same way the instant it names does. An entry the server
+/// gave no time for sorts last whichever way it is compared, rather than ahead
+/// of everything real as an empty string otherwise would.
+static int rf_cmp_time(const char *a, const char *b) {
+	int ret;
+	if ((a[0] == '\0') != (b[0] == '\0')) {
+		// the one with a timestamp first
+		ret = (a[0] == '\0') ? 1 : -1;
+	}
+	else {
+		// newest first, so the comparison is the other way round
+		ret = strcmp(b, a);
+	}
+	return ret;
+}
+
+
+/// @brief: qsort predicate ordering a product's versions newest first.
+static int rf_cmp_version(const void *a, const void *b) {
+	const remotefiles_version_st *va = a;
+	const remotefiles_version_st *vb = b;
+	int ret = rf_cmp_time(va->modified, vb->modified);
+	if (ret == 0) {
+		// same timestamp: by name, so the order is at least stable and
+		// repeatable rather than whatever the listing happened to give
+		ret = strcmp(va->version, vb->version);
+	}
+	else {
+	}
+	return ret;
+}
+
+
+/// @brief: The newest timestamp any of *p*'s versions carries, i.e. the one the
+/// product is ordered by. "" when it has no files, or none the server timed.
+static const char *rf_product_newest(const remotefiles_product_st *p) {
+	const char *ret = "";
+	for (uint16_t i = 0; i < p->version_count; i++) {
+		if (strcmp(p->versions[i].modified, ret) > 0) {
+			ret = p->versions[i].modified;
+		}
+		else {
+		}
+	}
+	return ret;
+}
+
+
+/// @brief: qsort predicate ordering products newest first, by the newest file
+/// each of them holds.
+///
+/// Within a fleet only: the panel puts one fleet on a tab of its own, so
+/// products of different fleets are never on screen together and interleaving
+/// them would only scatter each tab's rows through the array.
+static int rf_cmp_product(const void *a, const void *b) {
+	const remotefiles_product_st *pa = a;
+	const remotefiles_product_st *pb = b;
+	int ret;
+	if (pa->fleet != pb->fleet) {
+		ret = (pa->fleet < pb->fleet) ? -1 : 1;
+	}
+	else {
+		ret = rf_cmp_time(rf_product_newest(pa), rf_product_newest(pb));
+		if (ret == 0) {
+			ret = strcmp(pa->name, pb->name);
+		}
+		else {
+		}
+	}
+	return ret;
+}
+
+
+/// @brief: Puts the whole listing in the order it is shown in: newest first,
+/// both the files inside a product and the products themselves.
+///
+/// Done once here rather than in the panel, so that every reader of the listing
+/// sees the same order and the indices the panel hands back (which product,
+/// which version) keep meaning what they meant when the rows were built.
+static void rf_sort_products(void) {
+	for (uint16_t i = 0; i < rf_product_count; i++) {
+		if (rf_products[i].version_count > 1) {
+			qsort(rf_products[i].versions, rf_products[i].version_count,
+					sizeof(rf_products[i].versions[0]), &rf_cmp_version);
+		}
+		else {
+		}
+	}
+	if (rf_product_count > 1) {
+		qsort(rf_products, rf_product_count, sizeof(rf_products[0]),
+				&rf_cmp_product);
+	}
+	else {
+	}
+}
+
+
 /// @brief: Adds the products of one fleet to the list.
 ///
 /// Every path recorded here is relative to the server root and starts with the
@@ -816,6 +701,7 @@ bool remotefiles_list(char *err, unsigned int err_len) {
 			rf_err(err, err_len, first_err);
 		}
 		else {
+			rf_sort_products();
 		}
 	}
 	return ret;

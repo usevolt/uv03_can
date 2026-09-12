@@ -31,9 +31,20 @@
 #define SFW_MARGIN		10
 #define SFW_TITLE_H		30
 #define SFW_BTN_H		44
-// height of one version row (metadata label + download button) inside a product
-#define SFW_VROW_H		66
+// Height of one version row (metadata label + Download button) inside a
+// product, and of the button on it. One line of text and a button, with just
+// enough around them to separate the rows: the rows used to be tall enough for
+// a second line of release notes that the server never supplies, which left a
+// blank line's worth of air under every one of them and pushed the name off the
+// centre of its row, where the tree's guide line points.
+#define SFW_VROW_H		46
+#define SFW_ROW_BTN_H	36
 #define SFW_DL_W		130
+// The tree rows read better a size up from the style's own font, and the whole
+// panel is a list of names to pick from.
+#define SFW_FONT		(&font20)
+// One wheel notch scrolls the product list by this much
+#define SFW_SCROLL_STEP	(CONFIG_UI_TREEVIEW_ITEM_HEIGHT)
 // Where a downloaded package is put: a temporary directory of this run's own,
 // created on the first download. A package is downloaded to be used now - it
 // becomes the device's configuration file, and is read from there for as long as
@@ -55,9 +66,11 @@ static char title_str[160];
 static uv_uilabel_st empty_label;
 static uv_uibutton_st close_btn;
 
-// Length of one version row's label text, and of a product's row title.
+// Length of one version row's label text, of a row title, and of a directory
+// path relative to its fleet.
 #define SFW_VSTR_LEN	512
 #define SFW_NAME_LEN	176
+#define SFW_PATH_LEN	256
 
 // One tab per fleet, holding the tree of that fleet's products. An account may
 // hold several fleets and they are separate collections of machines; showing
@@ -73,20 +86,33 @@ static uv_uilabel_st fleet_empty_label;
 // The tree of the fleet currently on show. One tree serves every tab: switching
 // tabs rebuilds it from the products of the fleet that was picked.
 static uv_uitreeview_st tree;
+// Whether the tree is what the active tab is showing. A fleet with no files
+// shows a label instead, and the tree is then left holding the previous fleet's
+// rows -- and its parent pointer, so it still reports a position on screen.
+// Scrolling it there would swallow the wheel for a window nobody can see.
+static bool tree_shown;
 
-// The per-product UI, allocated for exactly as many products as the listing
-// holds rather than a fixed maximum, so no product goes unshown.
+// One node of the directory tree: a directory on the server, shown as one row
+// of the tree with its subdirectories cascading under it.
+//
+// A product from the listing is one directory's worth of files, named by its
+// path relative to the fleet ("uv0d/rev2"). Hanging those on the tree as they
+// come gives one flat row per directory with the path written out on it, which
+// says nothing about what sits inside what. So every segment of every path
+// becomes a node here, whether the listing held a product for it or not: a
+// directory that holds nothing but subdirectories has no files of its own to
+// show, but it is still the thing they are inside.
 //
 // Every block here is owned by this file and released by sfw_free_ui(). The
 // widgets are handed to the dialog by pointer, so nothing may be freed until
 // uv_uidialog_exec() has returned - see the ordering note in
 // serverfiles_win_exec().
 typedef struct {
-	// the treeview row itself; its address identifies the product (sfw_index_of)
+	// the treeview row itself; its address identifies the node (sfw_index_of)
 	uv_uitreeobject_st obj;
-	// child-object array the tree object keeps: 2 widgets per version (label +
-	// Download button) plus slack, as uv_uiwindow requires the array to outlive
-	// the window
+	// child-object array the tree object keeps: this node's subdirectory nodes
+	// plus 2 widgets per version (label + Download button), as uv_uiwindow
+	// requires the array to outlive the window
 	uv_uiobject_st **child_buf;
 	uv_uilabel_st *ver_labels;
 	uv_uibutton_st *dl_btns;
@@ -94,20 +120,32 @@ typedef struct {
 	// rather than a string per row: one allocation instead of dozens, and the
 	// labels keep pointers into it for as long as they live.
 	char *ver_strs;
-	// The row title. Held here rather than pointing at the product's own name,
-	// because the title adds the file count and because uv_uitreeobject_init()
-	// keeps the name BY POINTER - it has to stay put for the dialog's lifetime.
+	// The row title: the directory's own name, i.e. the last segment of its
+	// path, and the file count. Held here rather than pointing at the product's
+	// name, because uv_uitreeobject_init() keeps the name BY POINTER - it has to
+	// stay put for the dialog's lifetime.
 	char name[SFW_NAME_LEN];
+	// this directory's path relative to its fleet; "" is the fleet's own folder
+	char path[SFW_PATH_LEN];
+	// the node this one sits inside, or -1 at the top of its fleet's tab
+	int parent;
+	// which product of the listing holds this directory's files, or -1 for a
+	// directory that holds nothing but other directories
+	int product;
 	uint16_t versions;
-	// which fleet's tab this product belongs on
+	// how many nodes name this one as their parent
+	uint16_t children;
+	// which fleet's tab this node belongs on
 	uint8_t fleet;
-} sfw_product_ui_st;
+} sfw_node_st;
 
-static sfw_product_ui_st *prods;
-// the pointer array uv_uitreeview_init() keeps. One entry per product: a single
+static sfw_node_st *nodes;
+// the pointer array uv_uitreeview_init() keeps. One entry per node: a single
 // fleet can hold all of them, and the tree only ever shows one fleet's worth.
 static uv_uitreeobject_st **tree_buf;
-static uint16_t prod_n;
+static uint16_t node_n;
+// how many the arrays were allocated for; see sfw_node_bound()
+static uint16_t node_cap;
 
 // What the user clicked "Download" on, as product / version index, or -1 when
 // the window was closed without downloading anything. The click closes the
@@ -119,85 +157,226 @@ static int sel_ver;
 static const uv_uistyle_st *win_style;
 
 
-// Releases the whole per-product UI. Idempotent, and safe to call when nothing
-// was ever allocated.
+// Releases the whole tree UI. Idempotent, and safe to call when nothing was
+// ever allocated.
 //
 // Must run only once the dialog is gone: every widget below was handed to the
 // dialog (or to a tree object) by pointer, so freeing while it is on screen
 // would leave the UI walking freed memory.
 static void sfw_free_ui(void) {
-	if (prods != NULL) {
-		for (uint16_t p = 0; p < prod_n; p++) {
-			free(prods[p].child_buf);
-			free(prods[p].ver_labels);
-			free(prods[p].dl_btns);
-			free(prods[p].ver_strs);
+	if (nodes != NULL) {
+		for (uint16_t i = 0; i < node_n; i++) {
+			free(nodes[i].child_buf);
+			free(nodes[i].ver_labels);
+			free(nodes[i].dl_btns);
+			free(nodes[i].ver_strs);
 		}
-		free(prods);
-		prods = NULL;
+		free(nodes);
+		nodes = NULL;
 	}
 	free(tree_buf);
 	tree_buf = NULL;
-	prod_n = 0;
+	node_n = 0;
+	node_cap = 0;
 }
 
 
-// Allocates the UI for *n* products, sizing each product's arrays to its own
-// version count. Returns false (having freed whatever it had taken) when any
+// A product's path relative to its fleet, "" for the fleet's own folder.
+//
+// Taken from the id rather than from the name, because the id is the one that
+// is unambiguous: it is "<fleet>" for the fleet's own folder and
+// "<fleet>/<path>" for everything else, while the name of the fleet's own
+// folder is the fleet itself and would read as a directory of that name.
+static void sfw_product_path(const remotefiles_product_st *prod,
+		char *out, size_t out_len) {
+	const char *fleet = remotefiles_get_fleet(prod->fleet);
+	size_t fl = (fleet != NULL) ? strlen(fleet) : 0;
+	if ((fleet != NULL) && (strncmp(prod->id, fleet, fl) == 0) &&
+			(prod->id[fl] == '/')) {
+		snprintf(out, out_len, "%s", &prod->id[fl + 1]);
+	}
+	else {
+		// the fleet's own folder: no path under it
+		out[0] = '\0';
+	}
+}
+
+
+// The node for (*fleet*, *path*), created along with every one of its ancestors
+// if it is not there yet. Returns -1 when the array is full, which cannot
+// happen for a bound that counted the segments (sfw_node_bound).
+//
+// Ancestors first, so that a directory always sits after the one that holds it
+// and the parent index of a node is always lower than its own.
+static int sfw_node_for(uint8_t fleet, const char *path) {
+	int ret = -1;
+	for (uint16_t i = 0; (i < node_n) && (ret < 0); i++) {
+		if ((nodes[i].fleet == fleet) && (strcmp(nodes[i].path, path) == 0)) {
+			ret = (int) i;
+		}
+		else {
+		}
+	}
+	if (ret < 0) {
+		// the path of the directory holding this one, i.e. everything before the
+		// last separator. "" for a directory at the top of the fleet.
+		char up[SFW_PATH_LEN];
+		snprintf(up, sizeof(up), "%s", path);
+		char *sep = strrchr(up, '/');
+		int parent = -1;
+		if (sep != NULL) {
+			*sep = '\0';
+			parent = sfw_node_for(fleet, up);
+		}
+		else {
+			// at the top of the fleet already; the fleet's own folder ("") lands
+			// here too and is a top-level node like any other
+		}
+		// checked here rather than on the way in, because the ancestors created
+		// above have taken their own slots. Cannot happen for a bound that
+		// counted the path segments, and is not worth running off the end of the
+		// array to find out.
+		if (node_n >= node_cap) {
+			ret = -1;
+		}
+		else {
+			sfw_node_st *n = &nodes[node_n];
+			memset(n, 0, sizeof(*n));
+			n->fleet = fleet;
+			n->parent = parent;
+			n->product = -1;
+			snprintf(n->path, sizeof(n->path), "%s", path);
+			if (parent >= 0) {
+				nodes[parent].children++;
+			}
+			else {
+			}
+			ret = (int) node_n;
+			node_n++;
+		}
+	}
+	else {
+	}
+	return ret;
+}
+
+
+// An upper bound on how many nodes the listing can come to: every product is
+// one directory plus one for each of its ancestors, and ancestors shared
+// between products are counted more than once. Bounding it rather than
+// counting exactly keeps this to one pass; the slack is a handful of structs.
+static uint16_t sfw_node_bound(void) {
+	uint16_t ret = 0;
+	uint16_t n = remotefiles_get_product_count();
+	for (uint16_t p = 0; p < n; p++) {
+		const remotefiles_product_st *prod = remotefiles_get_product(p);
+		ret++;
+		if (prod != NULL) {
+			char path[SFW_PATH_LEN];
+			sfw_product_path(prod, path, sizeof(path));
+			for (const char *c = path; *c != '\0'; c++) {
+				if (*c == '/') {
+					ret++;
+				}
+				else {
+				}
+			}
+		}
+		else {
+		}
+	}
+	return ret;
+}
+
+
+// Builds the directory tree out of the listing and allocates each node's
+// widgets. Returns false (having freed whatever it had taken) when any
 // allocation fails, so there is no half-built UI to render.
-static bool sfw_alloc_ui(uint16_t n) {
+//
+// The listing arrives newest first, and the nodes are created in the order the
+// products are walked, so a directory takes the place of the newest thing
+// inside it and the tree reads newest first at every level.
+static bool sfw_alloc_ui(void) {
 	sfw_free_ui();
-	if (n == 0) {
+	uint16_t bound = sfw_node_bound();
+	if (bound == 0) {
 		return true;
 	}
-	prods = calloc(n, sizeof(*prods));
-	tree_buf = calloc(n, sizeof(*tree_buf));
-	if ((prods == NULL) || (tree_buf == NULL)) {
+	nodes = calloc(bound, sizeof(*nodes));
+	tree_buf = calloc(bound, sizeof(*tree_buf));
+	if ((nodes == NULL) || (tree_buf == NULL)) {
 		sfw_free_ui();
 		return false;
 	}
-	// prod_n is raised as each product succeeds, so a failure part-way leaves
-	// sfw_free_ui() with an accurate count of what to release.
-	for (uint16_t p = 0; p < n; p++) {
+	node_cap = bound;
+
+	// 1. a node for every directory, and for every directory above it
+	uint16_t prod_count = remotefiles_get_product_count();
+	for (uint16_t p = 0; p < prod_count; p++) {
 		const remotefiles_product_st *prod = remotefiles_get_product(p);
-		uint16_t v = (prod != NULL) ? prod->version_count : 0;
-		prods[p].versions = v;
-		prods[p].fleet = (prod != NULL) ? prod->fleet : 0;
-		prod_n = (uint16_t) (p + 1);
-		// +2 of slack matches what the fixed array carried; uv_uiwindow wants
-		// room for the children a show callback adds.
-		prods[p].child_buf = calloc((size_t) (2 * v) + 2,
-				sizeof(*prods[p].child_buf));
-		if (prods[p].child_buf == NULL) {
+		if (prod == NULL) {
+			continue;
+		}
+		char path[SFW_PATH_LEN];
+		sfw_product_path(prod, path, sizeof(path));
+		int i = sfw_node_for(prod->fleet, path);
+		if (i < 0) {
+			continue;
+		}
+		nodes[i].product = (int) p;
+		nodes[i].versions = prod->version_count;
+	}
+
+	// 2. the row title and the widgets, now that every node's child count is
+	// known. The child array holds this node's subdirectories and two widgets
+	// per file, plus the slack uv_uiwindow wants for anything added later.
+	for (uint16_t i = 0; i < node_n; i++) {
+		sfw_node_st *n = &nodes[i];
+		const char *own = strrchr(n->path, '/');
+		own = (own != NULL) ? (own + 1) : n->path;
+		if (own[0] == '\0') {
+			// the fleet's own folder is the fleet
+			own = remotefiles_get_fleet(n->fleet);
+		}
+		else {
+		}
+		// The file count is in the row itself: a directory with no files of its
+		// own then reads as what it is rather than as a row that refuses to
+		// open, which is indistinguishable from something being broken.
+		// the name is cut to leave room for what follows it; a directory name
+		// that long is unreadable on a row either way
+		if (n->versions > 0) {
+			snprintf(n->name, SFW_NAME_LEN, "%.150s  (%u)",
+					(own != NULL) ? own : "?", (unsigned int) n->versions);
+		}
+		else if (n->children > 0) {
+			snprintf(n->name, SFW_NAME_LEN, "%.150s", (own != NULL) ? own : "?");
+		}
+		else {
+			snprintf(n->name, SFW_NAME_LEN, "%.150s  (no files)",
+					(own != NULL) ? own : "?");
+		}
+
+		n->child_buf = calloc((size_t) (2 * n->versions) + n->children + 2,
+				sizeof(*n->child_buf));
+		if (n->child_buf == NULL) {
 			sfw_free_ui();
 			return false;
 		}
-		if (v > 0) {
-			prods[p].ver_labels = calloc(v, sizeof(*prods[p].ver_labels));
-			prods[p].dl_btns = calloc(v, sizeof(*prods[p].dl_btns));
-			prods[p].ver_strs = calloc((size_t) v, SFW_VSTR_LEN);
-			if ((prods[p].ver_labels == NULL) || (prods[p].dl_btns == NULL) ||
-					(prods[p].ver_strs == NULL)) {
+		if (n->versions > 0) {
+			n->ver_labels = calloc(n->versions, sizeof(*n->ver_labels));
+			n->dl_btns = calloc(n->versions, sizeof(*n->dl_btns));
+			n->ver_strs = calloc((size_t) n->versions, SFW_VSTR_LEN);
+			if ((n->ver_labels == NULL) || (n->dl_btns == NULL) ||
+					(n->ver_strs == NULL)) {
 				sfw_free_ui();
 				return false;
 			}
 		}
-	}
-	return true;
-}
-
-
-// Which product a tree object belongs to, or -1. A search rather than pointer
-// arithmetic: it makes no assumption about the struct layout, and the counts
-// here are small.
-static int sfw_index_of(const uv_uitreeobject_st *obj) {
-	int ret = -1;
-	for (uint16_t p = 0; (p < prod_n) && (ret < 0); p++) {
-		if (&prods[p].obj == obj) {
-			ret = (int) p;
+		else {
 		}
 	}
-	return ret;
+	return true;
 }
 
 
@@ -277,26 +456,25 @@ static bool sfw_start_fetch(uint16_t p, uint16_t j) {
 }
 
 
-// Tree-object show callback: populates a product's content with one row per version
-// (a metadata label plus a Download button). Called by the treeview when the
-// product is opened.
-static void product_show(uv_uitreeobject_st *obj) {
-	int pi = sfw_index_of(obj);
-	if (pi < 0) {
+// Fills a node's content with one row per file it holds (a metadata label plus
+// a Download button).
+//
+// Called once, while the tree is built, rather than from a show callback when
+// the node is opened. A node holds its subdirectories as well as its rows, and
+// rebuilding the rows on every open would mean clearing the node - taking the
+// subdirectories with them.
+static void sfw_node_add_rows(uint16_t i) {
+	sfw_node_st *n = &nodes[i];
+	if (n->product < 0) {
 		return;
 	}
-	uint16_t p = (uint16_t) pi;
-	const remotefiles_product_st *prod = remotefiles_get_product(p);
+	uv_uitreeobject_st *obj = &n->obj;
+	const remotefiles_product_st *prod =
+			remotefiles_get_product((uint16_t) n->product);
 	if (prod == NULL) {
 		return;
 	}
 
-	// The rows are rebuilt on every open. uv_uitreeobject_clear() is safe to
-	// call now that it no longer replaces the tree object's draw callback with
-	// the plain window one (uv_hal 18bfab8); before that fix, clearing here cost
-	// the object its +/- marker, its name and its separator line the instant a
-	// product was opened.
-	uv_uitreeobject_clear(obj);
 	// The content's own coordinate space: it starts below the header row and
 	// indented under the header's name, and is that much narrower than the
 	// object itself. Taking the object's width instead would run every row
@@ -304,18 +482,24 @@ static void product_show(uv_uitreeobject_st *obj) {
 	int16_t w = uv_uitreeobject_get_content_bb(obj).width;
 	int16_t label_w = w - SFW_DL_W - SFW_MARGIN;
 
-	for (uint16_t j = 0; j < prods[p].versions; j++) {
+	for (uint16_t j = 0; j < n->versions; j++) {
 		const remotefiles_version_st *v = &prod->versions[j];
 		char sz[24];
 		sfw_fmt_size(v->size, sz, sizeof(sz));
-		char *str = &prods[p].ver_strs[(size_t) j * SFW_VSTR_LEN];
-		// line 1: file name, release date, size; line 2: notes.
+		char *str = &n->ver_strs[(size_t) j * SFW_VSTR_LEN];
+		// File name, release date, size, and the release notes after them when
+		// there are any. All on one line: the server reports only what a file
+		// system knows, so the notes are almost always empty, and a second line
+		// kept for them left every row with a blank line in it -- which also lifted
+		// the name off the row's centre, because a label centres the whole text
+		// block it is given, empty last line included.
 		// No "v" prefix: a version here is the package's file name, not a
 		// number, so it read "vuv0d_jhc_uv0d1_1028-g5346.uvdev".
-		snprintf(str, SFW_VSTR_LEN, "%s   %s   %s\n%s",
+		snprintf(str, SFW_VSTR_LEN, "%s   %s   %s%s%s",
 				(strlen(v->version) > 0) ? v->version : "?",
 				(strlen(v->released) > 0) ? v->released : "-",
-				sz, v->notes);
+				sz,
+				(strlen(v->notes) > 0) ? "   " : "", v->notes);
 
 		// NOT offset by CONFIG_UI_TREEVIEW_ITEM_HEIGHT. uv_uitreeobject_init()
 		// already calls uv_uiwindow_set_content_bb_default_pos(), so this
@@ -323,15 +507,44 @@ static void product_show(uv_uitreeobject_st *obj) {
 		// pushed every row down by a header's height and ran the last row past
 		// the object's own height, which clipped it to a sliver.
 		int16_t y = (int16_t) j * SFW_VROW_H;
-		uv_uilabel_init(&prods[p].ver_labels[j], win_style->font,
+		uv_uilabel_init(&n->ver_labels[j], SFW_FONT,
 				ALIGN_CENTER_LEFT, win_style->text_color, str);
-		uv_uitreeobject_addxy(obj, &prods[p].ver_labels[j],
+		uv_uitreeobject_addxy(obj, &n->ver_labels[j],
 				0, y, label_w, SFW_VROW_H);
 
-		uv_uibutton_init(&prods[p].dl_btns[j], "Download", win_style);
-		uv_uitreeobject_addxy(obj, &prods[p].dl_btns[j],
-				w - SFW_DL_W, y + (SFW_VROW_H - SFW_BTN_H) / 2,
-				SFW_DL_W, SFW_BTN_H);
+		uv_uibutton_init(&n->dl_btns[j], "Download", win_style);
+		uv_uitreeobject_addxy(obj, &n->dl_btns[j],
+				w - SFW_DL_W, y + (SFW_VROW_H - SFW_ROW_BTN_H) / 2,
+				SFW_DL_W, SFW_ROW_BTN_H);
+	}
+}
+
+
+// Adds node *i* to *container* -- the tree view for a directory at the top of
+// the fleet, the parent node for one nested inside another -- then its own
+// file rows and then, recursively, the directories inside it.
+//
+// The rows go in before the subdirectories: the layout stacks a container's
+// child nodes below whatever plain widgets it holds, so this is what puts a
+// directory's own files above the directories inside it. The recursion runs in
+// node order, which is the order the listing was walked in, so each level keeps
+// the newest-first order the listing arrived in.
+static void sfw_build_node(void *container, uint16_t i) {
+	sfw_node_st *n = &nodes[i];
+	uv_uitreeobject_init(&n->obj, n->child_buf, n->name, NULL, win_style);
+	uv_uitreeobject_set_font(&n->obj, SFW_FONT);
+	// Every node starts closed: a tab opens on the list of what the fleet
+	// holds, which is what the user picks from, rather than on one directory's
+	// files with the rest of the list pushed down the screen.
+	uv_uitreeview_add(container, &n->obj,
+			(int16_t) n->versions * SFW_VROW_H, false);
+	sfw_node_add_rows(i);
+	for (uint16_t c = 0; c < node_n; c++) {
+		if (nodes[c].parent == (int) i) {
+			sfw_build_node(&n->obj, c);
+		}
+		else {
+		}
 	}
 }
 
@@ -347,11 +560,15 @@ static void sfw_show_fleet(uint8_t f) {
 	uv_bounding_box_st cbb = uv_uitabwindow_get_contentbb(&fleet_tabs);
 
 	uint16_t count = 0;
-	for (uint16_t p = 0; p < prod_n; p++) {
-		if (prods[p].fleet == f) {
+	for (uint16_t i = 0; i < node_n; i++) {
+		if (nodes[i].fleet == f) {
 			count++;
 		}
+		else {
+		}
 	}
+
+	tree_shown = (count != 0);
 
 	if (count == 0) {
 		uv_uilabel_init(&fleet_empty_label, win_style->font, ALIGN_CENTER,
@@ -362,22 +579,53 @@ static void sfw_show_fleet(uint8_t f) {
 	else {
 		uv_uitreeview_init(&tree, tree_buf, win_style);
 		uv_uitabwindow_addxy(&fleet_tabs, &tree, 0, 0, cbb.width, cbb.height);
-		bool first = true;
-		for (uint16_t p = 0; p < prod_n; p++) {
-			if (prods[p].fleet != f) {
-				continue;
+		// the directories at the top of this fleet; each of them brings the
+		// whole branch below it
+		for (uint16_t i = 0; i < node_n; i++) {
+			if ((nodes[i].fleet == f) && (nodes[i].parent < 0)) {
+				sfw_build_node(&tree, i);
 			}
-			uv_uitreeobject_init(&prods[p].obj, prods[p].child_buf,
-					prods[p].name, &product_show, win_style);
-			// Content height is one row per version. The fleet's first product
-			// opens expanded, so the tab shows actual files without a click -
-			// the treeview keeps one product open at a time anyway.
-			uv_uitreeview_add(&tree, &prods[p].obj,
-					(int16_t) prods[p].versions * SFW_VROW_H, first);
-			first = false;
+			else {
+			}
 		}
 	}
 	uv_ui_refresh(&fleet_tabs);
+}
+
+
+// Scrolls the product tree with the mouse wheel while the pointer is over it.
+//
+// A ui window scrolls itself by dragging only; the wheel arrives as a global
+// notch counter which whoever the pointer is over has to drain (the running
+// simulator list and the log view do the same). Hence the hit test against the
+// tree's global bounding box: it is what keeps a notch meant for this list from
+// being taken by whatever else is reading the wheel.
+static void sfw_wheel_step(void) {
+	if (tree_shown) {
+		int16_t x = 0;
+		int16_t y = 0;
+		// the position is reported whether or not a button is held down
+		uv_ui_get_touch(&x, &y);
+		int16_t gx = uv_ui_get_xglobal(&tree);
+		int16_t gy = uv_ui_get_yglobal(&tree);
+		uv_bounding_box_st *bb = uv_uibb(&tree);
+		if ((x >= gx) && (x < (gx + bb->width)) &&
+				(y >= gy) && (y < (gy + bb->height))) {
+			int16_t scroll = uv_ui_get_scroll();
+			if (scroll != 0) {
+				// positive (wheel up) moves the content down. content_move clamps
+				// to the content box, so a list that fits stays put
+				uv_uiwindow_content_move(&tree, 0, scroll * SFW_SCROLL_STEP);
+				uv_ui_refresh(&tree);
+			}
+			else {
+			}
+		}
+		else {
+		}
+	}
+	else {
+	}
 }
 
 
@@ -385,6 +633,8 @@ static uv_uiobject_ret_e sfw_step(void *user_ptr, uint16_t step_ms) {
 	(void) user_ptr;
 	(void) step_ms;
 	uv_uiobject_ret_e ret = UIOBJECT_RETURN_ALIVE;
+
+	sfw_wheel_step();
 
 	if (uv_uibutton_clicked(&close_btn)) {
 		ret = UIOBJECT_RETURN_KILLED;
@@ -397,14 +647,14 @@ static uv_uiobject_ret_e sfw_step(void *user_ptr, uint16_t step_ms) {
 		// and un-opened ones, were never added to a window, so they simply never
 		// report a click)
 		bool handled = false;
-		for (uint16_t p = 0; (p < prod_n) && !handled; p++) {
-			for (uint16_t j = 0; j < prods[p].versions; j++) {
-				if (uv_uibutton_clicked(&prods[p].dl_btns[j])) {
+		for (uint16_t i = 0; (i < node_n) && !handled; i++) {
+			for (uint16_t j = 0; j < nodes[i].versions; j++) {
+				if (uv_uibutton_clicked(&nodes[i].dl_btns[j])) {
 					// The window closes and the download runs after it: it is
 					// the caller that does something with the file, and a modal
 					// dialog frozen for the length of a transfer shows nothing
 					// the log does not show better.
-					sel_prod = (int) p;
+					sel_prod = nodes[i].product;
 					sel_ver = (int) j;
 					ret = UIOBJECT_RETURN_KILLED;
 					handled = true;
@@ -422,6 +672,7 @@ bool serverfiles_win_exec(const uv_uistyle_st *style) {
 	win_style = style;
 	sel_prod = -1;
 	sel_ver = -1;
+	tree_shown = false;
 
 	// 1. log in and fetch the file list (blocks; failures are reported and abort)
 	char err[256] = "";
@@ -451,24 +702,9 @@ bool serverfiles_win_exec(const uv_uistyle_st *style) {
 	int16_t tabs_y = SFW_MARGIN + SFW_TITLE_H + SFW_MARGIN;
 	int16_t tabs_h = h - tabs_y - (SFW_BTN_H + 2 * SFW_MARGIN);
 
-	uint16_t n = remotefiles_get_product_count();
-	if (!sfw_alloc_ui(n)) {
+	if (!sfw_alloc_ui()) {
 		sfw_message("Not enough memory to show the file list.");
 		return false;
-	}
-	for (uint16_t p = 0; p < prod_n; p++) {
-		const remotefiles_product_st *prod = remotefiles_get_product(p);
-		// The count is in the row itself: a product with no files then reads
-		// as "(no files)" rather than as a row that refuses to open, which
-		// is indistinguishable from something being broken.
-		if (prods[p].versions > 0) {
-			snprintf(prods[p].name, SFW_NAME_LEN, "%s  (%u)",
-					prod->name, (unsigned int) prods[p].versions);
-		}
-		else {
-			snprintf(prods[p].name, SFW_NAME_LEN, "%s  (no files)",
-					prod->name);
-		}
 	}
 
 	// 3. one tab per fleet. The tab names point straight at the fleet names
