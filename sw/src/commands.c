@@ -36,6 +36,8 @@
 #include "simrun.h"
 #include "credentials.h"
 #include "selfupdate.h"
+#include "remotefiles.h"
+#include <time.h>
 #include "ui/uvui.h"
 #include <uv_ui.h>
 #include <uv_rtos.h>
@@ -55,6 +57,7 @@ bool cmd_sim(const char *arg);
 bool cmd_user(const char *arg);
 bool cmd_pwd(const char *arg);
 bool cmd_version(const char *arg);
+bool cmd_serverfiles(const char *arg);
 bool cmd_checkupdate(const char *arg);
 bool cmd_update(const char *arg);
 
@@ -84,6 +87,17 @@ commands_st commands[] = {
 						"Without an argument every command is listed.",
 				.args = ARG_OPTIONAL,
 				.callback = &cmd_help
+		},
+		{
+				.cmd_long = "serverfiles",
+				.str = "Lists the files the account in *user* / *pwd* can see on the file "
+						"server, as the UI's \"Server files\" panel does, and prints how long "
+						"each step took. Downloads nothing: only the directory listings are "
+						"fetched, which is what the panel reads too.\n"
+						"Useful for telling a slow file server from a slow network, and for "
+						"seeing what an account actually holds without opening the UI.",
+				.args = ARG_NONE,
+				.callback = &cmd_serverfiles
 		},
 		{
 				.cmd_long = "version",
@@ -700,6 +714,91 @@ static void ui_task(void *ptr) {
 	// Blocks until that window is closed.
 	uvui_exec();
 }
+
+#if !CONFIG_TARGET_WIN
+/// @brief: Seconds since some fixed point, for timing the steps below.
+static double sf_now(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (double) ts.tv_sec + (double) ts.tv_nsec / 1e9;
+}
+
+
+/// @brief: Task body for --serverfiles. A task rather than the command callback
+/// itself for the same reason --update is one: the callbacks run before the
+/// scheduler starts.
+static void serverfiles_task(void *ptr) {
+	(void) ptr;
+	char err[256] = "";
+	const char *url = credentials_get_url();
+	const char *user = credentials_get_username();
+
+	printf("Logging in to %s as '%s'...\n", url, user);
+	fflush(stdout);
+	double t0 = sf_now();
+	if (!remotefiles_login(url, user, credentials_get_password(),
+			err, sizeof(err))) {
+		printf("%s\n", err);
+		return;
+	}
+	double t1 = sf_now();
+	uint8_t fleets = remotefiles_get_fleet_count();
+	printf("  logged in in %.2f s; %u fleet(s)\n", t1 - t0,
+			(unsigned int) fleets);
+
+	printf("Listing...\n");
+	fflush(stdout);
+	if (!remotefiles_list(err, sizeof(err))) {
+		printf("%s\n", err);
+		return;
+	}
+	double t2 = sf_now();
+
+	uint16_t products = remotefiles_get_product_count();
+	uint16_t files = 0;
+	for (uint16_t p = 0; p < products; p++) {
+		const remotefiles_product_st *prod = remotefiles_get_product(p);
+		if (prod != NULL) {
+			files = (uint16_t) (files + prod->version_count);
+		}
+	}
+	printf("  listed %u director(ies) holding %u file(s) in %.2f s\n\n",
+			(unsigned int) products, (unsigned int) files, t2 - t1);
+
+	// one block per fleet, in the order the panel puts its tabs in
+	for (uint8_t f = 0; f < fleets; f++) {
+		printf("%s\n", remotefiles_get_fleet(f));
+		for (uint16_t p = 0; p < products; p++) {
+			const remotefiles_product_st *prod = remotefiles_get_product(p);
+			if ((prod == NULL) || (prod->fleet != f)) {
+				continue;
+			}
+			printf("  %s  (%u)\n", prod->name,
+					(unsigned int) prod->version_count);
+			for (uint16_t v = 0; v < prod->version_count; v++) {
+				const remotefiles_version_st *ver = &prod->versions[v];
+				printf("    %-44s %-12s %8llu KB\n", ver->version,
+						(ver->released[0] != '\0') ? ver->released : "-",
+						(unsigned long long) (ver->size / 1024u));
+			}
+		}
+	}
+	printf("\ntotal %.2f s\n", t2 - t0);
+	fflush(stdout);
+}
+#endif
+
+
+bool cmd_serverfiles(const char *arg) {
+	(void) arg;
+#if !CONFIG_TARGET_WIN
+	add_task(&serverfiles_task);
+#else
+	printf("Listing the server files is not wired up on the Windows build.\n");
+#endif
+	return true;
+}
+
 
 bool cmd_version(const char *arg) {
 	(void) arg;

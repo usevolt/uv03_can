@@ -284,39 +284,99 @@ static bool rf_entry_is_dir(parser_node_st obj) {
 }
 
 
-/// @brief: Fetches one directory listing as JSON.
-/// @return: the HTTP status; *out is the response body to free, or NULL.
-static long rf_fetch_dir(const char *fleet, const char *dir, char **out) {
-	*out = NULL;
-	char base[1024];
-	rf_fleet_url(base, sizeof(base), fleet);
-	char edir[512];
-	rf_cfg_sanitize(edir, sizeof(edir), dir);
+/// @brief: How many directories are asked for in one curl run.
+///
+/// The walk used to run one curl process per directory, and with a couple of
+/// dozen directories almost all of the wait was TCP connections and TLS
+/// handshakes -- the listings themselves are a few hundred bytes each. One
+/// process fetching a batch keeps the connection open between them, which is
+/// the whole of the difference.
+///
+/// Sixteen rather than "all of them": the config file is built in one buffer,
+/// and a fleet with hundreds of directories should not need a buffer sized for
+/// its worst case.
+#define RF_BATCH			16
 
-	char resp_path[256];
-	rf_tmp_path(resp_path, sizeof(resp_path), "resp");
-	char cfg[2560];
-	int n = rf_cfg_common(cfg, sizeof(cfg), 30);
-	// A directory has to be asked for WITH its trailing slash. The server
-	// answers a directory addressed without one with a 308 redirect to the
-	// slashed form, and this client deliberately does not follow redirects --
-	// there is no `location` in the curl config, because every request carries
-	// Basic credentials -- so the fetch would come back 308, the caller would
-	// see no listing at all, and the directory would look empty rather than
-	// broken. The fleet's own folder passes dir="" and the "%s/" already ends
-	// it in a slash.
-	snprintf(&cfg[n], sizeof(cfg) - n,
-			"url = \"%s/%s%s\"\n"
-			"header = \"Accept: application/json\"\n"
-			"output = \"%s\"\n"
-			"write-out = \"%%{http_code}\"\n",
-			base, edir, (edir[0] != '\0') ? "/" : "", resp_path);
-	long code = rf_curl_with_cfg(cfg);
-	if (code == 200) {
-		*out = rf_read_file(resp_path);
+/// @brief: How long a directory path relative to its fleet may be.
+#define RF_REL_MAX			512
+
+
+/// @brief: One directory waiting to be listed.
+typedef struct {
+	uint8_t fleet;
+	// path relative to the fleet; "" is the fleet's own folder
+	char rel[RF_REL_MAX];
+} rf_dir_st;
+
+
+/// @brief: Fetches up to *n* directory listings in one curl run.
+///
+/// @param bodies: filled with each listing's body, or NULL where the fetch
+/// failed. The caller frees every non-NULL one.
+/// @param codes: filled with each transfer's HTTP status, 0 where curl never
+/// got that far.
+static void rf_fetch_dirs(const rf_dir_st *dirs, int n,
+		char **bodies, long *codes) {
+	char resp_paths[RF_BATCH][256];
+	for (int i = 0; i < n; i++) {
+		bodies[i] = NULL;
+		codes[i] = 0;
+		char suffix[32];
+		snprintf(suffix, sizeof(suffix), "resp%d", i);
+		rf_tmp_path(resp_paths[i], sizeof(resp_paths[i]), suffix);
+		remove(resp_paths[i]);
 	}
-	remove(resp_path);
-	return code;
+
+	// Built on the heap: sixteen URLs and sixteen output paths do not belong on
+	// the stack of whichever task happens to be listing.
+	size_t cfglen = 2048 + (size_t) n * 1200;
+	char *cfg = malloc(cfglen);
+	if (cfg == NULL) {
+		return;
+	}
+	int w = rf_cfg_common(cfg, cfglen, 30);
+	// One status line per transfer, in order, so a failure can be told from an
+	// empty directory afterwards.
+	w += snprintf(&cfg[w], cfglen - (size_t) w,
+			"header = \"Accept: application/json\"\n"
+			"write-out = \"%%{http_code}\\n\"\n");
+	for (int i = 0; i < n; i++) {
+		char base[1024];
+		rf_fleet_url(base, sizeof(base), remotefiles_get_fleet(dirs[i].fleet));
+		char edir[RF_REL_MAX];
+		rf_cfg_sanitize(edir, sizeof(edir), dirs[i].rel);
+		// A directory has to be asked for WITH its trailing slash. The server
+		// answers a directory addressed without one with a 308 redirect to the
+		// slashed form, and this client deliberately does not follow redirects
+		// -- there is no `location` in the curl config, because every request
+		// carries Basic credentials -- so the fetch would come back 308, the
+		// caller would see no listing at all, and the directory would look
+		// empty rather than broken. The fleet's own folder passes rel="" and
+		// the "%s/" already ends it in a slash.
+		w += snprintf(&cfg[w], cfglen - (size_t) w,
+				"url = \"%s/%s%s\"\n"
+				"output = \"%s\"\n",
+				base, edir, (edir[0] != '\0') ? "/" : "", resp_paths[i]);
+	}
+
+	long got[RF_BATCH];
+	int ncodes = uvhttp_curl_multi(cfg, got, n);
+	free(cfg);
+
+	for (int i = 0; i < n; i++) {
+		if (i < ncodes) {
+			codes[i] = got[i];
+			if (codes[i] == 200) {
+				bodies[i] = rf_read_file(resp_paths[i]);
+			}
+			else {
+			}
+		}
+		else {
+			// curl stopped before this one; nothing was fetched for it
+		}
+		remove(resp_paths[i]);
+	}
 }
 
 
@@ -445,98 +505,6 @@ static remotefiles_product_st *rf_new_product(uint8_t fleet_i,
 }
 
 
-/// @brief: Walks directory *rel* of *fleet* recursively: the files in it become
-/// one product, and every subdirectory is walked in turn.
-///
-/// Two passes over the listing on purpose. Files first, so a directory's own
-/// product is created before the products of anything nested inside it and the
-/// panel reads top-down; subdirectories second.
-///
-/// The product is created lazily, on the first file found, so a directory that
-/// holds nothing but subdirectories does not show up as an empty row.
-///
-/// @param parsed: set (when non-NULL) to whether this directory's listing was
-/// readable as an array. Only the top-level call cares; nested calls pass NULL,
-/// because one unreadable subdirectory must not blank the whole panel.
-/// @return: the HTTP status of *this* directory's listing.
-static long rf_walk_dir(uint8_t fleet_i, const char *rel,
-		unsigned int depth, bool *parsed) {
-	const char *fleet = remotefiles_get_fleet(fleet_i);
-	if (parsed != NULL) {
-		*parsed = false;
-	}
-	char *resp = NULL;
-	long code = rf_fetch_dir(fleet, rel, &resp);
-	if ((code != 200) || (resp == NULL)) {
-		free(resp);
-		return code;
-	}
-
-	char *wrap = NULL;
-	parser_node_st root = rf_parse_listing(resp, &wrap);
-	if (parser_node_is_valid(root) && (parser_get_type(root) == PARSER_ARRAY)) {
-		if (parsed != NULL) {
-			*parsed = true;
-		}
-		unsigned int n = parser_array_get_size(root);
-		remotefiles_product_st *p = NULL;
-		unsigned int i;
-
-		for (i = 0; i < n; i++) {
-			parser_node_st e = parser_array_at(root, i);
-			if (!parser_node_is_valid(e) || rf_entry_is_dir(e)) {
-				continue;
-			}
-			if (p == NULL) {
-				p = rf_new_product(fleet_i, rel);
-				if (p == NULL) {
-					break;
-				}
-			}
-			if (!rf_versions_reserve(p)) {
-				break;
-			}
-			rf_parse_entry(e, p->id, &p->versions[p->version_count]);
-			p->version_count++;
-		}
-
-		if ((depth + 1) < RF_MAX_DEPTH) {
-			for (i = 0; i < n; i++) {
-				parser_node_st e = parser_array_at(root, i);
-				if (!parser_node_is_valid(e) || !rf_entry_is_dir(e)) {
-					continue;
-				}
-				char dname[128] = { '\0' };
-				parser_node_st c = parser_find_child(e, "name");
-				if (parser_node_is_valid(c)) {
-					parser_get_string(c, dname, sizeof(dname));
-				}
-				// the listing marks a directory by a trailing '/' in its name,
-				// which would double up in every path built from it
-				size_t dl = strlen(dname);
-				if ((dl > 0) && (dname[dl - 1] == '/')) {
-					dname[dl - 1] = '\0';
-				}
-				if (dname[0] == '\0') {
-					continue;
-				}
-				char child[512];
-				if (rel[0] != '\0') {
-					snprintf(child, sizeof(child), "%s/%s", rel, dname);
-				}
-				else {
-					snprintf(child, sizeof(child), "%s", dname);
-				}
-				rf_walk_dir(fleet_i, child, depth + 1, NULL);
-			}
-		}
-	}
-	free(wrap);
-	free(resp);
-	return code;
-}
-
-
 /// @brief: The timestamp two listing entries are ordered by: what the server
 /// reports as the file's modification time, which for a package that is
 /// uploaded once and never touched again is when it was created.
@@ -640,26 +608,212 @@ static void rf_sort_products(void) {
 }
 
 
-/// @brief: Adds the products of one fleet to the list.
+/// @brief: Reads one directory's listing: its files become a product, and its
+/// subdirectories are appended to *next* to be fetched in the round after this.
 ///
-/// Every path recorded here is relative to the server root and starts with the
-/// fleet, because an account may hold several and a download has to know which
-/// one a file came from.
+/// Two passes over the listing on purpose. Files first, so a directory's own
+/// product is created before the products of anything nested inside it;
+/// subdirectories second.
 ///
-/// @return: false only when the fleet could not be listed at all. A failure
-/// further down the tree is skipped quietly.
-static bool rf_list_fleet(uint8_t fleet_i, char *err, unsigned int err_len) {
+/// The product is created lazily, on the first file found, so a directory that
+/// holds nothing but subdirectories does not show up as an empty row.
+///
+/// @return: false when the body was not a listing at all, which the caller only
+/// cares about for a fleet's own root.
+static bool rf_read_listing(const rf_dir_st *dir, const char *body,
+		bool want_children, rf_dir_st **next, uint16_t *next_count,
+		uint16_t *next_cap) {
 	bool ret = false;
-	bool parsed = false;
-	long code = rf_walk_dir(fleet_i, "", 0, &parsed);
-	if (code != 200) {
-		rf_http_err(code, "listing files", err, err_len);
-	}
-	else if (!parsed) {
-		rf_err(err, err_len, "The server did not answer with a file listing.");
+	char *wrap = NULL;
+	parser_node_st root = rf_parse_listing(body, &wrap);
+	if (parser_node_is_valid(root) && (parser_get_type(root) == PARSER_ARRAY)) {
+		ret = true;
+		unsigned int n = parser_array_get_size(root);
+		remotefiles_product_st *p = NULL;
+		unsigned int i;
+
+		for (i = 0; i < n; i++) {
+			parser_node_st e = parser_array_at(root, i);
+			if (!parser_node_is_valid(e) || rf_entry_is_dir(e)) {
+				continue;
+			}
+			if (p == NULL) {
+				p = rf_new_product(dir->fleet, dir->rel);
+				if (p == NULL) {
+					break;
+				}
+			}
+			if (!rf_versions_reserve(p)) {
+				break;
+			}
+			rf_parse_entry(e, p->id, &p->versions[p->version_count]);
+			p->version_count++;
+		}
+
+		if (want_children) {
+			for (i = 0; i < n; i++) {
+				parser_node_st e = parser_array_at(root, i);
+				if (!parser_node_is_valid(e) || !rf_entry_is_dir(e)) {
+					continue;
+				}
+				char dname[128] = { '\0' };
+				parser_node_st c = parser_find_child(e, "name");
+				if (parser_node_is_valid(c)) {
+					parser_get_string(c, dname, sizeof(dname));
+				}
+				// the listing marks a directory by a trailing '/' in its name,
+				// which would double up in every path built from it
+				size_t dl = strlen(dname);
+				if ((dl > 0) && (dname[dl - 1] == '/')) {
+					dname[dl - 1] = '\0';
+				}
+				if (dname[0] == '\0') {
+					continue;
+				}
+				if (*next_count >= *next_cap) {
+					uint16_t cap = (*next_cap == 0) ? 16 :
+							(uint16_t) (*next_cap * 2);
+					rf_dir_st *grown = realloc(*next, (size_t) cap * sizeof(**next));
+					if (grown == NULL) {
+						break;
+					}
+					*next = grown;
+					*next_cap = cap;
+				}
+				rf_dir_st *d = &(*next)[*next_count];
+				d->fleet = dir->fleet;
+				// A path that would not fit is dropped rather than truncated:
+				// a truncated path names a different directory, and asking the
+				// server for that is worse than admitting this one is too deep
+				// to reach.
+				int need = (dir->rel[0] != '\0') ?
+						snprintf(d->rel, sizeof(d->rel), "%.*s/%s",
+								(int) (sizeof(d->rel) - 2), dir->rel, dname) :
+						snprintf(d->rel, sizeof(d->rel), "%s", dname);
+				if ((need > 0) && ((size_t) need < sizeof(d->rel))) {
+					(*next_count)++;
+				}
+				else {
+				}
+			}
+		}
+		else {
+			// at the depth limit; whatever is below stays unlisted
+		}
 	}
 	else {
-		ret = true;
+	}
+	free(wrap);
+	return ret;
+}
+
+
+/// @brief: Lists every fleet, a level of the directory tree at a time.
+///
+/// Breadth first, and deliberately: every directory at one depth is fetched in
+/// one curl run, so the whole walk costs a handful of connections rather than
+/// one per directory. Depth first would learn the same directories but could
+/// only ever ask for them one at a time, which is what made opening the panel
+/// take seconds of pure handshaking.
+///
+/// The order products are created in no longer decides the order they are shown
+/// in -- rf_sort_products() settles that -- so nothing depends on the walk
+/// being depth first any more.
+///
+/// @return: false only when no fleet could be listed at all.
+static bool rf_walk_fleets(char *err, unsigned int err_len) {
+	bool ret = false;
+	char first_err[256] = { '\0' };
+
+	rf_dir_st *level = NULL;
+	uint16_t level_count = 0;
+	uint16_t level_cap = 0;
+	rf_dir_st *next = NULL;
+	uint16_t next_count = 0;
+	uint16_t next_cap = 0;
+
+	// the first level is every fleet's own folder
+	level_cap = rf_fleet_count;
+	level = malloc((size_t) level_cap * sizeof(*level));
+	if (level == NULL) {
+		rf_err(err, err_len, "Not enough memory to list the files.");
+		return false;
+	}
+	for (uint8_t i = 0; i < rf_fleet_count; i++) {
+		level[level_count].fleet = i;
+		level[level_count].rel[0] = '\0';
+		level_count++;
+	}
+
+	for (unsigned int depth = 0; (depth < RF_MAX_DEPTH) && (level_count > 0);
+			depth++) {
+		next_count = 0;
+		for (uint16_t off = 0; off < level_count; off += RF_BATCH) {
+			int n = (int) ((level_count - off > RF_BATCH) ?
+					RF_BATCH : (level_count - off));
+			char *bodies[RF_BATCH];
+			long codes[RF_BATCH];
+			rf_fetch_dirs(&level[off], n, bodies, codes);
+
+			for (int i = 0; i < n; i++) {
+				const rf_dir_st *d = &level[off + i];
+				bool is_root = (d->rel[0] == '\0');
+				bool ok = false;
+				if ((codes[i] == 200) && (bodies[i] != NULL)) {
+					ok = rf_read_listing(d, bodies[i],
+							(depth + 1) < RF_MAX_DEPTH,
+							&next, &next_count, &next_cap);
+				}
+				else {
+				}
+				free(bodies[i]);
+
+				// Only a fleet's own root decides whether that fleet was
+				// listable. A subdirectory that fails is skipped quietly: one
+				// unreadable folder must not blank the whole panel.
+				if (is_root) {
+					if (ok) {
+						// one readable fleet is enough for the list to be usable
+						ret = true;
+					}
+					else if (first_err[0] == '\0') {
+						char one[256] = { '\0' };
+						if (codes[i] == 200) {
+							rf_err(one, sizeof(one),
+									"The server did not answer with a file "
+									"listing.");
+						}
+						else {
+							rf_http_err(codes[i], "listing files",
+									one, sizeof(one));
+						}
+						snprintf(first_err, sizeof(first_err), "%.63s: %.180s",
+								rf_fleets[d->fleet], one);
+					}
+					else {
+					}
+				}
+				else {
+				}
+			}
+		}
+
+		// the directories just discovered become the next level
+		free(level);
+		level = next;
+		level_count = next_count;
+		level_cap = next_cap;
+		next = NULL;
+		next_count = 0;
+		next_cap = 0;
+	}
+	free(level);
+	free(next);
+
+	if (!ret) {
+		rf_err(err, err_len, first_err);
+	}
+	else {
 	}
 	return ret;
 }
@@ -682,26 +836,13 @@ bool remotefiles_list(char *err, unsigned int err_len) {
 		// One account may hold several fleets. Listing them all keeps the file
 		// view whole rather than making the user pick a fleet first; each
 		// product remembers which fleet it came from, which is what the panel
-		// puts on a tab of its own.
-		char first_err[256] = { '\0' };
-		for (uint8_t i = 0; i < rf_fleet_count; i++) {
-			char one_err[256] = { '\0' };
-			if (rf_list_fleet(i, one_err, sizeof(one_err))) {
-				// a single readable fleet is enough for the list to be usable
-				ret = true;
-			}
-			else if (first_err[0] == '\0') {
-				snprintf(first_err, sizeof(first_err), "%.63s: %.180s",
-						rf_fleets[i], one_err);
-			}
-			else {
-			}
-		}
-		if (!ret) {
-			rf_err(err, err_len, first_err);
+		// puts on a tab of its own. They are walked together, a level of the
+		// tree at a time, so the fetches of every fleet share the same runs.
+		ret = rf_walk_fleets(err, err_len);
+		if (ret) {
+			rf_sort_products();
 		}
 		else {
-			rf_sort_products();
 		}
 	}
 	return ret;

@@ -73,6 +73,22 @@ int uvhttp_cfg_common(char *dst, size_t dstlen, int timeout_s,
 long uvhttp_curl(const char *cfg);
 
 
+/// @brief: As uvhttp_curl(), for a config file naming SEVERAL transfers.
+///
+/// One curl process for the lot, which is the whole point: curl keeps the
+/// connection open between them, so N requests to one host cost one TCP
+/// connection and one TLS handshake instead of N of each. Walking a directory
+/// tree one curl process per directory spent most of its time shaking hands.
+///
+/// The config file has to carry `write-out = "%{http_code}\n"` in its common
+/// section; curl then writes one status line per transfer, in order, and they
+/// come back in *codes*.
+///
+/// @return: how many status codes were read, i.e. how many transfers curl
+/// actually reported. Fewer than asked for means it stopped early.
+int uvhttp_curl_multi(const char *cfg, long *codes, int max_codes);
+
+
 /// @brief: As uvhttp_curl(), for a download whose progress is logged to stdout.
 ///
 /// @param dest_path: where the config file tells curl to write the body. The

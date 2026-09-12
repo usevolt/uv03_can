@@ -50,8 +50,11 @@
 
 /// @brief: One downloadable version of a product, with its display metadata.
 typedef struct {
-	// version label shown to the user (e.g. "13")
-	char version[32];
+	// The version label shown to the user, which for a package on this server
+	// is its whole file name -- "uv0d_jhc_uv0d1_noremote_1042-gcf8c.uvdev" is
+	// 40 characters, and at 32 the panel showed it cut off mid-word. Sized for
+	// the longest name the makefiles produce, with room to spare.
+	char version[96];
 	// server-relative path used to download it (the download allowlist key)
 	char path[512];
 	// release date (ISO "YYYY-MM-DD"), free-text release notes

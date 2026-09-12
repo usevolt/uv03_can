@@ -250,6 +250,62 @@ static long http_run_curl_logged(const char *cfg_path, const char *tag,
 #endif /* !CONFIG_TARGET_WIN -- the progress-logged download's machinery */
 
 
+// As http_run_curl(), reading back every status line curl wrote rather than
+// only the first. Returns how many were read.
+static int http_run_curl_codes(const char *cfg_path, const char *tag,
+		long *codes, int max_codes) {
+	int n = 0;
+	char code_path[256];
+	uvhttp_tmp_path(code_path, sizeof(code_path), tag, "code");
+
+	char cmd[1024];
+	snprintf(cmd, sizeof(cmd), "curl -K '%s' > '%s' 2>/dev/null",
+			cfg_path, code_path);
+	int rc = system(cmd);
+	if (rc != -1) {
+		char *body = uvhttp_read_file(code_path);
+		if (body != NULL) {
+			char *line = body;
+			while ((line != NULL) && (*line != '\0') && (n < max_codes)) {
+				char *nl = strchr(line, '\n');
+				if (nl != NULL) {
+					*nl = '\0';
+				}
+				else {
+				}
+				if (line[0] != '\0') {
+					codes[n++] = strtol(line, NULL, 10);
+				}
+				else {
+				}
+				line = (nl != NULL) ? (nl + 1) : NULL;
+			}
+			free(body);
+		}
+		else {
+		}
+	}
+	else {
+	}
+	remove(code_path);
+	return n;
+}
+
+
+int uvhttp_curl_multi(const char *cfg, long *codes, int max_codes) {
+	char cfg_path[256];
+	uvhttp_tmp_path(cfg_path, sizeof(cfg_path), "http", "cfg");
+	int n = 0;
+	if (uvhttp_write_file(cfg_path, cfg)) {
+		n = http_run_curl_codes(cfg_path, "http", codes, max_codes);
+	}
+	else {
+	}
+	remove(cfg_path);
+	return n;
+}
+
+
 long uvhttp_curl(const char *cfg) {
 	char cfg_path[256];
 	uvhttp_tmp_path(cfg_path, sizeof(cfg_path), "http", "cfg");
