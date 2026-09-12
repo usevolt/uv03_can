@@ -12,6 +12,7 @@ Contents
   uvdev.ico                          icon shown for .uvdev files
   install-association.bat            register the file associations
   uninstall-association.bat          remove the file associations
+  LICENSE.txt                        the GNU General Public License, version 3
 
 Requirements
 ------------

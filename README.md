@@ -35,3 +35,21 @@ To connect to the CAN-bus without root permissions, append these to the end of /
 <user> <comp_name> = (root) NOPASSWD: /sbin/ip
 ```
 Where `<user>` is the logged in user's name and `<com_name>` is the computer's name.
+
+
+# License
+*Uvcan* is free software, licensed under the **GNU General Public License,
+version 3** — see [LICENSE](LICENSE). Every source file under `src/` and `inc/`
+carries the matching notice, except `inc/thirdparty/`, which holds third-party
+code under its own terms.
+
+Two things worth knowing about that choice:
+
+* The `hal/` submodule (`uv_hal`) is a separate project under the MIT license.
+  It is shared with the embedded firmware, where the GPL would not be wanted,
+  and MIT code may be used in a GPL work.
+* *Uvcan* links GNU readline, which is GPLv3. A binary linking it has to be
+  distributed under GPLv3-compatible terms, so this is not only a preference.
+  The top-level `LICENSE` file said MIT until 2026-09 — that was boilerplate
+  from the repository's first commit, predating uvcan's own sources, and it
+  never matched the file headers.

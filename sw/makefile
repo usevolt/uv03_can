@@ -221,7 +221,9 @@ linux-package:
 linux-package-stage:
 	@mkdir -p "$(PRODDIR)"
 	@rm -f "$(PUBLISH_TAR)"
-	tar czf "$(PUBLISH_TAR)" uvcan install.sh packaging
+	@# LICENSE comes from the repository root, hence the -C: the GPL asks that
+	@# its text travel with the binary, and until now neither package carried it
+	tar czf "$(PUBLISH_TAR)" uvcan install.sh packaging -C .. LICENSE
 	@echo "Created $(PUBLISH_TAR)"
 
 win windows:
@@ -249,6 +251,7 @@ win-package-stage:
 	cp packaging/install-association.bat "$(PKGDIR)/"
 	cp packaging/uninstall-association.bat "$(PKGDIR)/"
 	cp packaging/README.txt "$(PKGDIR)/"
+	cp ../LICENSE "$(PKGDIR)/LICENSE.txt"
 	cd "$(BUILDDIR)" && zip -r -q "$(PKGNAME).zip" "$(PKGNAME)"
 	@echo "Created $(PKGDIR).zip"
 
