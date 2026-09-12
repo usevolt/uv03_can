@@ -214,6 +214,9 @@ if [ "$ACTION" = "uninstall" ]; then
 	command -v gtk-update-icon-cache   >/dev/null && priv gtk-update-icon-cache -f -t "$ICON_BASE" >/dev/null 2>&1 || true
 	if [ "$MODE" = "user" ]; then remove_path_block "$(shell_rc)"; fi
 	say "Done. The uvcan binary was removed; your package files are untouched."
+	# packaging/uninstall-uvcan.sh does the same without needing this package.
+	# KEEP THE TWO IN STEP: a file added to the install above has to be added
+	# there as well.
 	exit 0
 fi
 

@@ -13,6 +13,7 @@ Contents
   install-association.bat            register the file associations
   uninstall-association.bat          remove the file associations
   LICENSE.txt                        the GNU General Public License, version 3
+  uninstall-uvcan.ps1                removes uvcan from this computer
 
 Requirements
 ------------

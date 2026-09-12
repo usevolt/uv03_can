@@ -252,6 +252,7 @@ win-package-stage:
 	cp packaging/uninstall-association.bat "$(PKGDIR)/"
 	cp packaging/README.txt "$(PKGDIR)/"
 	cp ../LICENSE "$(PKGDIR)/LICENSE.txt"
+	cp packaging/uninstall-uvcan.ps1 "$(PKGDIR)/"
 	cd "$(BUILDDIR)" && zip -r -q "$(PKGNAME).zip" "$(PKGNAME)"
 	@echo "Created $(PKGDIR).zip"
 
@@ -302,6 +303,8 @@ package:
 #                         uvcan.exe cannot replace itself (it is a folder of
 #                         files, not one binary), so re-running the script is
 #                         how a Windows install moves forward
+#   uninstall-uvcan.sh    removal, for a machine that no longer has the
+#   uninstall-uvcan.ps1   package it was installed from
 UPLOAD_FLEET := pub
 UPLOAD_SUBDIR := uvcan
 UVUPLOAD := uvupload
@@ -316,7 +319,8 @@ PUBLISH_MANIFEST := $(PRODDIR)/latest.json
 # release ever built here, and a glob would push all of them up every time.
 PUBLISH_FILES = $(wildcard $(PUBLISH_BIN)) $(wildcard $(PUBLISH_MANIFEST)) \
 	$(wildcard $(PUBLISH_TAR)) $(wildcard $(PRODDIR)/$(PKGNAME).zip) \
-	packaging/get-uvcan.sh packaging/get-uvcan.ps1
+	packaging/get-uvcan.sh packaging/get-uvcan.ps1 \
+	packaging/uninstall-uvcan.sh packaging/uninstall-uvcan.ps1
 # Set YES=1 for an unattended run: it answers uvupload's overwrite prompt.
 UPLOAD_YES = $(if $(YES),-y,)
 
