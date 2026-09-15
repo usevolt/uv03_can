@@ -23,8 +23,11 @@ _uvcan_path_opts="--db --dev --sys --firmware --linuxbin --bootloader --media
 # All options the installed uvcan knows, read from its help once per shell.
 _uvcan_all_opts() {
 	if [ -z "$_UVCAN_OPTS" ]; then
+		# the listing prints the option names in bold; the escape sequences are
+		# dropped first or no line would start with the option name
 		_UVCAN_OPTS=$(uvcan --help 2>/dev/null |
-				sed -n 's/^\(--[a-zA-Z0-9_-]\{1,\}\).*/\1/p')
+				sed -n -e 's/\x1b\[[0-9;]*m//g' \
+					-e 's/^\(--[a-zA-Z0-9_-]\{1,\}\).*/\1/p')
 	fi
 	printf '%s\n' "$_UVCAN_OPTS"
 }

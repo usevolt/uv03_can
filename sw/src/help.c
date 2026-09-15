@@ -23,6 +23,19 @@
 #include <string.h>
 #include <ctype.h>
 #include <getopt.h>
+#include <unistd.h>
+
+
+// The escape sequence for bold text, or nothing when the help is not written to
+// a terminal. Piped help (the bash completion reads the option names out of it,
+// and people grep it) has to be plain text.
+static const char *bold_on(void) {
+	return isatty(STDOUT_FILENO) ? PRINT_BOLD : "";
+}
+
+static const char *bold_off(void) {
+	return isatty(STDOUT_FILENO) ? PRINT_RESET : "";
+}
 
 
 // Writes the description of a command, rendering the command names it marks with
@@ -37,7 +50,7 @@ static void print_description(const char *str) {
 				c++;
 			}
 			bold = !bold;
-			printf("%s", bold ? PRINT_BOLD : PRINT_RESET);
+			printf("%s", bold ? bold_on() : bold_off());
 		}
 		else {
 			putchar(*c);
@@ -45,7 +58,7 @@ static void print_description(const char *str) {
 	}
 	// a text with an unclosed marker must not leave the terminal bold
 	if (bold) {
-		printf(PRINT_RESET);
+		printf("%s", bold_off());
 	}
 }
 
@@ -56,10 +69,10 @@ static void print_command(const commands_st *cmd) {
 	// the short options below 'a' are not registered with getopt (see main()),
 	// so only the long name is shown for them
 	if (cmd->cmd_short >= 'a') {
-		printf(PRINT_BOLD "--%s -%c" PRINT_RESET ": ", cmd->cmd_long, cmd->cmd_short);
+		printf("%s--%s -%c%s: ", bold_on(), cmd->cmd_long, cmd->cmd_short, bold_off());
 	}
 	else {
-		printf(PRINT_BOLD "--%s" PRINT_RESET ": ", cmd->cmd_long);
+		printf("%s--%s%s: ", bold_on(), cmd->cmd_long, bold_off());
 	}
 	print_description(cmd->str);
 	printf("\n\n");
