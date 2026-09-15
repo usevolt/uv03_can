@@ -1162,6 +1162,11 @@ bool simrun_load_params_is_finished(void) {
 	return true;
 }
 
+bool simrun_wait_online(void) {
+	// no simulator is ever started, so there is nothing to wait for
+	return true;
+}
+
 void simrun_open_log(uint8_t index) {
 	(void) index;
 }
