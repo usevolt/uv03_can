@@ -32,7 +32,7 @@
 /// There are two completely separate accounts, stored side by side in the same
 /// file and never mixed:
 ///  - the *file server* account (credentials_get_* / credentials_set_*), used by
-///    the system tab's Account panel and the "Server files" browser;
+///    the Settings tab's Account panel and the "Server files" browser;
 ///  - the *fleet* account (credentials_fleet_*), used by the Fleet tab to log in
 ///    to the MQTT broker.
 ///
@@ -81,7 +81,7 @@ const char *credentials_get_url(void);
 
 
 /// @brief: Sets the username / password / server URL and persists it to the shared
-/// file. Used by both the UI (the system tab's Account panel and URL field) and the
+/// file. Used by both the UI (the Settings tab's Account panel) and the
 /// --user / --pwd command-line options, so the two are equivalent. A NULL argument
 /// is treated as an empty string.
 void credentials_set_username(const char *username);

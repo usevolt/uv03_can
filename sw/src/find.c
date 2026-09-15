@@ -50,6 +50,11 @@
 // it within this many milliseconds.
 #define FIND_ONLINE_TIMEOUT_MS	2000
 
+// How soon after a flash finishes a node must come online at the flashed
+// package's default node id to be taken for the flashed device itself, rebooted
+// with its settings reset (see find_expect_boot_nodeid()).
+#define FIND_BOOT_ADOPT_MS		2000
+
 // Polling step while waiting for a node to come operational.
 #define FIND_OP_POLL_MS			100
 
@@ -68,6 +73,12 @@ static volatile uint32_t last_seen_tick[NODEID_MAX + 1];
 // CANOPEN_* node state, toggle bit masked off). Only meaningful once the node's
 // last_seen_tick is non-zero. Mapped onto dev_state_e by nmt_to_dev_state().
 static volatile uint8_t last_nmt_state[NODEID_MAX + 1];
+// The device a firmware flash has just finished on, the node id its package
+// boots at by default, and the tick the wait started at. NULL when nothing is
+// expected. See find_expect_boot_nodeid().
+static device_st *boot_expect_device;
+static uint8_t boot_expect_nodeid;
+static uint32_t boot_expect_tick;
 // True once the CAN rx sniffer has been installed, so it is only installed once.
 static bool monitor_installed;
 // Optional additional CAN rx sniffer, called from find_can_callb() for every
@@ -489,9 +500,84 @@ static device_st *find_device_by_nodeid(uint8_t nodeid) {
 }
 
 
-bool find_poll_new_devices(void) {
+void find_expect_boot_nodeid(device_st *device, uint8_t nodeid) {
+	if ((device != NULL) && (nodeid >= 1) && (nodeid <= NODEID_MAX) &&
+			(nodeid != device->nodeid)) {
+		boot_expect_device = device;
+		boot_expect_nodeid = nodeid;
+		boot_expect_tick = uv_rtos_get_tick_count();
+	}
+	else {
+		boot_expect_device = NULL;
+	}
+}
+
+
+/// @brief: Settles the wait find_expect_boot_nodeid() started. A node which comes
+/// online at the expected node id within FIND_BOOT_ADOPT_MS of the flash is the
+/// flashed device, rebooted with its settings reset to the package's defaults:
+/// the device follows it to that node id rather than a tab being opened for a
+/// "new" device while the flashed one sits offline. One that shows up later is
+/// somebody else, and so is anything at a node id another device of the system
+/// already uses.
+///
+/// A node that was on the bus all along is somebody else too, but that cannot be
+/// told here: a flash may take the CAN callback over for its whole length, and
+/// the heartbeats of every node on the bus then stop being recorded until it
+/// ends, so by now each of them looks as if it had only just come online. The
+/// caller rules those out instead, when the flash starts.
+/// @return: true when the device's node id was changed.
+static bool find_adopt_booted_device(uint32_t now) {
 	bool changed = false;
+	if (boot_expect_device != NULL) {
+		uint8_t nodeid = boot_expect_nodeid;
+		bool appeared = (node_live_state(nodeid, now) != DEV_STATE_OFFLINE) &&
+				(((now - boot_expect_tick) * UV_RTOS_TICK_PERIOD_MS) <=
+						FIND_BOOT_ADOPT_MS);
+		if (appeared) {
+			device_st *d = boot_expect_device;
+			if (system_holds_device(&dev.system, d) &&
+					(find_device_by_nodeid(nodeid) == NULL)) {
+				printf("Node 0x%x booted right after flashing node 0x%x, at the "
+						"package's default node id: the device's settings were "
+						"reset. Following it to node 0x%x.\n",
+						(unsigned int) nodeid, (unsigned int) d->nodeid,
+						(unsigned int) nodeid);
+				fflush(stdout);
+				d->nodeid = nodeid;
+				d->state = node_live_state(nodeid, now);
+				// read afresh from the rebooted firmware
+				d->sw_version = 0;
+				d->sw_version_tried = false;
+				d->devname_tried = false;
+				d->dev_revision = 0;
+				// the node is this device now; the live discovery leaves it be
+				live_added[nodeid] = 2;
+				changed = true;
+			}
+			else {
+			}
+			boot_expect_device = NULL;
+		}
+		else if (((now - boot_expect_tick) * UV_RTOS_TICK_PERIOD_MS) >
+				FIND_BOOT_ADOPT_MS) {
+			// the device kept its node id (or did not come back): nothing to follow
+			boot_expect_device = NULL;
+		}
+		else {
+		}
+	}
+	else {
+	}
+	return changed;
+}
+
+
+bool find_poll_new_devices(void) {
 	uint32_t now = uv_rtos_get_tick_count();
+	// before the discovery below, which would otherwise add the rebooted device as
+	// a new one
+	bool changed = find_adopt_booted_device(now);
 	for (uint8_t nodeid = 1; nodeid <= NODEID_MAX; nodeid++) {
 		uint32_t seen = last_seen_tick[nodeid];
 		bool online = (seen != 0) &&

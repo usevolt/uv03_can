@@ -110,6 +110,11 @@ void step(void *me) {
 		uv_mutex_lock(&((task_st*) uv_vector_at(&this->tasks, i))->mutex);
 	}
 
+	// every command has now run. --sim leaves its simulators running: stay alive
+	// monitoring them (this returns at once without --sim) so they keep running
+	// until the user stops them with Ctrl-C, which also kills them.
+	sim_monitor();
+
 	uv_deinit();
 
 	if (!uv_rtos_idle_task_set()) {

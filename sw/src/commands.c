@@ -321,6 +321,12 @@ commands_st commands[] = {
 						"device's node id. uvcan keeps running to monitor the "
 						"simulators and kills them when it exits. Linux only. This is "
 						"the same action as the UI's \"Run simulator\" button.\n"
+						"The commands given after this one are run once the simulators "
+						"are up and answering on the bus, so they address the "
+						"simulated devices: '--sim --loadparam params.yml' starts the "
+						"simulators and loads the parameters onto them. Only after the "
+						"last command has run does uvcan settle into monitoring them, "
+						"until Ctrl-C.\n"
 						DEV_NODEID_HELP,
 				.args = ARG_NONE,
 				.callback = &cmd_sim
@@ -877,7 +883,16 @@ bool cmd_update(const char *arg) {
 }
 
 
+// Where --ui stands in the task list, and whether it was given at all. A UI
+// opened after a --sim is what the run then lives for, which changes what
+// happens to its simulators when the window is closed (see sim_monitor).
+static bool ui_given;
+static int ui_task_index;
+
 bool cmd_ui(const char *arg) {
+	ui_given = true;
+	ui_task_index = uv_vector_size(&dev.tasks);
+
 	// Enable verbose PRINT output (as if -s/--silent were given) so the UI's log
 	// label shows the extra debug information. `silent` defaults to true, which
 	// suppresses PRINT; clearing it turns that output on.
@@ -896,11 +911,34 @@ bool cmd_ui(const char *arg) {
 }
 
 
-/// @brief: Task body for --sim. Launches every device's simulator (the same
-/// simrun_start_system() the UI's "Run simulator" button calls) and then keeps
-/// uvcan alive, reaping the children, until they have all exited. The simulators
-/// are killed when uvcan exits.
-static void sim_task(void *ptr) {
+/// @brief: Index of the --sim task in the task list, so sim_task() can tell
+/// whether any command follows it on the command line (see below).
+static int sim_task_index;
+
+/// @brief: True when a command follows --sim on the command line, i.e. when the
+/// simulators have to be ready to answer before the launch is done.
+static volatile bool sim_commands_follow;
+
+/// @brief: True once --sim has launched at least one simulator, i.e. once there
+/// is something for sim_monitor() to keep uvcan alive for.
+static volatile bool sim_started;
+
+/// @brief: Set by the keeper task once the simulators are up (or none started),
+/// which is what --sim waits for before the next command is run.
+static volatile bool sim_ready;
+
+/// @brief: Set by the keeper task when the last simulator has stopped.
+static volatile bool sim_keeper_done;
+
+
+/// @brief: Launches the simulators and stays alive until the last of them has
+/// stopped. This is the thread they are forked from, and it has to be: they are
+/// launched with PR_SET_PDEATHSIG, which the kernel raises when the thread that
+/// forked the child exits - not when the process does, which is the tempting
+/// reading of it. sim_task() cannot do the launching itself, because it returns
+/// as soon as the simulators are up so that the rest of the command line runs,
+/// and every simulator would be killed with it.
+static void sim_keeper_task(void *ptr) {
 	// use the CAN device actually active in the HAL (kept in sync by --can and the
 	// config window) rather than dev.can_channel, which the config window does not
 	// update
@@ -923,7 +961,8 @@ static void sim_task(void *ptr) {
 				"bundles a Linux simulator.\n");
 	}
 	else {
-		PRINT("Started %u simulator(s) on '%s'. Press Ctrl-C to stop them.\n",
+		sim_started = true;
+		PRINT("Started %u simulator(s) on '%s'.\n",
 				(unsigned int) started, dev.can_channel);
 		// once started, load the system's bundled parameters onto the simulators
 		// (waits for them to come online, then suppresses EMCY / writes / stores /
@@ -931,15 +970,78 @@ static void sim_task(void *ptr) {
 		// --sim command simulates every device (it does not manage already-online
 		// real devices the way the UI does), so no restore list is passed.
 		simrun_load_params_async(&dev.system, NULL, 0);
-		// keep monitoring until every simulator has stopped (exited or been
-		// killed); reaping updates each one's state as it goes
-		while (simrun_any_running()) {
+		// wait for that load before giving the turn to the next command: it owns
+		// the SDO client, which a following --loadparam would otherwise fight over
+		while (!simrun_load_params_is_finished()) {
 			simrun_step();
 			uv_rtos_task_delay(200);
 		}
+		// The commands after --sim (--loadparam, --sdowrite, ...) talk to the
+		// simulators over CAN, so let them answer first. Only then: with no command
+		// to serve, the wait would only delay the monitoring, and a simulator which
+		// moved itself to another node id (it may, see simrun_start_system) would
+		// stall the start until the timeout for nothing.
+		if (sim_commands_follow) {
+			simrun_wait_online();
+		}
+		else {
+			// nothing follows --sim; go straight to monitoring the simulators
+		}
+	}
+	// the simulators are up (or there are none): the next command can run
+	sim_ready = true;
+
+	// keep monitoring until every simulator has stopped (exited or been killed);
+	// reaping updates each one's state as it goes. sim_monitor() is what waits for
+	// this, once every command of the command line has had its turn.
+	while (simrun_any_running()) {
+		simrun_step();
+		uv_rtos_task_delay(200);
+	}
+	if (sim_started) {
 		PRINT("All simulators have stopped.\n");
 	}
+	else {
+		// nothing was started, so nothing stopped either
+	}
+	sim_keeper_done = true;
+	uv_rtos_task_delete(NULL);
 }
+
+
+/// @brief: Task body for --sim. Starts the keeper task above and waits until the
+/// simulators are up, so that the commands given after --sim on the command line
+/// run against them. Keeping uvcan alive afterwards is sim_monitor()'s job.
+static void sim_task(void *ptr) {
+	sim_commands_follow = (uv_vector_size(&dev.tasks) > (sim_task_index + 1));
+	uv_rtos_task_create(&sim_keeper_task, "simkeeper",
+			UV_RTOS_MIN_STACK_SIZE * 5, NULL, UV_RTOS_IDLE_PRIORITY + 1, NULL);
+	while (!sim_ready) {
+		uv_rtos_task_delay(100);
+	}
+}
+
+
+void sim_monitor(void) {
+	// a UI opened after the simulators were started is what watches them; closing
+	// its window ends the run. A UI which was already closed before --sim started
+	// them (it stood earlier on the command line) is not.
+	bool watched_from_ui = ui_given && (ui_task_index > sim_task_index);
+	if (sim_started && !watched_from_ui) {
+		PRINT("The simulators are running. Press Ctrl-C to stop them.\n");
+		fflush(stdout);
+		while (!sim_keeper_done) {
+			uv_rtos_task_delay(200);
+		}
+	}
+	else {
+		// Nothing to keep uvcan alive for: --sim was not given, it started
+		// nothing, or the simulators were watched from a UI window which the user
+		// has now closed. Exiting kills them, as it does for the simulators
+		// started from the UI's own "Run simulator" button.
+	}
+}
+
 
 bool cmd_sim(const char *arg) {
 	(void) arg;
@@ -948,6 +1050,10 @@ bool cmd_sim(const char *arg) {
 
 	// run under the scheduler (like --ui): the simulators are child processes we
 	// keep monitoring while uvcan stays alive.
+	// Remember where this command stands in the task list: the tasks added after
+	// it are the commands given after --sim, which the simulators have to be
+	// ready for.
+	sim_task_index = uv_vector_size(&dev.tasks);
 	add_task(&sim_task);
 	return true;
 }

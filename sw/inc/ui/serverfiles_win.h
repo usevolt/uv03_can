@@ -27,8 +27,11 @@
 
 /// @brief: Opens the modal "Server files" window: logs in to the Usevolt file
 /// server with the stored account credentials, lists the account's files (one tab
-/// per fleet, holding a tree of product -> versions with metadata) and lets the
-/// user download a version. Blocks until the window is closed. On a login/list
+/// per fleet, holding a tree of every directory, subdirectory and file with its
+/// metadata, all in alphabetical order) and lets the user download a file. A
+/// filter field narrows the current directory -- the deepest one open, or the
+/// fleet's top level -- to the entries whose names match; '*' matches any run of
+/// characters, and a filter without one matches anywhere in the name. Blocks until the window is closed. On a login/list
 /// failure it shows an error dialog and returns. The caller must ensure the
 /// username, password and server URL are set (see credentials.h) before calling.
 ///

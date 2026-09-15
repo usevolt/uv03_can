@@ -63,4 +63,11 @@ unsigned int commands_count(void);
 void commands_select_nodeid(uint8_t nodeid, bool force);
 
 
+/// @brief: Keeps uvcan running - reaping the child processes - until every
+/// simulator started by the *sim* command has stopped, so that Ctrl-C reaches
+/// them. Called once every command of the command line has run; returns
+/// immediately when *sim* was not given or started nothing.
+void sim_monitor(void);
+
+
 #endif /* COMMANDS_H_ */

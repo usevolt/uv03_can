@@ -505,62 +505,29 @@ static remotefiles_product_st *rf_new_product(uint8_t fleet_i,
 }
 
 
-/// @brief: The timestamp two listing entries are ordered by: what the server
-/// reports as the file's modification time, which for a package that is
-/// uploaded once and never touched again is when it was created.
-///
-/// Compared as text, because the server writes it as an ISO-8601 timestamp
-/// ("2026-09-11T10:21:33Z") -- fixed width, largest field first -- and such a
-/// string sorts the same way the instant it names does. An entry the server
-/// gave no time for sorts last whichever way it is compared, rather than ahead
-/// of everything real as an empty string otherwise would.
-static int rf_cmp_time(const char *a, const char *b) {
-	int ret;
-	if ((a[0] == '\0') != (b[0] == '\0')) {
-		// the one with a timestamp first
-		ret = (a[0] == '\0') ? 1 : -1;
+/// @brief: Alphabetical order of two names, the way a file browser lists them:
+/// case does not decide it ("Readme" sits between "parameters" and "uv0d"),
+/// and only breaks a tie, so the order is still total and repeatable.
+static int rf_cmp_name(const char *a, const char *b) {
+	int ret = strcasecmp(a, b);
+	if (ret == 0) {
+		ret = strcmp(a, b);
 	}
 	else {
-		// newest first, so the comparison is the other way round
-		ret = strcmp(b, a);
 	}
 	return ret;
 }
 
 
-/// @brief: qsort predicate ordering a product's versions newest first.
+/// @brief: qsort predicate ordering a product's versions by file name.
 static int rf_cmp_version(const void *a, const void *b) {
 	const remotefiles_version_st *va = a;
 	const remotefiles_version_st *vb = b;
-	int ret = rf_cmp_time(va->modified, vb->modified);
-	if (ret == 0) {
-		// same timestamp: by name, so the order is at least stable and
-		// repeatable rather than whatever the listing happened to give
-		ret = strcmp(va->version, vb->version);
-	}
-	else {
-	}
-	return ret;
+	return rf_cmp_name(va->version, vb->version);
 }
 
 
-/// @brief: The newest timestamp any of *p*'s versions carries, i.e. the one the
-/// product is ordered by. "" when it has no files, or none the server timed.
-static const char *rf_product_newest(const remotefiles_product_st *p) {
-	const char *ret = "";
-	for (uint16_t i = 0; i < p->version_count; i++) {
-		if (strcmp(p->versions[i].modified, ret) > 0) {
-			ret = p->versions[i].modified;
-		}
-		else {
-		}
-	}
-	return ret;
-}
-
-
-/// @brief: qsort predicate ordering products newest first, by the newest file
-/// each of them holds.
+/// @brief: qsort predicate ordering products by their path.
 ///
 /// Within a fleet only: the panel puts one fleet on a tab of its own, so
 /// products of different fleets are never on screen together and interleaving
@@ -573,18 +540,13 @@ static int rf_cmp_product(const void *a, const void *b) {
 		ret = (pa->fleet < pb->fleet) ? -1 : 1;
 	}
 	else {
-		ret = rf_cmp_time(rf_product_newest(pa), rf_product_newest(pb));
-		if (ret == 0) {
-			ret = strcmp(pa->name, pb->name);
-		}
-		else {
-		}
+		ret = rf_cmp_name(pa->id, pb->id);
 	}
 	return ret;
 }
 
 
-/// @brief: Puts the whole listing in the order it is shown in: newest first,
+/// @brief: Puts the whole listing in the order it is shown in: alphabetical,
 /// both the files inside a product and the products themselves.
 ///
 /// Done once here rather than in the panel, so that every reader of the listing
@@ -615,8 +577,12 @@ static void rf_sort_products(void) {
 /// product is created before the products of anything nested inside it;
 /// subdirectories second.
 ///
-/// The product is created lazily, on the first file found, so a directory that
-/// holds nothing but subdirectories does not show up as an empty row.
+/// Every subdirectory becomes a product, whether it holds any files or not: an
+/// empty directory is still something on the server, and leaving it out made
+/// the panel's tree disagree with what the server holds. Only the fleet's own
+/// folder is created lazily, on its first file, because the panel shows that
+/// folder as a tab rather than as a directory, and a row saying the tab itself
+/// holds no files says nothing.
 ///
 /// @return: false when the body was not a listing at all, which the caller only
 /// cares about for a fleet's own root.
@@ -631,6 +597,12 @@ static bool rf_read_listing(const rf_dir_st *dir, const char *body,
 		unsigned int n = parser_array_get_size(root);
 		remotefiles_product_st *p = NULL;
 		unsigned int i;
+
+		if (dir->rel[0] != '\0') {
+			p = rf_new_product(dir->fleet, dir->rel);
+		}
+		else {
+		}
 
 		for (i = 0; i < n; i++) {
 			parser_node_st e = parser_array_at(root, i);

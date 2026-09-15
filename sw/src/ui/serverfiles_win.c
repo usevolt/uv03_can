@@ -21,9 +21,11 @@
 #include "ui/uv_uitreeview.h"
 #include "ui/uv_uitabwindow.h"
 #include "ui/uv_uiacceptdialog.h"
+#include "ui/uv_uitextedit.h"
 #include "remotefiles.h"
 #include "credentials.h"
 #include "system.h"
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -60,11 +62,28 @@ static char sfw_pkg_dir[1024];
 // The dialog and its persistent widgets. Kept file-scope (static) so they outlive
 // the modal's own step loop; the window is one-at-a-time so a single set suffices.
 static uv_uidialog_st dialog;
-static uv_uiobject_st *dialog_buf[6];
+static uv_uiobject_st *dialog_buf[8];
 static uv_uilabel_st title_label;
 static char title_str[160];
 static uv_uilabel_st empty_label;
 static uv_uibutton_st close_btn;
+
+// The filter field, next to the Close button. It narrows what the current
+// directory shows -- the deepest one open, or the fleet's top level when none
+// is -- to the files and subdirectories whose names match. '*' stands for any
+// run of characters; a filter without one matches anywhere in the name.
+#define SFW_FILTER_LABEL_W	70
+#define SFW_FILTER_W		360
+static uv_uilabel_st filter_label;
+static uv_uitextedit_st filter_edit;
+static char filter_buf[128];
+// What the tree was last built with: the filter text, and the directory it was
+// applied to (-1 for the fleet's top level). The field writes its buffer as it
+// is typed in, so comparing against these is what notices a keystroke.
+static char filter_applied[sizeof(filter_buf)];
+static int filter_dir;
+// the fleet whose tab is on show
+static uint8_t cur_fleet;
 
 // Length of one version row's label text, of a row title, and of a directory
 // path relative to its fleet.
@@ -137,6 +156,9 @@ typedef struct {
 	uint16_t children;
 	// which fleet's tab this node belongs on
 	uint8_t fleet;
+	// whether the tree on show holds this node. One that is not keeps whatever
+	// open state it had the last time it was, which says nothing any more.
+	bool shown;
 } sfw_node_st;
 
 static sfw_node_st *nodes;
@@ -293,9 +315,11 @@ static uint16_t sfw_node_bound(void) {
 // widgets. Returns false (having freed whatever it had taken) when any
 // allocation fails, so there is no half-built UI to render.
 //
-// The listing arrives newest first, and the nodes are created in the order the
-// products are walked, so a directory takes the place of the newest thing
-// inside it and the tree reads newest first at every level.
+// The listing arrives in alphabetical order of path and lists every directory,
+// and the nodes are created in the order the products are walked. A directory
+// sorts ahead of everything inside it, so it is created at its own place rather
+// than as an ancestor of something later, and the tree reads alphabetically at
+// every level.
 static bool sfw_alloc_ui(void) {
 	sfw_free_ui();
 	uint16_t bound = sfw_node_bound();
@@ -456,14 +480,137 @@ static bool sfw_start_fetch(uint16_t p, uint16_t j) {
 }
 
 
-// Fills a node's content with one row per file it holds (a metadata label plus
-// a Download button).
+// Whether *str* matches the glob *pat*, ignoring case: '*' matches any run of
+// characters, the empty run included, and everything else matches itself.
 //
-// Called once, while the tree is built, rather than from a show callback when
-// the node is opened. A node holds its subdirectories as well as its rows, and
+// Backtracks to the last '*' only, which is enough: a later '*' can always
+// absorb whatever an earlier one would have had to, so trying the earlier ones
+// again can never turn a miss into a match.
+static bool sfw_glob(const char *pat, const char *str) {
+	const char *star = NULL;
+	const char *resume = str;
+	bool ret = true;
+	while ((*str != '\0') && ret) {
+		if (*pat == '*') {
+			star = pat;
+			pat++;
+			resume = str;
+		}
+		else if ((*pat != '\0') &&
+				(tolower((unsigned char) *pat) == tolower((unsigned char) *str))) {
+			pat++;
+			str++;
+		}
+		else if (star != NULL) {
+			// let the last '*' take one more character and try again from there
+			pat = star + 1;
+			resume++;
+			str = resume;
+		}
+		else {
+			ret = false;
+		}
+	}
+	while (*pat == '*') {
+		pat++;
+	}
+	return ret && (*pat == '\0');
+}
+
+
+// Whether *name* passes the filter as it was last applied. A filter with no
+// '*' in it matches anywhere in the name, which is what typing a part of a name
+// into a filter field is expected to do; one with a '*' is a pattern for the
+// whole name, so that "*.uvdev" does not also match "x.uvdev.old".
+static bool sfw_filter_match(const char *name) {
+	bool ret = true;
+	if (filter_applied[0] == '\0') {
+	}
+	else if (strchr(filter_applied, '*') != NULL) {
+		ret = sfw_glob(filter_applied, name);
+	}
+	else {
+		char pat[sizeof(filter_applied) + 2];
+		snprintf(pat, sizeof(pat), "*%s*", filter_applied);
+		ret = sfw_glob(pat, name);
+	}
+	return ret;
+}
+
+
+// The name a directory is filtered by: the last segment of its path, or the
+// fleet for the fleet's own folder.
+static const char *sfw_own_name(const sfw_node_st *n) {
+	const char *ret = strrchr(n->path, '/');
+	ret = (ret != NULL) ? (ret + 1) : n->path;
+	if (ret[0] == '\0') {
+		ret = remotefiles_get_fleet(n->fleet);
+	}
+	else {
+	}
+	return (ret != NULL) ? ret : "";
+}
+
+
+// The file name of row *j* of node *n*, or "" when there is none.
+static const char *sfw_row_name(const sfw_node_st *n, uint16_t j) {
+	const char *ret = "";
+	const remotefiles_product_st *prod = (n->product >= 0) ?
+			remotefiles_get_product((uint16_t) n->product) : NULL;
+	if ((prod != NULL) && (j < prod->version_count)) {
+		ret = prod->versions[j].version;
+	}
+	else {
+	}
+	return ret;
+}
+
+
+// Whether node *i* sits on the path from the top of the fleet down to *dir*,
+// i.e. is *dir* or one of the directories holding it.
+static bool sfw_on_path(int i, int dir) {
+	bool ret = false;
+	for (int c = dir; (c >= 0) && !ret; c = nodes[c].parent) {
+		ret = (c == i);
+	}
+	return ret;
+}
+
+
+// The directory the user is in on fleet *f*'s tab: the deepest open node, or
+// -1 at the fleet's top level. Every level keeps one node open at a time, so
+// the open nodes form a single path down from the top and this follows it.
+static int sfw_current_dir(uint8_t f) {
+	int ret = -1;
+	bool found = true;
+	while (found) {
+		found = false;
+		for (uint16_t i = 0; (i < node_n) && !found; i++) {
+			const sfw_node_st *n = &nodes[i];
+			if ((n->fleet == f) && (n->parent == ret) && n->shown &&
+					n->obj.open) {
+				ret = (int) i;
+				found = true;
+			}
+			else {
+			}
+		}
+	}
+	return ret;
+}
+
+
+// Fills a node's content with one row per file it holds (a metadata label plus
+// a Download button), leaving out the rows *filtered* rejects.
+//
+// Called while the tree is built, rather than from a show callback when the
+// node is opened. A node holds its subdirectories as well as its rows, and
 // rebuilding the rows on every open would mean clearing the node - taking the
 // subdirectories with them.
-static void sfw_node_add_rows(uint16_t i) {
+//
+// Every row's widgets are initialised, shown or not: the Download buttons are
+// all polled, and one left over from an earlier build must not report a click.
+static void sfw_node_add_rows(uint16_t i, bool filtered) {
 	sfw_node_st *n = &nodes[i];
 	if (n->product < 0) {
 		return;
@@ -481,6 +628,9 @@ static void sfw_node_add_rows(uint16_t i) {
 	// past the right edge by the indent.
 	int16_t w = uv_uitreeobject_get_content_bb(obj).width;
 	int16_t label_w = w - SFW_DL_W - SFW_MARGIN;
+	// rows that pass the filter close up, rather than leaving a gap for each
+	// one that does not
+	uint16_t row = 0;
 
 	for (uint16_t j = 0; j < n->versions; j++) {
 		const remotefiles_version_st *v = &prod->versions[j];
@@ -506,16 +656,21 @@ static void sfw_node_add_rows(uint16_t i) {
 		// coordinate space starts below the header row; adding it again
 		// pushed every row down by a header's height and ran the last row past
 		// the object's own height, which clipped it to a sliver.
-		int16_t y = (int16_t) j * SFW_VROW_H;
 		uv_uilabel_init(&n->ver_labels[j], SFW_FONT,
 				ALIGN_CENTER_LEFT, win_style->text_color, str);
-		uv_uitreeobject_addxy(obj, &n->ver_labels[j],
-				0, y, label_w, SFW_VROW_H);
-
 		uv_uibutton_init(&n->dl_btns[j], "Download", win_style);
-		uv_uitreeobject_addxy(obj, &n->dl_btns[j],
-				w - SFW_DL_W, y + (SFW_VROW_H - SFW_ROW_BTN_H) / 2,
-				SFW_DL_W, SFW_ROW_BTN_H);
+
+		if (!filtered || sfw_filter_match(v->version)) {
+			int16_t y = (int16_t) row * SFW_VROW_H;
+			uv_uitreeobject_addxy(obj, &n->ver_labels[j],
+					0, y, label_w, SFW_VROW_H);
+			uv_uitreeobject_addxy(obj, &n->dl_btns[j],
+					w - SFW_DL_W, y + (SFW_VROW_H - SFW_ROW_BTN_H) / 2,
+					SFW_DL_W, SFW_ROW_BTN_H);
+			row++;
+		}
+		else {
+		}
 	}
 }
 
@@ -524,24 +679,40 @@ static void sfw_node_add_rows(uint16_t i) {
 // the fleet, the parent node for one nested inside another -- then its own
 // file rows and then, recursively, the directories inside it.
 //
+// *dir* is the current directory: the nodes on the path down to it are added
+// open, and its own files and subdirectories are the ones the filter narrows.
+//
 // The rows go in before the subdirectories: the layout stacks a container's
 // child nodes below whatever plain widgets it holds, so this is what puts a
 // directory's own files above the directories inside it. The recursion runs in
 // node order, which is the order the listing was walked in, so each level keeps
-// the newest-first order the listing arrived in.
-static void sfw_build_node(void *container, uint16_t i) {
+// the alphabetical order the listing arrived in.
+static void sfw_build_node(void *container, uint16_t i, int dir) {
 	sfw_node_st *n = &nodes[i];
+	bool filtered = (dir == (int) i);
+	uint16_t rows = 0;
+	for (uint16_t j = 0; j < n->versions; j++) {
+		if (!filtered || sfw_filter_match(sfw_row_name(n, j))) {
+			rows++;
+		}
+		else {
+		}
+	}
 	uv_uitreeobject_init(&n->obj, n->child_buf, n->name, NULL, win_style);
 	uv_uitreeobject_set_font(&n->obj, SFW_FONT);
-	// Every node starts closed: a tab opens on the list of what the fleet
-	// holds, which is what the user picks from, rather than on one directory's
-	// files with the rest of the list pushed down the screen.
+	n->shown = true;
+	// A node starts closed unless the user is inside it: a tab opens on the
+	// list of what the fleet holds, which is what the user picks from, rather
+	// than on one directory's files with the rest of the list pushed down the
+	// screen. Opened on the way down, so the last one opened -- which is the
+	// one the tree scrolls to -- is the current directory itself.
 	uv_uitreeview_add(container, &n->obj,
-			(int16_t) n->versions * SFW_VROW_H, false);
-	sfw_node_add_rows(i);
+			(int16_t) rows * SFW_VROW_H, sfw_on_path((int) i, dir));
+	sfw_node_add_rows(i, filtered);
 	for (uint16_t c = 0; c < node_n; c++) {
-		if (nodes[c].parent == (int) i) {
-			sfw_build_node(&n->obj, c);
+		if ((nodes[c].parent == (int) i) &&
+				(!filtered || sfw_filter_match(sfw_own_name(&nodes[c])))) {
+			sfw_build_node(&n->obj, c, dir);
 		}
 		else {
 		}
@@ -550,17 +721,25 @@ static void sfw_build_node(void *container, uint16_t i) {
 
 
 // Fills the fleet tab window with the products of fleet *f*: a tree with one row
-// per product, or a label when that fleet holds no files at all.
+// per product, or a label when that fleet holds no files at all. *dir* is the
+// directory to have open, -1 for none, and the filter field's text is applied
+// to what that directory holds.
 //
-// Called every time a tab is picked. The tree objects are re-initialised rather
-// than kept, because a tree object belongs to the tree it was added to - the
-// previous fleet's tree is exactly what this replaces.
-static void sfw_show_fleet(uint8_t f) {
+// Called every time a tab is picked, and whenever the filter or the directory
+// it applies to changes. The tree objects are re-initialised rather than kept,
+// because a tree object belongs to the tree it was added to - the previous
+// fleet's tree is exactly what this replaces.
+static void sfw_show_fleet(uint8_t f, int dir) {
 	uv_uitabwindow_clear(&fleet_tabs);
 	uv_bounding_box_st cbb = uv_uitabwindow_get_contentbb(&fleet_tabs);
 
+	cur_fleet = f;
+	snprintf(filter_applied, sizeof(filter_applied), "%s", filter_buf);
+	filter_dir = dir;
+
 	uint16_t count = 0;
 	for (uint16_t i = 0; i < node_n; i++) {
+		nodes[i].shown = false;
 		if (nodes[i].fleet == f) {
 			count++;
 		}
@@ -580,10 +759,12 @@ static void sfw_show_fleet(uint8_t f) {
 		uv_uitreeview_init(&tree, tree_buf, win_style);
 		uv_uitabwindow_addxy(&fleet_tabs, &tree, 0, 0, cbb.width, cbb.height);
 		// the directories at the top of this fleet; each of them brings the
-		// whole branch below it
+		// whole branch below it. At the top level they are what the filter
+		// narrows.
 		for (uint16_t i = 0; i < node_n; i++) {
-			if ((nodes[i].fleet == f) && (nodes[i].parent < 0)) {
-				sfw_build_node(&tree, i);
+			if ((nodes[i].fleet == f) && (nodes[i].parent < 0) &&
+					((dir >= 0) || sfw_filter_match(sfw_own_name(&nodes[i])))) {
+				sfw_build_node(&tree, i, dir);
 			}
 			else {
 			}
@@ -629,6 +810,26 @@ static void sfw_wheel_step(void) {
 }
 
 
+// Rebuilds the tree when the filter has been typed in, or when the user has
+// moved into another directory while a filter is set: the filter narrows the
+// current directory only, so the one the user left shows everything again and
+// the one they are in now is narrowed instead.
+static void sfw_filter_step(void) {
+	if (fleet_count > 0) {
+		int dir = sfw_current_dir(cur_fleet);
+		if ((strcmp(filter_buf, filter_applied) != 0) ||
+				((dir != filter_dir) && (filter_buf[0] != '\0'))) {
+			sfw_show_fleet(cur_fleet, dir);
+		}
+		else {
+			filter_dir = dir;
+		}
+	}
+	else {
+	}
+}
+
+
 static uv_uiobject_ret_e sfw_step(void *user_ptr, uint16_t step_ms) {
 	(void) user_ptr;
 	(void) step_ms;
@@ -640,7 +841,8 @@ static uv_uiobject_ret_e sfw_step(void *user_ptr, uint16_t step_ms) {
 		ret = UIOBJECT_RETURN_KILLED;
 	}
 	else if ((fleet_count > 0) && uv_uitabwindow_tab_changed(&fleet_tabs)) {
-		sfw_show_fleet((uint8_t) uv_uitabwindow_get_tab(&fleet_tabs));
+		// a new tab opens at its top level, with the filter applied there
+		sfw_show_fleet((uint8_t) uv_uitabwindow_get_tab(&fleet_tabs), -1);
 	}
 	else {
 		// poll every version's Download button (products not on the active tab,
@@ -662,6 +864,11 @@ static uv_uiobject_ret_e sfw_step(void *user_ptr, uint16_t step_ms) {
 				}
 			}
 		}
+		if (!handled) {
+			sfw_filter_step();
+		}
+		else {
+		}
 	}
 	return ret;
 }
@@ -673,6 +880,10 @@ bool serverfiles_win_exec(const uv_uistyle_st *style) {
 	sel_prod = -1;
 	sel_ver = -1;
 	tree_shown = false;
+	cur_fleet = 0;
+	filter_buf[0] = '\0';
+	filter_applied[0] = '\0';
+	filter_dir = -1;
 
 	// 1. log in and fetch the file list (blocks; failures are reported and abort)
 	char err[256] = "";
@@ -727,12 +938,34 @@ bool serverfiles_win_exec(const uv_uistyle_st *style) {
 				fleet_tabs_buf, fleet_names);
 		uv_uidialog_addxy(&dialog, &fleet_tabs,
 				SFW_MARGIN, tabs_y, w - 2 * SFW_MARGIN, tabs_h);
-		sfw_show_fleet(0);
+		sfw_show_fleet(0, -1);
 	}
+
+	int16_t bottom_y = h - SFW_BTN_H - SFW_MARGIN;
+	uv_uilabel_init(&filter_label, style->font, ALIGN_CENTER_LEFT,
+			style->text_color, "Filter");
+	uv_uidialog_addxy(&dialog, &filter_label,
+			SFW_MARGIN, bottom_y, SFW_FILTER_LABEL_W, SFW_BTN_H);
+	// In command-line mode and focused for as long as the window is open: the
+	// filter is the only thing in the window that takes text, so whatever is
+	// typed goes into it without clicking it first, and a click on the tree or
+	// on a Download button does not take the keyboard away from it.
+	uv_uitextedit_init(&filter_edit, filter_buf, sizeof(filter_buf),
+			UITEXTEDIT_FLAG_ONELINE | UITEXTEDIT_FLAG_CMDLINE, style);
+	uv_uitextedit_set_align(&filter_edit, ALIGN_CENTER_LEFT);
+	uv_uidialog_addxy(&dialog, &filter_edit,
+			SFW_MARGIN + SFW_FILTER_LABEL_W, bottom_y, SFW_FILTER_W, SFW_BTN_H);
+	uv_uitextedit_set_focused(&filter_edit, true);
+	// The display's focus as well, which is a separate thing from the field
+	// capturing keys: it is what draws the outline, what Tab moves on from, and
+	// what a focused button takes Space and Enter from. Left unset, the window
+	// opened with no visible focus at all, and the dialog is the root of its own
+	// display, so nothing else would give it one.
+	uv_uiwindow_set_focus(&filter_edit);
 
 	uv_uibutton_init(&close_btn, "Close", style);
 	uv_uidialog_addxy(&dialog, &close_btn,
-			w - SFW_DL_W - SFW_MARGIN, h - SFW_BTN_H - SFW_MARGIN,
+			w - SFW_DL_W - SFW_MARGIN, bottom_y,
 			SFW_DL_W, SFW_BTN_H);
 
 	uv_uidialog_exec(&dialog);

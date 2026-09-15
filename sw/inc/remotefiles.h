@@ -73,8 +73,10 @@ typedef struct {
 ///
 /// One product is one directory on the server. The tree is walked recursively,
 /// so a nested directory becomes a product of its own, named by its path
-/// relative to the fleet (e.g. "uv0d/rev2"). Files sitting directly in the
-/// fleet's own folder are grouped under the fleet name.
+/// relative to the fleet (e.g. "uv0d/rev2"), and one that holds no files is
+/// listed all the same. Files sitting directly in the fleet's own folder are
+/// grouped under the fleet name. Products are in alphabetical order of their
+/// path, and the versions inside each one in alphabetical order of file name.
 typedef struct {
 	// Doubles as the server-relative path this product's downloads are built
 	// from ("<fleet>/<nested/path>"), so it has to hold a whole nested path
@@ -121,8 +123,8 @@ const char *remotefiles_get_fleet(uint8_t index);
 
 
 /// @brief: True while a session opened by remotefiles_login() is
-/// held, i.e. while the tool is logged in to the file server. Used by the system
-/// tab's Account panel to show the connection status.
+/// held, i.e. while the tool is logged in to the file server. Used by the
+/// Settings tab's Account panel to show the connection status.
 bool remotefiles_is_logged_in(void);
 
 

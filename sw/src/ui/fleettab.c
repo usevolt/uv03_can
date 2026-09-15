@@ -43,7 +43,7 @@
 
 
 // --- the fleet / device tab windows. The connection itself is opened from the
-// System tab's Account panel: one Usevolt account serves both the file server
+// Settings tab's Account panel: one Usevolt account serves both the file server
 // and the fleet broker, so it is entered in one place.
 static uv_uitabwindow_st fleet_tabs;
 static uv_uiobject_st *fleet_tabs_buf[4];

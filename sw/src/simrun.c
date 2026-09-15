@@ -268,7 +268,10 @@ static bool spawn_proc(simproc_st *p, const char *can_channel, bool set_nodeid) 
 	pid_t pid = fork();
 	if (pid == 0) {
 		// child: only async-signal-safe calls until exec
-		// ask the kernel to kill us if uvcan (our parent) dies, even on a crash
+		// ask the kernel to kill us if uvcan (our parent) dies, even on a crash.
+		// Note that the kernel raises this when the forking THREAD exits, not when
+		// the process does, so whoever calls this has to fork from a thread that
+		// outlives the simulators (see simrun_start_system's note).
 		prctl(PR_SET_PDEATHSIG, SIGKILL);
 		if (getppid() == 1) {
 			// parent already died between fork and prctl
@@ -722,15 +725,11 @@ static void wait_for_param_load(void) {
 }
 
 
-/// @brief: Waits until every managed device (a simulator or a restored real
-/// device) is operational, then loads the devices' bundled parameters onto them.
-/// Called by postparam_task() when there is something to load.
-static void postparam_load(system_st *sys) {
-	// 1. wait until every managed device (a simulated device or a restored real
-	// device) reports OPERATIONAL (or time out). Tell the user we are waiting,
-	// since it takes a few seconds while the devices boot.
-	PRINT("Waiting for all devices to come online before loading parameters...\n");
-	fflush(stdout);
+/// @brief: Waits until every managed device (an alive simulator or a restored
+/// real device) of *sys* reports OPERATIONAL, or until SIMRUN_OP_WAIT_MS has
+/// passed. Returns true when they all came online. Silent: the callers say what
+/// they are waiting for, which differs between them.
+static bool wait_all_op(system_st *sys) {
 	uint32_t waited = 0;
 	bool all_op = false;
 	while (!all_op && (waited < SIMRUN_OP_WAIT_MS) && !pp_cancel) {
@@ -749,6 +748,20 @@ static void postparam_load(system_st *sys) {
 			waited += 500;
 		}
 	}
+	return all_op;
+}
+
+
+/// @brief: Waits until every managed device (a simulator or a restored real
+/// device) is operational, then loads the devices' bundled parameters onto them.
+/// Called by postparam_task() when there is something to load.
+static void postparam_load(system_st *sys) {
+	// 1. wait until every managed device (a simulated device or a restored real
+	// device) reports OPERATIONAL (or time out). Tell the user we are waiting,
+	// since it takes a few seconds while the devices boot.
+	PRINT("Waiting for all devices to come online before loading parameters...\n");
+	fflush(stdout);
+	bool all_op = wait_all_op(sys);
 
 	if (!pp_cancel) {
 		PRINT(all_op ? "All devices are online. Loading parameters...\n" :
@@ -840,8 +853,18 @@ static void postparam_task(void *ptr) {
 		}
 	}
 	if (nothing_to_load) {
-		PRINT("No parameters to load; the simulators run with their default "
-				"settings.\n");
+		// Say where the parameters would have come from: the devices were started
+		// from plain .uvdev packages, which carry none, so nothing here is broken -
+		// but the user is waiting for a system that behaves like the real one.
+		PRINT("No parameters to load; the simulators start with their default "
+				"settings.\n"
+				"The parameters of a system come from a system configuration file "
+				"(--sys, or\n"
+				"the UI's system file): a device package carries none. Without one, "
+				"load them\n"
+				"onto the running simulators with a --loadparam <file> given after "
+				"--sim on the\n"
+				"command line, or with the UI's \"Load parameters\" button.\n");
 		fflush(stdout);
 	}
 	else {
@@ -989,6 +1012,27 @@ bool simrun_restart(uint8_t index) {
 	}
 	else {
 		// invalid index, still running, or a parameter load is in progress
+	}
+	return ret;
+}
+
+
+bool simrun_wait_online(void) {
+	bool ret = true;
+	if ((sim_sys != NULL) && simrun_any_running()) {
+		PRINT("Waiting for the simulators to come online...\n");
+		fflush(stdout);
+		// the states are read from the heartbeats, so make sure they are tracked
+		// (the post-launch load has already done this; it is a no-op then)
+		find_start_monitor();
+		ret = wait_all_op(sim_sys);
+		PRINT(ret ? "All simulators are online.\n" :
+				"Timed out waiting for the simulators to come online; "
+				"carrying on with those that are ready.\n");
+		fflush(stdout);
+	}
+	else {
+		// no simulators were started, so there is nothing to wait for
 	}
 	return ret;
 }

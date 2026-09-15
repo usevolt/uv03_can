@@ -50,6 +50,19 @@ void find_set_extra_can_callback(void (*callb)(void *user_ptr, uv_can_message_st
 bool find_poll_new_devices(void);
 
 
+/// @brief: Called when a firmware flash of *device* has finished. A device whose
+/// settings the new firmware resets reboots at its package's default node id
+/// *nodeid* instead of the one it had. When a node comes online at *nodeid* within
+/// a couple of seconds, and no other device of the system uses that node id,
+/// find_poll_new_devices() moves *device* to it instead of adding the node as a new
+/// device. Does nothing when *nodeid* is the device's node id already.
+///
+/// Pass only a node id nothing was online at when the flash started (see
+/// find_node_get_state()): a flash can suspend the heartbeat monitor, so a node
+/// that was on the bus all along cannot be told apart from a rebooted one here.
+void find_expect_boot_nodeid(device_st *device, uint8_t nodeid);
+
+
 /// @brief: Blocks *nodeid* from live auto-discovery, so a device the user removed
 /// from the UI does not immediately reappear. Cleared by find_clear_blacklist().
 void find_blacklist_node(uint8_t nodeid);

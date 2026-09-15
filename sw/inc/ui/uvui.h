@@ -29,9 +29,10 @@
 /// @brief: Opens uvcan's main graphical display and blocks until the window is
 /// closed.
 ///
-/// The display is a tab window with two tabs: "System" and "Fleet" (the latter
-/// still empty). The "System" tab holds a nested tab window whose first tab is
-/// "Overview" (the system configuration, simulator and account panels) and whose
+/// The display is a tab window with three tabs: "System", "Fleet" and "Settings"
+/// (the account the file server and the fleet broker are used with). The
+/// "System" tab holds a nested tab window whose first tab is "Overview" (the
+/// system configuration and simulator panels) and whose
 /// remaining tabs are one per device in the current system (see system.h). When
 /// the system holds fewer than SYSTEM_DEV_MAX_COUNT devices, a final "Add device"
 /// tab is shown; selecting it appends a new, empty device and opens its tab.

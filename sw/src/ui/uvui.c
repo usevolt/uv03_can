@@ -33,6 +33,7 @@
 #include "uvstdin.h"
 #include "ui/devicetab.h"
 #include "ui/fleettab.h"
+#include "ui/settingstab.h"
 #include "remotecan.h"
 #include "ui/uv_uitextedit.h"
 #include "ui/uv_uiimage.h"
@@ -67,16 +68,17 @@
 
 
 // The top-level tabs. "System" holds the system overview and one tab per device,
-// as a nested tab window; "Fleet" is reserved for the fleet view and is empty for
-// now.
+// as a nested tab window; "Fleet" holds the fleet view; "Settings" holds the
+// account the file server and the fleet broker are used with.
 typedef enum {
 	MAINTAB_SYSTEM = 0,
 	MAINTAB_FLEET,
+	MAINTAB_SETTINGS,
 	MAINTAB_COUNT,
 } maintab_e;
 
 // Names of the top-level tabs (handed to the main tab window as a pointer array).
-static char *maintab_names[MAINTAB_COUNT] = { "System", "Fleet" };
+static char *maintab_names[MAINTAB_COUNT] = { "System", "Fleet", "Settings" };
 
 
 typedef struct {
@@ -467,9 +469,13 @@ void uvui_exec(void) {
 		// pump the Fleet tab's MQTT client and poll its widgets. Like the device
 		// tab above this runs on every main tab, so the broker connection stays up
 		// and the fleet list keeps filling in while the System tab is shown.
-		if (fleettab_step() && !device_tabs_shown()) {
+		if (fleettab_step() && (this->maintab == MAINTAB_FLEET)) {
 			show_active_maintab();
 		}
+
+		// the account: connects once at start-up whichever main tab is shown, and
+		// polls its own widgets while the Settings tab is
+		settingstab_step();
 
 		// reflect any device that just came online: redraw the tab dots and
 		// refresh the active tab so its state label/dot update too. While an async
@@ -650,15 +656,20 @@ void uvui_exec(void) {
 static void show_active_maintab(void) {
 	uv_uitabwindow_clear(&this->maintabs);
 
-	// the Fleet tab keeps its widgets only while it is the active main tab; tell it
-	// so it does not poll them while they are not part of the display
+	// the Fleet and Settings tabs keep their widgets only while they are the
+	// active main tab; tell them so they do not poll them while they are not part
+	// of the display
 	fleettab_set_shown(false);
+	settingstab_set_shown(false);
 
 	if (this->maintab == MAINTAB_SYSTEM) {
 		build_device_tabs();
 	}
-	else {
+	else if (this->maintab == MAINTAB_FLEET) {
 		fleettab_show(&this->maintabs);
+	}
+	else {
+		settingstab_show(&this->maintabs);
 	}
 
 	// uv_uitabwindow_clear() drops the window step callback, so re-register it

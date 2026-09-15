@@ -80,6 +80,11 @@ void simrun_init(void);
 /// put. Devices given an explicit node id, and all devices of a loaded system
 /// file, are pinned to it with -n.
 ///
+/// The simulators are forked by the calling thread, and PR_SET_PDEATHSIG raises
+/// its signal when THAT THREAD exits - not when the process does. So the thread
+/// which calls this has to outlive the simulators (the UI thread does; --sim
+/// launches them from a keeper task of its own for exactly this reason).
+///
 /// Devices that are already online (present on the bus as real hardware) are NOT
 /// simulated - a simulator would clash with the real device on its node id - so
 /// they are skipped. The caller must refresh the device states with
@@ -164,6 +169,14 @@ bool simrun_any_running(void);
 /// simrun_kill_all() cancels an in-progress load (used by the Force-stop button).
 void simrun_load_params_async(system_st *sys,
 		const uint8_t *restore_nodeids, uint8_t restore_count);
+
+
+/// @brief: Waits (up to a timeout of some seconds) until every running simulator
+/// answers on the CAN bus as an operational device, and returns whether they all
+/// did. Call after the post-launch parameter load has finished, before doing
+/// anything that talks to the simulators over CAN - the commands given after
+/// --sim on the command line do exactly that. No-op when no simulator is running.
+bool simrun_wait_online(void);
 
 
 /// @brief: Returns true when no post-launch parameter load is running (i.e. the

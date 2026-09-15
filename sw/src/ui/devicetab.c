@@ -277,6 +277,9 @@ static struct {
 
 	// node-id editor, shown on a device tab once a configuration file is set
 	uv_uidigitedit_st nodeid_edit;
+	// the value *nodeid_edit* was built with, or last stored back from; the user
+	// has edited the node id when the editor holds anything else
+	int32_t nodeid_shown;
 
 	// left-panel CANopen device-command buttons, under the node-id editor:
 	// restore defaults (0x1011 "load"), store settings (0x1010 "save") and an
@@ -330,25 +333,6 @@ static struct {
 	char sim_node_strs[SYSTEM_DEV_MAX_COUNT][32];
 	uv_uibutton_st sim_log_btns[SYSTEM_DEV_MAX_COUNT];
 	uv_uibutton_st sim_action_btns[SYSTEM_DEV_MAX_COUNT];
-
-	// "Account" panel on the system tab: a username and a password field whose
-	// values are stored on this computer and shared by every uvcan install (see
-	// credentials.c). Edits are saved back in devicetab_step().
-	uv_uiframewindow_st account_frame;
-	uv_uiobject_st *account_frame_buf[9];
-	uv_uitextedit_st account_url;
-	uv_uitextedit_st account_fleet_url;
-	uv_uitextedit_st account_user;
-	uv_uitextedit_st account_pass;
-	// "Connect" button opening both sessions with the fields above, and the
-	// status line beside it (green while a session is open)
-	uv_uibutton_st account_connect_btn;
-	// One label per server rather than one with two lines: each carries its own
-	// colour, so a file server failure cannot paint a healthy broker red.
-	uv_uilabel_st account_status;
-	uv_uilabel_st account_status_fleet;
-	char account_status_str[256];
-	char account_status_fleet_str[256];
 } content;
 
 
@@ -367,148 +351,6 @@ static bool device_removed;
 // True while the system overview tab is the one currently shown. Used by
 // devicetab_step() to poll the right file picker.
 static bool showing_system;
-
-// Text buffers backing the "Account" panel's username / password fields. They must
-// outlive the frequent tab rebuilds (the textedits read/write them in place), so
-// they are file-scope rather than part of *content*. Seeded once from the stored
-// credentials the first time the system tab is built; edits are saved back to the
-// shared file in devicetab_step().
-static char account_url_buf[CREDENTIALS_MAX];
-static char account_fleet_url_buf[CREDENTIALS_MAX];
-static char account_user_buf[CREDENTIALS_MAX];
-static char account_pass_buf[CREDENTIALS_MAX];
-static bool account_seeded;
-
-// Reason the last "Connect" attempt failed, shown in red under the fields until
-// the next attempt. "" when there was none.
-static char account_err[256];
-
-// Last broker state the Account panel drew. The connection completes
-// asynchronously, well after the button was pressed, so the panel has to notice
-// the change itself or it keeps showing "connecting...".
-static mqtt_state_e account_last_mqtt = MQTT_STATE_DISCONNECTED;
-
-// Whether the stored credentials have been tried yet. Reconnecting is the
-// normal case on start-up - the account was entered once and is meant to keep
-// working - so it happens by itself rather than making the user press Connect
-// every time.
-static bool account_autoconnect_tried;
-
-
-/// @brief: Opens both sessions with whatever is stored, if anything is.
-static void account_connect(void) {
-	account_err[0] = '\0';
-	printf("File server: connecting to '%s' as '%s'...\n",
-			credentials_get_url(), credentials_get_username());
-	fflush(stdout);
-	if (remotefiles_login(credentials_get_url(), credentials_get_username(),
-			credentials_get_password(), account_err, sizeof(account_err))) {
-		printf("File server: connected to '%s' as '%s', %u fleet(s):",
-				credentials_get_url(), credentials_get_username(),
-				(unsigned int) remotefiles_get_fleet_count());
-		for (uint8_t i = 0; i < remotefiles_get_fleet_count(); i++) {
-			printf(" %s", remotefiles_get_fleet(i));
-		}
-		printf("\n");
-		fflush(stdout);
-	}
-	else {
-		printf("File server: connecting to '%s' failed: %s\n",
-				credentials_get_url(), account_err);
-		fflush(stdout);
-	}
-
-	// the same account opens the fleet broker, so one action does both
-	if (!mqtt_connect(credentials_fleet_get_url(), credentials_get_username(),
-			credentials_get_password())) {
-		if (account_err[0] == '\0') {
-			strncpy(account_err, mqtt_get_error(), sizeof(account_err) - 1);
-			account_err[sizeof(account_err) - 1] = '\0';
-		}
-	}
-	else {
-		// The file server already said which fleets this account holds, so
-		// their tabs can exist before any device has published. Only the
-		// broker knows whether they are alive; only the file server knows
-		// they exist at all when they are quiet.
-		for (uint8_t i = 0; i < remotefiles_get_fleet_count(); i++) {
-			mqtt_add_fleet(remotefiles_get_fleet(i));
-		}
-	}
-}
-
-
-/// @brief: Rewrites the Account panel's status line from the current file-server
-/// session state and greys the "Connect" button out while that session is open.
-/// Called after building the panel and whenever the state changes, so the panel
-/// never has to be rebuilt just to reflect a connect / disconnect.
-static void account_refresh_status(void) {
-	bool files = remotefiles_is_logged_in();
-	bool fleet = mqtt_is_connected();
-	const char *user = credentials_get_username();
-
-	// One line per server. They are two different protocols against two
-	// different hosts and either can be up without the other, so a single
-	// combined line could only ever be vague about which one had failed.
-	char files_line[192];
-	if (files) {
-		snprintf(files_line, sizeof(files_line),
-				"Files: connected to %.100s as '%.60s'",
-				credentials_get_url(), user);
-	}
-	else if (account_err[0] != '\0') {
-		snprintf(files_line, sizeof(files_line), "Files: %.180s", account_err);
-	}
-	else {
-		strcpy(files_line, "Files: not connected");
-	}
-
-	char fleet_line[192];
-	switch (mqtt_get_state()) {
-	case MQTT_STATE_CONNECTED:
-		snprintf(fleet_line, sizeof(fleet_line), "Fleet: connected to %s as '%s'",
-				credentials_fleet_get_url(), user);
-		break;
-	case MQTT_STATE_CONNECTING:
-		snprintf(fleet_line, sizeof(fleet_line), "Fleet: connecting to %s...",
-				credentials_fleet_get_url());
-		break;
-	case MQTT_STATE_ERROR:
-		snprintf(fleet_line, sizeof(fleet_line), "Fleet: %s", mqtt_get_error());
-		break;
-	default:
-		strcpy(fleet_line, "Fleet: not connected");
-		break;
-	}
-
-	snprintf(content.account_status_str, sizeof(content.account_status_str),
-			"%s", files_line);
-	snprintf(content.account_status_fleet_str,
-			sizeof(content.account_status_fleet_str), "%s", fleet_line);
-
-	// each line is coloured by its own server, so one failing does not paint
-	// the other red
-	color_t files_c = files ? DOT_COLOR_OP :
-			((account_err[0] != '\0') ? WARNING_COLOR :
-					uv_uistyles[0].text_color);
-	color_t fleet_c = fleet ? DOT_COLOR_OP :
-			((mqtt_get_state() == MQTT_STATE_ERROR) ? WARNING_COLOR :
-					uv_uistyles[0].text_color);
-
-	// the button reconnects whatever is still down
-	if (files && fleet) {
-		uv_uiobject_disable(&content.account_connect_btn);
-	}
-	else {
-		uv_uiobject_enable(&content.account_connect_btn);
-	}
-	uv_uilabel_set_color(&content.account_status, files_c);
-	uv_uilabel_set_color(&content.account_status_fleet, fleet_c);
-	uv_ui_refresh(&content.account_status);
-	uv_ui_refresh(&content.account_status_fleet);
-	uv_ui_refresh(&content.account_connect_btn);
-}
-
 
 // The two sub-tabs of a device tab.
 typedef enum {
@@ -557,6 +399,13 @@ static busy_op_e busy_op;
 // the download finishes some cycles after it was started, by which time the tab
 // the user is looking at - and with it *current_device* - may be another one.
 static device_st *download_device;
+
+// The device a firmware flash (OP_FLASH) was started on, and the node id the
+// flashed package boots at by default. Kept until the flash finishes, when the
+// device is expected to reboot - possibly at that default node id, if the new
+// firmware reset its settings (see find_expect_boot_nodeid()).
+static device_st *flash_device;
+static uint8_t flash_default_nodeid;
 
 
 bool devicetab_is_busy(void) {
@@ -691,36 +540,18 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	showing_system = true;
 
 	// The system tab is laid out as framed panels stacked top to bottom: a "System
-	// configuration" panel on top, a "Simulator" panel in the middle (Linux only -
-	// simulators are unavailable on other targets) and an "Account" panel pinned to
-	// the bottom on every target.
+	// configuration" panel on top and a "Simulator" panel below it (Linux only -
+	// simulators are unavailable on other targets). The account lives on the
+	// Settings main tab.
 	int16_t frame_x = MARGIN;
 	int16_t frame_w = cbb.w - 2 * MARGIN;
-	// the Account panel: the fields row (URL / Username / Password, each a field
-	// with its title below it, sharing the row with the "Connect" button), plus a
-	// shorter status row below. The status row is only a text label, so it gets a
-	// label's height (TITLE_H) rather than a full button's - keeping the panel
-	// compact.
-	// Two field rows; the status shares the second one with the fleet URL.
-	//
-	// Sized to what a row actually draws rather than to button heights: a text
-	// field is one line of text with a little padding, and its title is another
-	// line under it (see uv_uitextedit_draw). Rows the height of a button were
-	// half empty, and the panel wore a band of nothing between the fields and
-	// the status lines below them.
-	int16_t acc_row_h = 2 * uv_ui_get_font_height(style->font) + 4 * MARGIN / 2;
-	// plus the frame's own title bar, which get_content_bb takes off the top
-	int16_t account_frame_h = 2 * acc_row_h + MARGIN + TITLE_H;
-	int16_t account_frame_y = cbb.h - MARGIN - account_frame_h;
 #if !CONFIG_TARGET_WIN
 	// the configuration panel needs room for the double-height source row plus the
-	// save/load row; the simulator panel takes whatever is left between it and the
-	// account panel
+	// save/load row; the simulator panel takes whatever is left below it
 	int16_t sys_frame_h = 4 * BUTTON_H + 2 * MARGIN;
 #else
-	// no simulator panel on Windows: the configuration panel fills everything above
-	// the account panel
-	int16_t sys_frame_h = account_frame_y - 2 * MARGIN;
+	// no simulator panel on Windows: the configuration panel fills the tab
+	int16_t sys_frame_h = cbb.h - 2 * MARGIN;
 #endif
 
 	// --- "System configuration" panel: load / search / save / load-to-devices ---
@@ -811,8 +642,8 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 #if !CONFIG_TARGET_WIN
 	// --- "Simulator" panel (Linux only): run-simulator button + running list ---
 	int16_t sim_frame_y = MARGIN + sys_frame_h + MARGIN;
-	// leave room for the account panel below (and a margin between the two)
-	int16_t sim_frame_h = account_frame_y - MARGIN - sim_frame_y;
+	// down to the bottom of the tab
+	int16_t sim_frame_h = cbb.h - MARGIN - sim_frame_y;
 	uv_uiframewindow_init(&content.sim_frame, content.sim_frame_buf, style);
 	uv_uiframewindow_set_title(&content.sim_frame, "Simulator");
 	uv_uitabwindow_addxy(tabwin, &content.sim_frame, frame_x, sim_frame_y,
@@ -947,106 +778,6 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	}
 #endif
 
-	// --- "Account" panel (all targets): server URL + username + password stored on
-	// this computer and shared by every uvcan install. Seed the fields once from the
-	// stored values (later rebuilds keep whatever is in the buffers, including
-	// unsaved edits); edits are saved back to the shared file in devicetab_step().
-	if (!account_seeded) {
-		strncpy(account_url_buf, credentials_get_url(),
-				sizeof(account_url_buf) - 1);
-		account_url_buf[sizeof(account_url_buf) - 1] = '\0';
-		strncpy(account_fleet_url_buf, credentials_fleet_get_url(),
-				sizeof(account_fleet_url_buf) - 1);
-		account_fleet_url_buf[sizeof(account_fleet_url_buf) - 1] = '\0';
-		strncpy(account_user_buf, credentials_get_username(),
-				sizeof(account_user_buf) - 1);
-		account_user_buf[sizeof(account_user_buf) - 1] = '\0';
-		strncpy(account_pass_buf, credentials_get_password(),
-				sizeof(account_pass_buf) - 1);
-		account_pass_buf[sizeof(account_pass_buf) - 1] = '\0';
-		account_seeded = true;
-	}
-
-	uv_uiframewindow_init(&content.account_frame, content.account_frame_buf, style);
-	uv_uiframewindow_set_title(&content.account_frame, "Account");
-	uv_uitabwindow_addxy(tabwin, &content.account_frame, frame_x, account_frame_y,
-			frame_w, account_frame_h);
-	uv_bounding_box_st ac = uv_uiframewindow_get_content_bb(&content.account_frame);
-
-	// Two field rows on the left and the "Connect" button filling the panel's
-	// full height on the right. The status shares the second row with the fleet
-	// URL rather than taking one of its own, which keeps the panel a row
-	// shorter and leaves the space above it for the device list.
-	// the frame was sized from acc_row_h above; share out whatever rounding is
-	// left rather than letting the two drift apart
-	acc_row_h = (ac.h - MARGIN) / 2;
-
-	int16_t acc_gap = MARGIN;
-	int16_t acc_conn_w = 3 * 2 * BUTTON_H;
-	int16_t acc_fields_w = ac.w - acc_conn_w - 4 * acc_gap;
-	int16_t acc_url_w = acc_fields_w / 2;
-	int16_t acc_field_w = (acc_fields_w - acc_url_w) / 2;
-	int16_t acc_x = 0;
-
-	// top row: the two servers' credentials. The user name and the password are
-	// shared - one Usevolt account opens both the file server and the fleet
-	// broker - so they are entered once here.
-	uv_uitextedit_init(&content.account_url, account_url_buf,
-			sizeof(account_url_buf), UITEXTEDIT_FLAG_ONELINE, style);
-	uv_uitextedit_set_title(&content.account_url, "File server URL");
-	uv_uitextedit_set_align(&content.account_url, ALIGN_CENTER_LEFT);
-	uv_uiframewindow_addxy(&content.account_frame, &content.account_url,
-			acc_x, 0, acc_url_w, acc_row_h);
-
-	// second row, directly under it: the broker the Fleet tab talks to
-	uv_uitextedit_init(&content.account_fleet_url, account_fleet_url_buf,
-			sizeof(account_fleet_url_buf), UITEXTEDIT_FLAG_ONELINE, style);
-	uv_uitextedit_set_title(&content.account_fleet_url, "Fleet URL");
-	uv_uitextedit_set_align(&content.account_fleet_url, ALIGN_CENTER_LEFT);
-	uv_uiframewindow_addxy(&content.account_frame, &content.account_fleet_url,
-			acc_x, acc_row_h + MARGIN, acc_url_w, acc_row_h);
-	acc_x += acc_url_w + acc_gap;
-
-	uv_uitextedit_init(&content.account_user, account_user_buf,
-			sizeof(account_user_buf), UITEXTEDIT_FLAG_ONELINE, style);
-	uv_uitextedit_set_title(&content.account_user, "Username");
-	uv_uitextedit_set_align(&content.account_user, ALIGN_CENTER_LEFT);
-	uv_uiframewindow_addxy(&content.account_frame, &content.account_user,
-			acc_x, 0, acc_field_w, acc_row_h);
-	acc_x += acc_field_w + acc_gap;
-
-	uv_uitextedit_init(&content.account_pass, account_pass_buf,
-			sizeof(account_pass_buf),
-			UITEXTEDIT_FLAG_ONELINE | UITEXTEDIT_FLAG_PASSWORD, style);
-	uv_uitextedit_set_title(&content.account_pass, "Password");
-	uv_uitextedit_set_align(&content.account_pass, ALIGN_CENTER_LEFT);
-	uv_uiframewindow_addxy(&content.account_frame, &content.account_pass,
-			acc_x, 0, acc_field_w, acc_row_h);
-	acc_x += acc_field_w + acc_gap;
-
-	// the "Connect" button fills the panel top to bottom, so it is a large,
-	// easy target and reads as acting on everything to its left
-	uv_uibutton_init(&content.account_connect_btn, "Connect", style);
-	uv_uiframewindow_addxy(&content.account_frame, &content.account_connect_btn,
-			acc_x, 0, ac.w - acc_x, ac.h);
-
-	// the two status lines sit beside the fleet URL, filling the width the user
-	// name and password fields occupy on the row above
-	int16_t acc_status_x = acc_url_w + acc_gap;
-	int16_t acc_status_w = acc_x - acc_gap - acc_status_x;
-	int16_t acc_status_line_h = acc_row_h / 2;
-	uv_uilabel_init(&content.account_status, style->font, ALIGN_CENTER,
-			style->text_color, content.account_status_str);
-	uv_uiframewindow_addxy(&content.account_frame, &content.account_status,
-			acc_status_x, acc_row_h + MARGIN, acc_status_w, acc_status_line_h);
-
-	uv_uilabel_init(&content.account_status_fleet, style->font, ALIGN_CENTER,
-			style->text_color, content.account_status_fleet_str);
-	uv_uiframewindow_addxy(&content.account_frame, &content.account_status_fleet,
-			acc_status_x, acc_row_h + MARGIN + acc_status_line_h,
-			acc_status_w, acc_status_line_h);
-
-	account_refresh_status();
 }
 
 
@@ -1197,6 +928,9 @@ static void build_device_view(uv_uitabwindow_st *tabwin, device_st *device) {
 			uv_uidigitedit_set_title(&content.nodeid_edit, "Node ID");
 			uv_uiframewindow_addxy(&content.left_frame, &content.nodeid_edit,
 					0, nodeid_y, lc.w, nodeid_h);
+			// after the limits: a node id outside them is shown clamped, and that
+			// is not the user editing it
+			content.nodeid_shown = uv_uidigitedit_get_value(&content.nodeid_edit);
 			// the node id of a third-party device is not ours to reassign
 			if (thirdparty) {
 				uv_uiobject_disable(&content.nodeid_edit);
@@ -1543,84 +1277,6 @@ bool devicetab_step(void) {
 	simrun_step();
 	bool sims_changed = simrun_poll_changed();
 
-	// persist the Account fields whenever the user commits an edit (Enter or click
-	// away). Polled here - before the busy early-return - so it works on every tab
-	// state; the fields exist only while the system tab is built. Editing them is
-	// equivalent to running with --user / --pwd.
-	if (!account_autoconnect_tried) {
-		account_autoconnect_tried = true;
-		// only when there is something to try with; an empty account would just
-		// produce a failure message nobody asked for
-		if ((credentials_get_username()[0] != '\0') &&
-				(credentials_get_password()[0] != '\0')) {
-			account_connect();
-		}
-		else {
-		}
-	}
-	else {
-	}
-
-	if (showing_system &&
-			(mqtt_get_state() != account_last_mqtt)) {
-		account_last_mqtt = mqtt_get_state();
-		account_refresh_status();
-	}
-	else {
-	}
-
-	if (showing_system) {
-		bool account_edited = false;
-		if (uv_uitextedit_value_changed(&content.account_url)) {
-			credentials_set_url(uv_uitextedit_get_text(&content.account_url));
-			account_edited = true;
-		}
-		if (uv_uitextedit_value_changed(&content.account_fleet_url)) {
-			credentials_fleet_set_url(
-					uv_uitextedit_get_text(&content.account_fleet_url));
-			// the open fleet session was made against the previous broker
-			mqtt_disconnect();
-			account_edited = true;
-		}
-		if (uv_uitextedit_value_changed(&content.account_user)) {
-			credentials_set_username(
-					uv_uitextedit_get_text(&content.account_user));
-			account_edited = true;
-		}
-		if (uv_uitextedit_value_changed(&content.account_pass)) {
-			credentials_set_password(
-					uv_uitextedit_get_text(&content.account_pass));
-			account_edited = true;
-		}
-		// the session token belongs to the credentials that were in the fields when
-		// it was issued: editing any of them drops it, which puts the status back to
-		// "Not connected" and re-enables the button for reconnecting
-		if (account_edited) {
-			if (remotefiles_is_logged_in()) {
-				printf("File server: disconnected (account settings changed)\n");
-				fflush(stdout);
-			}
-			remotefiles_logout();
-			// the user name and the password are shared, so the fleet session
-			// was made with the old ones too
-			mqtt_disconnect();
-			account_err[0] = '\0';
-			account_refresh_status();
-		}
-
-		// "Connect": log in to the file server with the current fields. This blocks
-		// for the round trip (curl, like the "Server files" browser does), which is
-		// short enough not to warrant its own task.
-		if (uv_uibutton_clicked(&content.account_connect_btn)) {
-			strcpy(content.account_status_str, "Connecting...");
-			uv_uilabel_set_color(&content.account_status,
-					uv_uistyles[0].text_color);
-			uv_ui_refresh(&content.account_status);
-			account_connect();
-			account_refresh_status();
-		}
-	}
-
 #if !CONFIG_TARGET_WIN
 	// the mouse wheel scrolls the running-simulator list. Polled here, before the
 	// busy early-return, so the list scrolls while a simulator parameter load runs
@@ -1684,6 +1340,17 @@ bool devicetab_step(void) {
 			// device's boot-up; restore the heartbeat monitor and terminal sniffer
 			if (busy_op == OP_FLASH) {
 				find_reinstall_monitor();
+				// The flash ends by resetting the device. If the new firmware reset
+				// its settings too, it comes back at the package's default node id,
+				// and must be followed there rather than shown as a new device.
+				if (dev.load.success &&
+						system_holds_device(&dev.system, flash_device) &&
+						(flash_default_nodeid != 0)) {
+					find_expect_boot_nodeid(flash_device, flash_default_nodeid);
+				}
+				else {
+				}
+				flash_device = NULL;
 			}
 			// a package downloaded from the file server is what its device is
 			// configured from - the whole reason for fetching one - so it is
@@ -2043,8 +1710,8 @@ bool devicetab_step(void) {
 	}
 	else if (current_device != NULL) {
 		// "Server files": open the Usevolt file-server browser. Needs the account
-		// username, password and server URL set in the Account panel on the system
-		// tab; if any is missing, tell the user to set them there.
+		// username, password and server URL set in the Account panel on the
+		// Settings tab; if any is missing, tell the user to set them there.
 		if (uv_uibutton_clicked(&content.serverfiles_btn)) {
 			if ((strlen(credentials_get_username()) == 0) ||
 					(strlen(credentials_get_password()) == 0) ||
@@ -2052,7 +1719,7 @@ bool devicetab_step(void) {
 				uv_uiacceptdialog_st dialog = { };
 				uv_uiacceptdialog_exec(&dialog,
 						"Set the server URL, username and password in the Account "
-						"panel on the System tab first.", "OK", "OK",
+						"panel on the Settings tab first.", "OK", "OK",
 						&uv_uistyles[0]);
 			}
 			else if (serverfiles_win_exec(&uv_uistyles[0])) {
@@ -2223,6 +1890,22 @@ bool devicetab_step(void) {
 							load_flash_device_to_node(current_device,
 									target->nodeid, wfr);
 					if (started) {
+						// before the file is assigned below, which is the same file
+						flash_device = target;
+						flash_default_nodeid = configless ?
+								system_read_file_nodeid(picked) :
+								current_device->default_nodeid;
+						// A node already on the bus at the default node id is
+						// another device, not this one coming back: never follow
+						// it. Decided now, while the heartbeat monitor still
+						// tells them apart - the flash may suspend it.
+						if ((flash_default_nodeid != 0) &&
+								(find_node_get_state(flash_default_nodeid) !=
+										DEV_STATE_OFFLINE)) {
+							flash_default_nodeid = 0;
+						}
+						else {
+						}
 						// the firmware changes, so re-read the device's revision and
 						// software version once it is back online after the flash
 						current_device->dev_revision = 0;
@@ -2376,12 +2059,20 @@ bool devicetab_step(void) {
 			// to rebuild the tabs and re-show this tab's content
 			ret = true;
 		}
-		else if (current_device->loaded &&
-				uv_uidigitedit_value_changed(&content.nodeid_edit)) {
-			// the user adjusted the node id; store it back on the device. No
-			// rebuild is needed, the editor already shows the new value.
+		// The user adjusted the node id; store it back on the device. No rebuild is
+		// needed, the editor already shows the new value.
+		//
+		// Told by comparing the editor against the value it was built with, not by
+		// uv_uidigitedit_value_changed(): that flag is set for a single step cycle,
+		// and a cycle in which an earlier branch of this chain ran lost the edit.
+		// Nor only for a device with a configuration file loaded, as it used to
+		// be: a device found on the bus has none, and its edits were thrown away.
+		else if (uv_uidigitedit_get_value(&content.nodeid_edit) !=
+				content.nodeid_shown) {
 			uint8_t old_nodeid = current_device->nodeid;
-			current_device->nodeid = uv_uidigitedit_get_value(&content.nodeid_edit);
+			current_device->nodeid =
+					(uint8_t) uv_uidigitedit_get_value(&content.nodeid_edit);
+			content.nodeid_shown = current_device->nodeid;
 			// The node id here is the one uvcan addresses the device with. The
 			// device itself keeps its own node id until the new one is written to
 			// it, stored to its non-volatile memory and the device rebooted, so
