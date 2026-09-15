@@ -51,8 +51,14 @@ typedef struct {
 	int pid;
 	// device name, for display
 	char name[128];
-	// CANopen node id the simulator was started with
+	// CANopen node id of the simulated device: the one it was started with, then
+	// following the node id of its system device (see follow_device())
 	uint8_t nodeid;
+	// the system device the simulator was started for, and that device's package
+	// path, which tells whether the pointer still holds the same device: the
+	// system's devices move down when one before them is removed
+	device_st *device;
+	char devpath[1024];
 	// the CAN channel it was started on and whether its node id was pinned with
 	// -n: kept so simrun_restart() can launch it again exactly the same way
 	char can_channel[64];
@@ -93,6 +99,40 @@ static void set_state(simproc_st *p, simrun_state_e st) {
 		p->state = st;
 		state_changed = true;
 	}
+}
+
+
+// The system device *p* was started for, or NULL once it is gone from the system.
+static device_st *proc_device(const simproc_st *p) {
+	device_st *ret = NULL;
+	if ((sim_sys != NULL) && (p->device != NULL) &&
+			system_holds_device(sim_sys, p->device) &&
+			(strcmp(p->device->filepath, p->devpath) == 0)) {
+		ret = p->device;
+	}
+	else {
+	}
+	return ret;
+}
+
+
+// Takes the node id of *p*'s system device into *p* when it has been changed
+// (e.g. the user edited it in the device's tab), so the simulator list shows the
+// device's node id and a restart launches the simulator with it. Returns true
+// when the node id changed.
+static bool follow_device(simproc_st *p) {
+	bool ret = false;
+	device_st *d = proc_device(p);
+	if ((d != NULL) && (d->nodeid != 0) && (d->nodeid != p->nodeid)) {
+		PRINT("Simulator '%s' follows its device from node 0x%x to node 0x%x.\n",
+				p->name, (unsigned int) p->nodeid, (unsigned int) d->nodeid);
+		p->nodeid = d->nodeid;
+		state_changed = true;
+		ret = true;
+	}
+	else {
+	}
+	return ret;
 }
 
 
@@ -407,6 +447,8 @@ uint8_t simrun_start_system(system_st *sys, const char *can_channel) {
 		const char *nm = (strlen(d->devname) > 0) ? d->devname : d->name;
 		strncpy(p->name, nm, sizeof(p->name) - 1);
 		p->nodeid = d->nodeid;
+		p->device = d;
+		strncpy(p->devpath, d->filepath, sizeof(p->devpath) - 1);
 
 		// the device is on its package default when no explicit node id was given
 		// for it (system_add_device() then adopts the database's own)
@@ -440,6 +482,11 @@ bool simrun_step(void) {
 	// sends SIGTERM); anything else is treated as a crash / other stop.
 	for (uint8_t i = 0; i < proc_count; i++) {
 		simproc_st *p = &procs[i];
+		// also for a stopped simulator: its row still shows the node id, and a
+		// restart launches it on that one
+		if (follow_device(p)) {
+			changed = true;
+		}
 		if (!state_is_alive(p->state)) {
 			continue;
 		}
@@ -893,22 +940,6 @@ static void postparam_task(void *ptr) {
 static volatile uint8_t restart_index;
 
 
-// The system's device sitting on node *nodeid*, or NULL when there is none.
-static device_st *sys_dev_by_nodeid(uint8_t nodeid) {
-	device_st *ret = NULL;
-	if (sim_sys != NULL) {
-		for (uint8_t i = 0; i < system_get_dev_count(sim_sys); i++) {
-			device_st *d = system_get_dev(sim_sys, i);
-			if ((d != NULL) && (d->nodeid == nodeid)) {
-				ret = d;
-				break;
-			}
-		}
-	}
-	return ret;
-}
-
-
 /// @brief: Task body for simrun_restart(): waits for the relaunched simulator to
 /// come operational, loads its device's parameters onto it and moves it
 /// STARTED -> PARAM -> RUNNING, the same way the post-launch load does after a
@@ -916,7 +947,7 @@ static device_st *sys_dev_by_nodeid(uint8_t nodeid) {
 /// while it is waited for), leaving it in whatever state it ended up in.
 static void restart_task(void *ptr) {
 	simproc_st *p = &procs[restart_index];
-	device_st *d = sys_dev_by_nodeid(p->nodeid);
+	device_st *d = proc_device(p);
 
 	// As after a start, the wait and the load are skipped when the device carries
 	// no parameters - the normal case when no system configuration file is
@@ -991,6 +1022,8 @@ bool simrun_restart(uint8_t index) {
 	if ((index < proc_count) && !state_is_alive(procs[index].state) &&
 			pp_finished && (strlen(procs[index].pkg.dir) != 0)) {
 		simproc_st *p = &procs[index];
+		// launched on the device's node id as it is now
+		follow_device(p);
 		PRINT("Restarting the simulator of '%s' (node 0x%x)...\n",
 				p->name, (unsigned int) p->nodeid);
 		// the run directory (and with it the device's stored settings) is still
