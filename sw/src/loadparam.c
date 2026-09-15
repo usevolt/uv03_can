@@ -483,6 +483,185 @@ void loadparam_load_params_async(device_st **devices, uint8_t count) {
 }
 
 
+// How long loadparam_load_files_async() waits for the devices a file reset to
+// come back online before it loads the next file
+#define LOADPARAM_FILES_OP_WAIT_MS		15000
+
+// Arguments for the asynchronous parameter file load.
+static char async_files[LOADPARAM_FILES_MAX][LOADPARAM_FILE_LEN];
+static uint8_t async_file_count;
+static volatile bool async_files_finished = true;
+
+
+bool loadparam_load_files_is_finished(void) {
+	return async_files_finished;
+}
+
+
+/// @brief: The node id the parameter file *file* addresses, when it addresses a
+/// single device with a plain node id. 0 when it addresses several devices, picks
+/// the node id with a query, or cannot be read.
+static uint8_t param_file_single_nodeid(const char *file) {
+	uint8_t ret = 0;
+	char *buffer = NULL;
+	parser_node_st root = parser_read_file(file, &buffer);
+	if (parser_node_is_valid(root)) {
+		// one object per device in the DEVS array, or the deprecated single-device
+		// format with everything at the top level
+		parser_node_st devobj = root;
+		parser_node_st devs = parser_find_child(root, "DEVS");
+		if (parser_node_is_valid(devs) && (parser_get_type(devs) == PARSER_ARRAY)) {
+			devobj = (parser_array_get_size(devs) == 1) ?
+					parser_array_at(devs, 0) : parser_node_invalid();
+		}
+		if (parser_node_is_valid(devobj)) {
+			parser_node_st nid = parser_find_child(devobj, "NODEID");
+			if (parser_node_is_valid(nid) && (parser_get_type(nid) == PARSER_INT)) {
+				ret = (uint8_t) parser_get_int(nid);
+			}
+		}
+	}
+	free(buffer);
+	return ret;
+}
+
+
+/// @brief: Asks the user whether a parameter file load goes on after *file*
+/// failed, with *remaining* files still to load. See loadparam_ask_continue().
+/// @return: true to load the remaining files, false to stop
+static bool loadparam_files_ask_continue(const char *file, uint8_t remaining) {
+	bool ret = true;
+	PROMPT("\n\n"
+			"Loading the parameter file '%s' failed (%s).\n"
+			"%u parameter file(s) of this load have not been loaded yet.\n\n"
+			"Type 'abort' to stop the whole load and leave the remaining "
+			"files unloaded,\n"
+			"or press anything to continue with the next file.\n\n",
+			file,
+			this->file_invalid ? "the parameter file cannot be used" :
+					"a CANopen transfer failed",
+			(unsigned int) remaining);
+	char str[128] = {};
+	uv_stdin_getline(str, sizeof(str) - 1);
+	if (strstr(str, "abort") != NULL) {
+		printf("User selected: abort the whole parameter load\n");
+		ret = false;
+	}
+	else {
+		printf("User selected: continue with the next file\n");
+	}
+	fflush(stdout);
+	return ret;
+}
+
+
+/// @brief: Task body for loadparam_load_files_async().
+static void loadparam_files_task(void *ptr) {
+	uint8_t reset_nodes[sizeof(this->modified_dev_nodeids)];
+	uint8_t reset_count = 0;
+	bool aborted = false;
+	for (uint8_t i = 0; (i < async_file_count) && !aborted; i++) {
+		const char *file = async_files[i];
+
+		// the devices the previous file stored and reset have to be back up
+		// before anything more is written to them
+		if (reset_count != 0) {
+			// let them drop off the bus first, so their heartbeats from before the
+			// reset are not taken for them being back
+			uv_rtos_task_delay(1500);
+			for (uint8_t j = 0; j < reset_count; j++) {
+				printf("Waiting for node 0x%x to come back online...\n",
+						(unsigned int) reset_nodes[j]);
+				fflush(stdout);
+				if (!find_wait_node_operational(reset_nodes[j],
+						LOADPARAM_FILES_OP_WAIT_MS)) {
+					WARNING("Node 0x%x did not come back online; loading the next "
+							"file anyway.\n", (unsigned int) reset_nodes[j]);
+				}
+			}
+			reset_count = 0;
+		}
+
+		uint8_t nodeid = param_file_single_nodeid(file);
+		device_st *device = NULL;
+		for (uint8_t d = 0; (nodeid != 0) && (d < system_get_dev_count(&dev.system));
+				d++) {
+			device_st *sd = system_get_dev(&dev.system, d);
+			if ((sd->nodeid == nodeid) && (strlen(sd->filepath) != 0)) {
+				device = sd;
+				break;
+			}
+		}
+
+		printf("Loading parameter file %u/%u: '%s'\n", (unsigned int) (i + 1),
+				(unsigned int) async_file_count, file);
+		fflush(stdout);
+
+		// a device load leaves its node id selection behind (see load_device_db);
+		// every file starts from the selection there was before the load
+		system_nodeids_st nodeids;
+		system_nodeids_save(&dev.system, &nodeids);
+		bool ok = false;
+		if (device != NULL) {
+			ok = loadparam_load_device(device, file);
+		}
+		else {
+			// no configured device on the file's node id, or the file addresses
+			// several devices: load it as it is, like --loadparam without --dev
+			dev.system.forced_nodeid_set = false;
+			this->current_file = 0;
+			this->dev_count = 0;
+			this->sys_load_mode = false;
+			memset(this->files, 0, sizeof(this->files));
+			uv_vector_init(&this->queries, this->queries_buffer,
+					QUERY_COUNT, sizeof(this->queries_buffer[0]));
+			strncpy(this->files[0], file, sizeof(this->files[0]) - 1);
+			uv_can_set_up(false);
+			loadparam_step(NULL);
+			ok = this->success;
+		}
+		system_nodeids_restore(&dev.system, &nodeids);
+
+		reset_count = this->dev_count;
+		memcpy(reset_nodes, this->modified_dev_nodeids, reset_count);
+
+		if (!ok) {
+			ERROR("Loading the parameter file '%s' failed.\n", file);
+			fflush(stdout);
+			uint8_t remaining = (uint8_t) (async_file_count - i - 1);
+			if ((remaining == 0) || !loadparam_files_ask_continue(file, remaining)) {
+				aborted = true;
+			}
+		}
+	}
+	if (aborted) {
+		ERRORSTR("Parameter loading stopped.\n");
+	}
+	else {
+		printf("All %u parameter file(s) loaded.\n", (unsigned int) async_file_count);
+	}
+	fflush(stdout);
+	async_files_finished = true;
+	uv_rtos_task_delete(NULL);
+}
+
+
+void loadparam_load_files_async(const char **files, uint8_t count) {
+	if (count > LOADPARAM_FILES_MAX) {
+		count = LOADPARAM_FILES_MAX;
+	}
+	for (uint8_t i = 0; i < count; i++) {
+		strncpy(async_files[i], files[i], sizeof(async_files[i]) - 1);
+		async_files[i][sizeof(async_files[i]) - 1] = '\0';
+	}
+	async_file_count = count;
+	// mark in-progress before the task starts so a caller can poll immediately
+	async_files_finished = false;
+	uv_rtos_task_create(&loadparam_files_task, "loadfiles_task",
+			UV_RTOS_MIN_STACK_SIZE * 5, NULL, UV_RTOS_IDLE_PRIORITY + 1, NULL);
+}
+
+
 // Implementation behind loadparam_load_device(). *sys_mode* selects whether the
 // per-device EMCY suppress / store / reset steps run here (false, the default) or
 // are left to the caller (true, the system load).

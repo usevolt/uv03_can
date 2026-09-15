@@ -32,6 +32,14 @@
 /// username and password. The values are stored on this computer and shared by
 /// every uvcan install (see credentials.h); one account opens both the file
 /// server and the fleet broker.
+///
+/// Under it the "Load parameters" panel: a list of parameter files, ordered by
+/// the user, which are loaded onto the devices one after another.
+
+
+/// @brief: True while the "Load parameters" panel's load is running. It owns
+/// the SDO client for the duration, so the other tabs leave the devices alone.
+bool settingstab_is_busy(void);
 
 
 /// @brief: Populates the tab window's content area with the Settings view.

@@ -41,9 +41,15 @@ typedef struct {
 
 #define QUERY_COUNT			20
 
+/// @brief: The longest parameter file path (with its terminator) a load takes
+#define LOADPARAM_FILE_LEN		256
+
+/// @brief: How many parameter files loadparam_load_files_async() loads at once
+#define LOADPARAM_FILES_MAX		32
+
 
 typedef struct {
-	char files[64][256];
+	char files[64][LOADPARAM_FILE_LEN];
 	unsigned int current_file;
 
 	// The --loadparam option's attached argument (empty when none was given).
@@ -145,6 +151,24 @@ void loadparam_load_params_async(device_st **devices, uint8_t count);
 /// running (i.e. the last loadparam_load_params_async() has completed). Returns
 /// true before any such load is started.
 bool loadparam_load_params_is_finished(void);
+
+
+/// @brief: Loads the parameter files *files* (*count* of them, at most
+/// LOADPARAM_FILES_MAX) onto the devices, one file after another in the given
+/// order, on its own task so the caller (the UI) stays live.
+///
+/// A file addressing a single node which is a device of the system with a
+/// configuration package is loaded with that device's database, like the device
+/// tab's "Load parameters"; any other file is loaded as it is, like a raw
+/// --loadparam. Each file stores and resets the devices it wrote, and the next
+/// file waits for them to come back online. A file which fails lets the user
+/// choose whether the remaining files are still loaded.
+/// Poll loadparam_load_files_is_finished().
+void loadparam_load_files_async(const char **files, uint8_t count);
+
+
+/// @brief: Returns true when no loadparam_load_files_async() load is running.
+bool loadparam_load_files_is_finished(void);
 
 
 /// @brief: Loads the parameters bundled with a system configuration onto every

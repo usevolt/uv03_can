@@ -481,7 +481,8 @@ void uvui_exec(void) {
 		// refresh the active tab so its state label/dot update too. While an async
 		// device operation is in progress the state is frozen (the operation owns
 		// the SDO client, and a flash resets the device).
-		if (!devicetab_is_busy() && find_update_device_states(&dev.system) &&
+		if (!devicetab_is_busy() && !settingstab_is_busy() &&
+				find_update_device_states(&dev.system) &&
 				device_tabs_shown()) {
 			// rebuild rather than plain refresh: coming online can also bring the
 			// device's own name, which the tab titles are built from
@@ -497,7 +498,8 @@ void uvui_exec(void) {
 		// so refresh here when the poll reports a change. On another main tab there
 		// are no tabs to rebuild; entering the System tab builds them from the
 		// current state anyway.
-		if (!devicetab_is_busy() && find_search_is_finished() &&
+		if (!devicetab_is_busy() && !settingstab_is_busy() &&
+				find_search_is_finished() &&
 				find_poll_new_devices() && device_tabs_shown()) {
 			rebuild_tabs();
 			show_active_tab();
@@ -680,11 +682,13 @@ static void show_active_maintab(void) {
 
 static uv_uiobject_ret_e maintab_step(void *me, const uint16_t step_ms) {
 	if (uv_uitabwindow_tab_changed(&this->maintabs)) {
-		if (devicetab_is_busy()) {
+		if (devicetab_is_busy() || settingstab_is_busy()) {
 			// an asynchronous device operation owns the device tab's widgets and
 			// relies on them staying disabled until it finishes. Leaving the System
 			// tab would destroy them, and coming back would re-create them enabled,
-			// so keep the user here for the duration.
+			// so keep the user here for the duration. The same goes for the
+			// Settings tab's parameter file load, which owns the SDO client: every
+			// device operation of the other tabs would fight it.
 			uv_uitabwindow_set_tab(&this->maintabs, this->maintab);
 		}
 		else {

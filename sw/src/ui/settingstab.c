@@ -22,9 +22,13 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 #include "credentials.h"
+#include "loadparam.h"
 #include "mqtt.h"
 #include "remotefiles.h"
+#include "ui/uvui.h"
+#include "ui/uv_uifileedit.h"
 #include "ui/uv_uitextedit.h"
 
 
@@ -36,6 +40,17 @@
 #define MARGIN			10
 #define TITLE_H			30
 #define BUTTON_H		44
+// A row of the parameter file list, and the gap between two rows
+#define PARAM_ROW_H		BUTTON_H
+#define PARAM_ROW_GAP	4
+
+
+// Selectable file types for the "Add parameter files" chooser. Parameter files
+// are written in JSON or in YAML, told apart by the extension.
+static const uv_uifileedit_filter_st PARAM_FILE_FILTERS[] = {
+	{ "Parameter files", "*.json *.yaml *.yml" },
+	{ "All files", "*" },
+};
 
 
 // The "Account" panel: the two servers' URLs, and a username and a password
@@ -57,7 +72,30 @@ static struct {
 	uv_uilabel_st account_status_fleet;
 	char account_status_str[256];
 	char account_status_fleet_str[256];
+
+	// The "Load parameters" panel: the file list on the left, the buttons on the
+	// right
+	uv_uiframewindow_st params_frame;
+	uv_uiobject_st *params_frame_buf[5];
+	uv_uiwindow_st params_list;
+	uv_uiobject_st *params_list_buf[4 * LOADPARAM_FILES_MAX + 2];
+	uv_uilabel_st params_empty;
+	uv_uilabel_st param_labels[LOADPARAM_FILES_MAX];
+	uv_uibutton_st param_up_btns[LOADPARAM_FILES_MAX];
+	uv_uibutton_st param_down_btns[LOADPARAM_FILES_MAX];
+	uv_uibutton_st param_remove_btns[LOADPARAM_FILES_MAX];
+	uv_uibutton_st params_add_btn;
+	uv_uibutton_st params_load_btn;
 } content;
+
+
+// The parameter files of the "Load parameters" panel, in the order they are
+// loaded. File-scope so the list outlives the tab rebuilds.
+static char param_files[LOADPARAM_FILES_MAX][LOADPARAM_FILE_LEN];
+static uint8_t param_file_count;
+
+// True while the panel's load runs (see settingstab_is_busy())
+static bool params_loading;
 
 
 // Whether the widgets above are part of the display right now. The main tab
@@ -206,6 +244,299 @@ static void account_refresh_status(void) {
 }
 
 
+// The file name part of *path*
+static const char *path_basename(const char *path) {
+	const char *ret = path;
+	for (const char *c = path; *c != '\0'; c++) {
+		if ((*c == '/') || (*c == '\\')) {
+			ret = c + 1;
+		}
+	}
+	return ret;
+}
+
+
+// Orders two parameter file paths alphabetically by their file names, case
+// insensitively; files of the same name by their whole paths.
+static int param_file_cmp(const char *a, const char *b) {
+	const char *na = path_basename(a);
+	const char *nb = path_basename(b);
+	int ret = 0;
+	while ((ret == 0) && ((*na != '\0') || (*nb != '\0'))) {
+		ret = tolower((unsigned char) *na) - tolower((unsigned char) *nb);
+		na += (*na != '\0') ? 1 : 0;
+		nb += (*nb != '\0') ? 1 : 0;
+	}
+	if (ret == 0) {
+		ret = strcmp(a, b);
+	}
+	return ret;
+}
+
+
+// Adds the newline-separated paths of *list* (modified in place) to the end of
+// the parameter file list, in alphabetical order among themselves. A file which
+// already is on the list is not added again.
+static void params_add(char *list) {
+	char *added[LOADPARAM_FILES_MAX];
+	uint8_t n = 0;
+	char *tok = list;
+	while ((tok != NULL) && (*tok != '\0')) {
+		char *nl = strchr(tok, '\n');
+		if (nl != NULL) {
+			*nl = '\0';
+		}
+		bool dup = false;
+		for (uint8_t i = 0; (i < param_file_count) && !dup; i++) {
+			dup = (strcmp(param_files[i], tok) == 0);
+		}
+		for (uint8_t i = 0; (i < n) && !dup; i++) {
+			dup = (strcmp(added[i], tok) == 0);
+		}
+		if (dup) {
+			// already listed
+		}
+		else if (strlen(tok) >= LOADPARAM_FILE_LEN) {
+			printf("The path of the parameter file '%s' is too long to be "
+					"loaded; it is not added.\n", tok);
+		}
+		else if ((param_file_count + n) >= LOADPARAM_FILES_MAX) {
+			printf("The list holds at most %u parameter files; '%s' is not "
+					"added.\n", (unsigned int) LOADPARAM_FILES_MAX, tok);
+		}
+		else {
+			// insertion sort: find the place of the new file among the added
+			uint8_t pos = n;
+			while ((pos > 0) && (param_file_cmp(added[pos - 1], tok) > 0)) {
+				added[pos] = added[pos - 1];
+				pos--;
+			}
+			added[pos] = tok;
+			n++;
+		}
+		tok = (nl != NULL) ? (nl + 1) : NULL;
+	}
+	fflush(stdout);
+	for (uint8_t i = 0; i < n; i++) {
+		strcpy(param_files[param_file_count++], added[i]);
+	}
+}
+
+
+// Draws an arrow button: the button itself and a triangle pointing up or down
+// on it. The UI font has no arrow glyphs.
+static void arrow_btn_draw(void *me, bool up) {
+	uv_uibutton_draw(me, NULL);
+	int16_t x = uv_ui_get_xglobal(me);
+	int16_t y = uv_ui_get_yglobal(me);
+	int16_t w = uv_uibb(me)->width;
+	int16_t h = uv_uibb(me)->height;
+	// half the arrow's width, and its height
+	int16_t s = ((w < h) ? w : h) / 4;
+	int16_t cx = x + w / 2;
+	int16_t cy = y + h / 2;
+	int16_t tip = up ? (cy - s / 2) : (cy + s / 2);
+	int16_t base = up ? (cy + s / 2) : (cy - s / 2);
+	uv_ui_linestrip_point_st p[3] = {
+			{ cx - s, base },
+			{ cx + s, base },
+			{ cx, tip }
+	};
+	uv_uibutton_st *btn = me;
+	// a disabled arrow (the first row cannot move up) is drawn faint
+	color_t c = ((uv_uiobject_st*) me)->enabled ?
+			btn->text_c : uv_uic_brighten(btn->main_c, 40);
+	uv_ui_draw_polygon(p, 3, c);
+}
+
+static void up_btn_draw(void *me, const uv_bounding_box_st *pbb) {
+	(void) pbb;
+	arrow_btn_draw(me, true);
+}
+
+static void down_btn_draw(void *me, const uv_bounding_box_st *pbb) {
+	(void) pbb;
+	arrow_btn_draw(me, false);
+}
+
+
+// Enables the panel's buttons according to the list and whether a load runs
+static void params_refresh_buttons(void) {
+	if (params_loading || (param_file_count >= LOADPARAM_FILES_MAX)) {
+		uv_uiobject_disable(&content.params_add_btn);
+	}
+	else {
+		uv_uiobject_enable(&content.params_add_btn);
+	}
+	if (params_loading || (param_file_count == 0)) {
+		uv_uiobject_disable(&content.params_load_btn);
+	}
+	else {
+		uv_uiobject_enable(&content.params_load_btn);
+	}
+	uv_ui_refresh(&content.params_add_btn);
+	uv_ui_refresh(&content.params_load_btn);
+}
+
+
+// (Re)builds the rows of the parameter file list: the file name, the up and
+// down arrows moving the file in the load order and a button removing it
+static void params_build_list(void) {
+	const uv_uistyle_st *style = &uv_uistyles[0];
+	uv_uiwindow_clear(&content.params_list);
+	int16_t w = uv_uibb(&content.params_list)->width;
+	int16_t h = uv_uibb(&content.params_list)->height;
+
+	if (param_file_count == 0) {
+		uv_uilabel_init(&content.params_empty, style->font, ALIGN_CENTER,
+				style->text_color, "No parameter files. Add them with "
+				"\"Add parameter files\".");
+		uv_uiwindow_addxy(&content.params_list, &content.params_empty,
+				0, 0, w, h);
+		uv_uiwindow_set_contentbb(&content.params_list, w, h);
+	}
+	else {
+		int16_t rows_h = param_file_count * PARAM_ROW_H +
+				(param_file_count - 1) * PARAM_ROW_GAP;
+		// leave room for the scroll bar when the rows do not fit
+		int16_t list_w = w;
+		if (rows_h > h) {
+			list_w -= CONFIG_UI_WINDOW_SCROLLBAR_WIDTH + PARAM_ROW_GAP;
+		}
+		int16_t arrow_w = 3 * PARAM_ROW_H / 2;
+		int16_t remove_w = 100;
+		int16_t remove_x = list_w - remove_w;
+		int16_t down_x = remove_x - PARAM_ROW_GAP - arrow_w;
+		int16_t up_x = down_x - PARAM_ROW_GAP - arrow_w;
+		int16_t name_w = up_x - PARAM_ROW_GAP - MARGIN;
+
+		for (uint8_t i = 0; i < param_file_count; i++) {
+			int16_t row_y = i * (PARAM_ROW_H + PARAM_ROW_GAP);
+			uv_uilabel_init(&content.param_labels[i], style->font,
+					ALIGN_CENTER_LEFT, style->text_color,
+					(char*) path_basename(param_files[i]));
+			uv_uiwindow_addxy(&content.params_list, &content.param_labels[i],
+					MARGIN, row_y, name_w, PARAM_ROW_H);
+
+			uv_uibutton_init(&content.param_up_btns[i], "", style);
+			uv_uiobject_set_draw_callb(&content.param_up_btns[i], &up_btn_draw);
+			uv_uiwindow_addxy(&content.params_list, &content.param_up_btns[i],
+					up_x, row_y, arrow_w, PARAM_ROW_H);
+
+			uv_uibutton_init(&content.param_down_btns[i], "", style);
+			uv_uiobject_set_draw_callb(&content.param_down_btns[i],
+					&down_btn_draw);
+			uv_uiwindow_addxy(&content.params_list, &content.param_down_btns[i],
+					down_x, row_y, arrow_w, PARAM_ROW_H);
+
+			uv_uibutton_init(&content.param_remove_btns[i], "Remove", style);
+			uv_uiwindow_addxy(&content.params_list, &content.param_remove_btns[i],
+					remove_x, row_y, remove_w, PARAM_ROW_H);
+
+			if (params_loading || (i == 0)) {
+				uv_uiobject_disable(&content.param_up_btns[i]);
+			}
+			if (params_loading || (i == (param_file_count - 1))) {
+				uv_uiobject_disable(&content.param_down_btns[i]);
+			}
+			if (params_loading) {
+				uv_uiobject_disable(&content.param_remove_btns[i]);
+			}
+		}
+		uv_uiwindow_set_contentbb(&content.params_list, w,
+				(rows_h > h) ? rows_h : h);
+	}
+	uv_ui_refresh(&content.params_list);
+}
+
+
+// The mouse wheel scrolls the parameter file list while the pointer is over it.
+// A window scrolls itself by dragging only; see the device tab's simulator list.
+static void params_list_wheel_step(void) {
+	if ((param_file_count != 0) && !uvui_log_is_expanded()) {
+		int16_t x = 0;
+		int16_t y = 0;
+		uv_ui_get_touch(&x, &y);
+		int16_t gx = uv_ui_get_xglobal(&content.params_list);
+		int16_t gy = uv_ui_get_yglobal(&content.params_list);
+		uv_bounding_box_st *bb = uv_uibb(&content.params_list);
+		if ((x >= gx) && (x < (gx + bb->width)) &&
+				(y >= gy) && (y < (gy + bb->height))) {
+			int16_t scroll = uv_ui_get_scroll();
+			if (scroll != 0) {
+				uv_uiwindow_content_move(&content.params_list, 0,
+						scroll * (PARAM_ROW_H + PARAM_ROW_GAP));
+			}
+		}
+	}
+}
+
+
+// Polls the "Load parameters" panel's buttons while the tab is shown
+static void params_step(void) {
+	bool rebuild = false;
+	if (params_loading) {
+		// nothing is clickable while the load runs
+	}
+	else if (uv_uibutton_clicked(&content.params_add_btn)) {
+		// static: room for every file the list can hold, too much for the stack
+		static char picked[LOADPARAM_FILES_MAX * LOADPARAM_FILE_LEN];
+		if (uv_uifiledialog_exec_multi("Add parameter files", PARAM_FILE_FILTERS,
+				sizeof(PARAM_FILE_FILTERS) / sizeof(PARAM_FILE_FILTERS[0]),
+				picked, sizeof(picked))) {
+			params_add(picked);
+			rebuild = true;
+		}
+	}
+	else if (uv_uibutton_clicked(&content.params_load_btn)) {
+		const char *files[LOADPARAM_FILES_MAX];
+		for (uint8_t i = 0; i < param_file_count; i++) {
+			files[i] = param_files[i];
+		}
+		uvui_set_log_title("Loading parameter files...");
+		loadparam_load_files_async(files, param_file_count);
+		params_loading = true;
+		rebuild = true;
+	}
+	else {
+		for (uint8_t i = 0; (i < param_file_count) && !rebuild; i++) {
+			if (uv_uibutton_clicked(&content.param_up_btns[i]) && (i > 0)) {
+				char tmp[LOADPARAM_FILE_LEN];
+				strcpy(tmp, param_files[i - 1]);
+				strcpy(param_files[i - 1], param_files[i]);
+				strcpy(param_files[i], tmp);
+				rebuild = true;
+			}
+			else if (uv_uibutton_clicked(&content.param_down_btns[i]) &&
+					(i < (param_file_count - 1))) {
+				char tmp[LOADPARAM_FILE_LEN];
+				strcpy(tmp, param_files[i + 1]);
+				strcpy(param_files[i + 1], param_files[i]);
+				strcpy(param_files[i], tmp);
+				rebuild = true;
+			}
+			else if (uv_uibutton_clicked(&content.param_remove_btns[i])) {
+				memmove(param_files[i], param_files[i + 1],
+						(param_file_count - i - 1) * sizeof(param_files[0]));
+				param_file_count--;
+				rebuild = true;
+			}
+			else {
+			}
+		}
+	}
+	if (rebuild) {
+		params_build_list();
+		params_refresh_buttons();
+	}
+}
+
+
+bool settingstab_is_busy(void) {
+	return params_loading;
+}
+
+
 void settingstab_show(uv_uitabwindow_st *tabwin) {
 	const uv_uistyle_st *style = &uv_uistyles[0];
 	uv_bounding_box_st cbb = uv_uitabwindow_get_contentbb(tabwin);
@@ -322,6 +653,32 @@ void settingstab_show(uv_uitabwindow_st *tabwin) {
 			acc_status_x, acc_row_h + MARGIN + acc_status_line_h,
 			acc_status_w, acc_status_line_h);
 
+	// The "Load parameters" panel fills the rest of the tab: the file list on the
+	// left, and on the right the buttons, as wide as the "Connect" button above
+	int16_t params_y = MARGIN + account_frame_h + MARGIN;
+	uv_uiframewindow_init(&content.params_frame, content.params_frame_buf, style);
+	uv_uiframewindow_set_title(&content.params_frame, "Load parameters");
+	uv_uitabwindow_addxy(tabwin, &content.params_frame, frame_x, params_y,
+			frame_w, cbb.h - params_y - MARGIN);
+	uv_bounding_box_st pc = uv_uiframewindow_get_content_bb(&content.params_frame);
+	int16_t params_btn_w = acc_conn_w;
+	int16_t params_list_w = pc.w - params_btn_w - MARGIN;
+
+	uv_uiwindow_init(&content.params_list, content.params_list_buf, style);
+	uv_uiframewindow_addxy(&content.params_frame, &content.params_list,
+			0, 0, params_list_w, pc.h);
+
+	uv_uibutton_init(&content.params_add_btn, "Add parameter files", style);
+	uv_uiframewindow_addxy(&content.params_frame, &content.params_add_btn,
+			params_list_w + MARGIN, 0, params_btn_w, BUTTON_H);
+
+	uv_uibutton_init(&content.params_load_btn, "Load parameters", style);
+	uv_uiframewindow_addxy(&content.params_frame, &content.params_load_btn,
+			params_list_w + MARGIN, pc.h - BUTTON_H, params_btn_w, BUTTON_H);
+
+	params_build_list();
+	params_refresh_buttons();
+
 	shown = true;
 	account_last_mqtt = mqtt_get_state();
 	account_refresh_status();
@@ -346,6 +703,26 @@ void settingstab_step(void) {
 		}
 		else {
 		}
+	}
+	else {
+	}
+
+	// the parameter file load finished: give the panel its buttons back. Watched
+	// whichever tab is shown, though the load keeps the user on this one.
+	if (params_loading && loadparam_load_files_is_finished()) {
+		params_loading = false;
+		uvui_reset_log_title();
+		if (shown) {
+			params_build_list();
+			params_refresh_buttons();
+		}
+	}
+	else {
+	}
+
+	if (shown) {
+		params_list_wheel_step();
+		params_step();
 	}
 	else {
 	}
