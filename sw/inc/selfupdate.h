@@ -110,4 +110,40 @@ void selfupdate_check_async(void);
 bool selfupdate_available(selfupdate_info_st *info);
 
 
+/// @brief: True once, when the background check started by
+/// selfupdate_check_async() has finished, so the caller can say how it went
+/// whichever way it went: *ok* says whether the update server answered at all,
+/// *newer* whether what it named is newer than this build, *info* what it
+/// named, and *err* (size *err_len*) why a failed check failed. Never blocks;
+/// every argument may be NULL.
+bool selfupdate_check_poll(selfupdate_info_st *info, bool *ok, bool *newer,
+		char *err, unsigned int err_len);
+
+
+/// @brief: Whether this build can install an update over itself, i.e. whether
+/// selfupdate_apply() does anything here.
+///
+/// The Linux uvcan is a single binary and replaces it. The Windows one is a
+/// folder of files - the exe, a DLL, the fonts, the launchers - so it is
+/// updated by unpacking the published package over it, which is what
+/// get-uvcan.ps1 does; there is nothing for this to replace.
+bool selfupdate_can_apply(void);
+
+
+/// @brief: Installs the build the background check found (see
+/// selfupdate_available()) with selfupdate_apply(), on a task of its own, so
+/// the caller (the UI) keeps running while it downloads. The download logs its
+/// progress.
+///
+/// @return: false when there is nothing to install or an install is already
+/// running.
+bool selfupdate_apply_async(void);
+
+
+/// @brief: True once, when the install selfupdate_apply_async() started has
+/// finished: *ok* then says whether it succeeded, and *err* (size *err_len*)
+/// why it did not. Never blocks. *ok* and *err* may be NULL.
+bool selfupdate_apply_poll(bool *ok, char *err, unsigned int err_len);
+
+
 #endif /* UVCAN_SELFUPDATE_H_ */

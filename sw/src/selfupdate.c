@@ -23,14 +23,6 @@
 #include <string.h>
 #include <uv_rtos.h>
 
-#if !CONFIG_TARGET_WIN
-
-#include <unistd.h>
-#include <errno.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-
-
 // The background check's result, and the flags the UI polls. Written by the
 // check task and read by the UI thread: both are single words, the info is
 // published only after `su_done` is set, and the worst a torn read could do is
@@ -39,6 +31,11 @@ static selfupdate_info_st su_async_info;
 static volatile bool su_async_running;
 static volatile bool su_async_done;
 static volatile bool su_async_newer;
+// whether the server answered at all, why it did not, and whether the caller
+// has yet been told how the check went (see selfupdate_check_poll())
+static volatile bool su_async_ok;
+static volatile bool su_async_reported;
+static char su_async_err[256];
 
 
 uint32_t selfupdate_this_version(void) {
@@ -159,6 +156,19 @@ bool selfupdate_check(selfupdate_info_st *info, bool *newer,
 	}
 	free(body);
 	return ret;
+}
+
+
+#if !CONFIG_TARGET_WIN
+
+#include <unistd.h>
+#include <errno.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+
+
+bool selfupdate_can_apply(void) {
+	return true;
 }
 
 
@@ -317,21 +327,42 @@ bool selfupdate_apply(const selfupdate_info_st *info,
 }
 
 
+#else /* CONFIG_TARGET_WIN: a folder of files, not a binary to replace */
+
+bool selfupdate_can_apply(void) {
+	return false;
+}
+
+bool selfupdate_apply(const selfupdate_info_st *info,
+		char *err, unsigned int err_len) {
+	(void) info;
+	uvhttp_err(err, err_len,
+			"The Windows uvcan is a folder of files rather than one binary, so "
+			"it cannot replace itself. Install the new one with get-uvcan.ps1.");
+	return false;
+}
+
+#endif
+
+
 // The background check. One shot: it runs once per uvcan session, so opening
 // the UI costs one request and no more.
 static void su_check_task(void *ptr) {
 	(void) ptr;
 	bool newer = false;
 	selfupdate_info_st info;
-	if (selfupdate_check(&info, &newer, NULL, 0)) {
+	char err[sizeof(su_async_err)] = "";
+	if (selfupdate_check(&info, &newer, err, sizeof(err))) {
 		su_async_info = info;
 		su_async_newer = newer;
+		su_async_ok = true;
 	}
 	else {
-		// Silent. A machine on a CAN bus in a field has no network, and a tool
-		// that complains about that while the user is doing something else is
-		// worse than one that says nothing. --checkupdate is there for anyone
-		// who wants the reason.
+		// Kept rather than printed here: a machine on a CAN bus in a field has
+		// no network, and a tool that interrupts with that is worse than one
+		// that mentions it where the user is already looking. The UI logs one
+		// line for it, whichever way the check went.
+		snprintf(su_async_err, sizeof(su_async_err), "%s", err);
 	}
 	su_async_done = true;
 	su_async_running = false;
@@ -362,38 +393,97 @@ bool selfupdate_available(selfupdate_info_st *info) {
 	return ret;
 }
 
-#else /* CONFIG_TARGET_WIN: the Windows build ships as a zip, not a binary */
 
-uint32_t selfupdate_this_version(void) {
-	return (uint32_t) __UV_PROGRAM_VERSION;
-}
-
-const char *selfupdate_this_name(void) {
-	return __UV_APP_VERSION;
-}
-
-bool selfupdate_check(selfupdate_info_st *info, bool *newer,
+bool selfupdate_check_poll(selfupdate_info_st *info, bool *ok, bool *newer,
 		char *err, unsigned int err_len) {
-	(void) info;
-	(void) newer;
-	uvhttp_err(err, err_len,
-			"Checking for updates is not wired up on the Windows build.");
+	bool ret = (su_async_done && !su_async_reported);
+	if (ret) {
+		su_async_reported = true;
+		if (info != NULL) {
+			*info = su_async_info;
+		}
+		if (ok != NULL) {
+			*ok = su_async_ok;
+		}
+		if (newer != NULL) {
+			*newer = su_async_newer;
+		}
+		if ((err != NULL) && (err_len > 0)) {
+			snprintf(err, err_len, "%s", su_async_err);
+		}
+	}
+	else {
+	}
+	return ret;
+}
+
+
+#if !CONFIG_TARGET_WIN
+
+
+// The background install. Written by the install task and read by the UI
+// thread, published the same way as the check's result: the flags are single
+// words and the error is complete before `su_apply_done` is set.
+static volatile bool su_apply_running;
+static volatile bool su_apply_done;
+static volatile bool su_apply_ok;
+static char su_apply_err[256];
+
+
+static void su_apply_task(void *ptr) {
+	(void) ptr;
+	su_apply_ok = selfupdate_apply(&su_async_info, su_apply_err,
+			sizeof(su_apply_err));
+	su_apply_done = true;
+	su_apply_running = false;
+	uv_rtos_task_delete(NULL);
+}
+
+
+bool selfupdate_apply_async(void) {
+	bool ret = false;
+	if (su_async_done && su_async_newer && !su_apply_running) {
+		su_apply_err[0] = '\0';
+		su_apply_done = false;
+		su_apply_running = true;
+		uv_rtos_task_create(&su_apply_task, "su_apply",
+				UV_RTOS_MIN_STACK_SIZE * 5, NULL,
+				UV_RTOS_IDLE_PRIORITY + 1, NULL);
+		ret = true;
+	}
+	else {
+		// nothing found to install, or an install is already on its way
+	}
+	return ret;
+}
+
+
+bool selfupdate_apply_poll(bool *ok, char *err, unsigned int err_len) {
+	bool ret = su_apply_done;
+	if (ret) {
+		su_apply_done = false;
+		if (ok != NULL) {
+			*ok = su_apply_ok;
+		}
+		if ((err != NULL) && (err_len > 0)) {
+			snprintf(err, err_len, "%s", su_apply_err);
+		}
+	}
+	else {
+	}
+	return ret;
+}
+
+#else /* CONFIG_TARGET_WIN: nothing here to install over */
+
+bool selfupdate_apply_async(void) {
 	return false;
 }
 
-bool selfupdate_apply(const selfupdate_info_st *info,
-		char *err, unsigned int err_len) {
-	(void) info;
-	uvhttp_err(err, err_len,
-			"Updating in place is not wired up on the Windows build.");
-	return false;
-}
-
-void selfupdate_check_async(void) {
-}
-
-bool selfupdate_available(selfupdate_info_st *info) {
-	(void) info;
+bool selfupdate_apply_poll(bool *ok, char *err, unsigned int err_len) {
+	(void) ok;
+	(void) err;
+	(void) err_len;
 	return false;
 }
 

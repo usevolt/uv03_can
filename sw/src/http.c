@@ -43,7 +43,19 @@
 
 void uvhttp_tmp_path(char *out, size_t len, const char *tag,
 		const char *suffix) {
+#if CONFIG_TARGET_WIN
+	// Windows has no /tmp: TEMP is where a user's temporary files belong, and
+	// the working directory is the fallback when it is not set.
+	const char *dir = getenv("TEMP");
+	if ((dir == NULL) || (dir[0] == '\0')) {
+		dir = ".";
+	}
+	else {
+	}
+	snprintf(out, len, "%s\\uvcan_%s_%d_%s", dir, tag, (int) getpid(), suffix);
+#else
 	snprintf(out, len, "/tmp/uvcan_%s_%d_%s", tag, (int) getpid(), suffix);
+#endif
 }
 
 
@@ -138,8 +150,14 @@ static long http_run_curl(const char *cfg_path, const char *tag) {
 	uvhttp_tmp_path(code_path, sizeof(code_path), tag, "code");
 
 	char cmd[1024];
+#if CONFIG_TARGET_WIN
+	// cmd.exe knows neither single quotes nor /dev/null
+	snprintf(cmd, sizeof(cmd), "curl -K \"%s\" > \"%s\" 2>NUL",
+			cfg_path, code_path);
+#else
 	snprintf(cmd, sizeof(cmd), "curl -K '%s' > '%s' 2>/dev/null",
 			cfg_path, code_path);
+#endif
 	int rc = system(cmd);
 	if (rc != -1) {
 		char *body = uvhttp_read_file(code_path);
@@ -259,8 +277,14 @@ static int http_run_curl_codes(const char *cfg_path, const char *tag,
 	uvhttp_tmp_path(code_path, sizeof(code_path), tag, "code");
 
 	char cmd[1024];
+#if CONFIG_TARGET_WIN
+	// cmd.exe knows neither single quotes nor /dev/null
+	snprintf(cmd, sizeof(cmd), "curl -K \"%s\" > \"%s\" 2>NUL",
+			cfg_path, code_path);
+#else
 	snprintf(cmd, sizeof(cmd), "curl -K '%s' > '%s' 2>/dev/null",
 			cfg_path, code_path);
+#endif
 	int rc = system(cmd);
 	if (rc != -1) {
 		char *body = uvhttp_read_file(code_path);
