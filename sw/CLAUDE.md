@@ -54,8 +54,11 @@ grant it to an account (see the uv3b_iotbrkr checkout). Nothing secret may go
 there.
 
 - `--checkupdate` reads `latest.json` from that path and reports what it finds.
-  The UI makes the same check once in the background when it opens and writes
-  the result into its log; a failed check there is silent.
+  The UI makes the same check once in the background when it opens, when the
+  Settings tab's "Check updates on start up" is ticked (stored in
+  `account.conf` as `check_updates`, on by default). A newer build is logged in
+  yellow and offered in a dialog; accepting it installs it on a task of its own.
+  A failed check is silent.
 - `--update` downloads the published binary, verifies it against the size and
   SHA-256 in the manifest, and `rename()`s it over the running one — a running
   executable cannot be written to (`ETXTBSY`) but can be renamed away from. The

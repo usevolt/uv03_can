@@ -23,13 +23,16 @@
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
+#include <uv_rtos.h>
 #include "credentials.h"
 #include "loadparam.h"
 #include "mqtt.h"
 #include "remotefiles.h"
+#include "selfupdate.h"
 #include "ui/uvui.h"
 #include "ui/uv_uifileedit.h"
 #include "ui/uv_uitextedit.h"
+#include "ui/uv_uicheckbox.h"
 
 
 // Colour of a status line whose server reported a failure
@@ -72,6 +75,14 @@ static struct {
 	uv_uilabel_st account_status_fleet;
 	char account_status_str[256];
 	char account_status_fleet_str[256];
+
+	// The "Software" panel: this uvcan's version, and whether it looks for a
+	// newer one when it starts (stored beside the account, see credentials.h)
+	uv_uiframewindow_st software_frame;
+	uv_uiobject_st *software_frame_buf[4];
+	uv_uilabel_st version_label;
+	char version_str[128];
+	uv_uicheckbox_st updates_check;
 
 	// The "Load parameters" panel: the file list on the left, the buttons on the
 	// right
@@ -129,38 +140,94 @@ static mqtt_state_e account_last_mqtt = MQTT_STATE_DISCONNECTED;
 static bool account_autoconnect_tried;
 
 
-/// @brief: Opens both sessions with whatever is stored, if anything is.
-static void account_connect(void) {
-	account_err[0] = '\0';
+// The connect runs on a task of its own. The file server login is a curl round
+// trip, which takes seconds against a slow or unreachable server, and the broker
+// connect resolves the broker's address, which blocks for as long as DNS does.
+// Made from the UI thread, both froze the window for as long as they took.
+//
+// The task only makes the two requests. What the UI owns - the status lines, the
+// fleets the Fleet tab lists - is updated back on the UI thread once it is done
+// (see account_connect_finish()). While it runs the account fields and the
+// Connect button are disabled, so nothing changes the account under it.
+static volatile bool account_connecting;
+static volatile bool account_connect_done;
+static volatile bool account_files_ok;
+static volatile bool account_fleet_ok;
+// what the task connects with, copied before it starts, and the reason the file
+// server login failed ("" when it did not)
+static char account_task_url[CREDENTIALS_MAX];
+static char account_task_fleet_url[CREDENTIALS_MAX];
+static char account_task_user[CREDENTIALS_MAX];
+static char account_task_pass[CREDENTIALS_MAX];
+static char account_task_err[256];
+
+
+/// @brief: Task body of the connect: logs in to the file server, then opens the
+/// fleet broker session with the same account.
+static void account_connect_task(void *ptr) {
+	(void) ptr;
 	printf("File server: connecting to '%s' as '%s'...\n",
-			credentials_get_url(), credentials_get_username());
+			account_task_url, account_task_user);
 	fflush(stdout);
-	if (remotefiles_login(credentials_get_url(), credentials_get_username(),
-			credentials_get_password(), account_err, sizeof(account_err))) {
+	account_task_err[0] = '\0';
+	account_files_ok = remotefiles_login(account_task_url, account_task_user,
+			account_task_pass, account_task_err, sizeof(account_task_err));
+	if (account_files_ok) {
 		printf("File server: connected to '%s' as '%s', %u fleet(s):",
-				credentials_get_url(), credentials_get_username(),
+				account_task_url, account_task_user,
 				(unsigned int) remotefiles_get_fleet_count());
 		for (uint8_t i = 0; i < remotefiles_get_fleet_count(); i++) {
 			printf(" %s", remotefiles_get_fleet(i));
 		}
 		printf("\n");
-		fflush(stdout);
 	}
 	else {
 		printf("File server: connecting to '%s' failed: %s\n",
-				credentials_get_url(), account_err);
-		fflush(stdout);
+				account_task_url, account_task_err);
 	}
+	fflush(stdout);
 
 	// the same account opens the fleet broker, so one action does both
-	if (!mqtt_connect(credentials_fleet_get_url(), credentials_get_username(),
-			credentials_get_password())) {
-		if (account_err[0] == '\0') {
-			strncpy(account_err, mqtt_get_error(), sizeof(account_err) - 1);
-			account_err[sizeof(account_err) - 1] = '\0';
-		}
+	account_fleet_ok = mqtt_connect(account_task_fleet_url, account_task_user,
+			account_task_pass);
+
+	account_connect_done = true;
+	uv_rtos_task_delete(NULL);
+}
+
+
+/// @brief: Opens both sessions with whatever is stored, if anything is, on a
+/// task of its own. Does nothing while a connect is already running.
+static void account_connect(void) {
+	if (!account_connecting) {
+		snprintf(account_task_url, sizeof(account_task_url), "%s",
+				credentials_get_url());
+		snprintf(account_task_fleet_url, sizeof(account_task_fleet_url), "%s",
+				credentials_fleet_get_url());
+		snprintf(account_task_user, sizeof(account_task_user), "%s",
+				credentials_get_username());
+		snprintf(account_task_pass, sizeof(account_task_pass), "%s",
+				credentials_get_password());
+		account_err[0] = '\0';
+		// The broker session is dropped here, on the UI thread, rather than by the
+		// task: the Fleet tab lists what the session holds, and it is the UI
+		// thread that reads that list.
+		mqtt_disconnect();
+		account_connect_done = false;
+		account_connecting = true;
+		uv_rtos_task_create(&account_connect_task, "account_connect",
+				UV_RTOS_MIN_STACK_SIZE * 5, NULL, UV_RTOS_IDLE_PRIORITY + 1, NULL);
 	}
 	else {
+	}
+}
+
+
+/// @brief: Takes the finished connect's outcome over on the UI thread.
+static void account_connect_finish(void) {
+	account_connecting = false;
+	snprintf(account_err, sizeof(account_err), "%s", account_task_err);
+	if (account_fleet_ok) {
 		// The file server already said which fleets this account holds, so
 		// their tabs can exist before any device has published. Only the
 		// broker knows whether they are alive; only the file server knows
@@ -168,6 +235,11 @@ static void account_connect(void) {
 		for (uint8_t i = 0; i < remotefiles_get_fleet_count(); i++) {
 			mqtt_add_fleet(remotefiles_get_fleet(i));
 		}
+	}
+	else if (account_err[0] == '\0') {
+		snprintf(account_err, sizeof(account_err), "%s", mqtt_get_error());
+	}
+	else {
 	}
 }
 
@@ -185,7 +257,11 @@ static void account_refresh_status(void) {
 	// different hosts and either can be up without the other, so a single
 	// combined line could only ever be vague about which one had failed.
 	char files_line[192];
-	if (files) {
+	if (account_connecting) {
+		snprintf(files_line, sizeof(files_line), "Files: connecting to %.100s...",
+				credentials_get_url());
+	}
+	else if (files) {
 		snprintf(files_line, sizeof(files_line),
 				"Files: connected to %.100s as '%.60s'",
 				credentials_get_url(), user);
@@ -197,8 +273,16 @@ static void account_refresh_status(void) {
 		strcpy(files_line, "Files: not connected");
 	}
 
+	// the broker is only asked after the file server has answered, so while the
+	// connect runs the fleet reads as connecting even before it has started
+	mqtt_state_e fleet_state = mqtt_get_state();
+	if (account_connecting && (fleet_state != MQTT_STATE_CONNECTED)) {
+		fleet_state = MQTT_STATE_CONNECTING;
+	}
+	else {
+	}
 	char fleet_line[192];
-	switch (mqtt_get_state()) {
+	switch (fleet_state) {
 	case MQTT_STATE_CONNECTED:
 		snprintf(fleet_line, sizeof(fleet_line), "Fleet: connected to %s as '%s'",
 				credentials_fleet_get_url(), user);
@@ -226,15 +310,27 @@ static void account_refresh_status(void) {
 			((account_err[0] != '\0') ? WARNING_COLOR :
 					uv_uistyles[0].text_color);
 	color_t fleet_c = fleet ? DOT_COLOR_OP :
-			((mqtt_get_state() == MQTT_STATE_ERROR) ? WARNING_COLOR :
+			((fleet_state == MQTT_STATE_ERROR) ? WARNING_COLOR :
 					uv_uistyles[0].text_color);
 
-	// the button reconnects whatever is still down
-	if (files && fleet) {
+	// the button reconnects whatever is still down, once a running connect is done
+	if ((files && fleet) || account_connecting) {
 		uv_uiobject_disable(&content.account_connect_btn);
 	}
 	else {
 		uv_uiobject_enable(&content.account_connect_btn);
+	}
+	// the running connect was started with what the fields hold: they wait for it
+	void *fields[] = { &content.account_url, &content.account_fleet_url,
+			&content.account_user, &content.account_pass };
+	for (uint8_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
+		if (account_connecting) {
+			uv_uiobject_disable(fields[i]);
+		}
+		else {
+			uv_uiobject_enable(fields[i]);
+		}
+		uv_ui_refresh(fields[i]);
 	}
 	uv_uilabel_set_color(&content.account_status, files_c);
 	uv_uilabel_set_color(&content.account_status_fleet, fleet_c);
@@ -537,6 +633,11 @@ bool settingstab_is_busy(void) {
 }
 
 
+bool settingstab_account_is_connecting(void) {
+	return account_connecting;
+}
+
+
 void settingstab_show(uv_uitabwindow_st *tabwin) {
 	const uv_uistyle_st *style = &uv_uistyles[0];
 	uv_bounding_box_st cbb = uv_uitabwindow_get_contentbb(tabwin);
@@ -653,9 +754,37 @@ void settingstab_show(uv_uitabwindow_st *tabwin) {
 			acc_status_x, acc_row_h + MARGIN + acc_status_line_h,
 			acc_status_w, acc_status_line_h);
 
+	// --- the "Software" panel: what this uvcan is, and whether it looks for a
+	// newer one when it starts. One row: the version on the left, the checkbox
+	// on the right. The checkbox's own box is two lines of text tall (see
+	// uv_uicheckbox's draw), which is what sizes the row.
+	int16_t sw_row_h = 2 * uv_ui_get_font_height(style->font) + MARGIN / 2;
+	int16_t software_y = MARGIN + account_frame_h + MARGIN;
+	int16_t software_frame_h = sw_row_h + MARGIN + TITLE_H;
+	uv_uiframewindow_init(&content.software_frame, content.software_frame_buf,
+			style);
+	uv_uiframewindow_set_title(&content.software_frame, "Software");
+	uv_uitabwindow_addxy(tabwin, &content.software_frame, frame_x, software_y,
+			frame_w, software_frame_h);
+	uv_bounding_box_st sc =
+			uv_uiframewindow_get_content_bb(&content.software_frame);
+
+	snprintf(content.version_str, sizeof(content.version_str),
+			"uvcan %s (build %u)", selfupdate_this_name(),
+			(unsigned int) selfupdate_this_version());
+	uv_uilabel_init(&content.version_label, style->font, ALIGN_CENTER_LEFT,
+			style->text_color, content.version_str);
+	uv_uiframewindow_addxy(&content.software_frame, &content.version_label,
+			MARGIN, 0, sc.w / 2 - MARGIN, sw_row_h);
+
+	uv_uicheckbox_init(&content.updates_check, credentials_get_check_updates(),
+			"Check updates on start up", style);
+	uv_uiframewindow_addxy(&content.software_frame, &content.updates_check,
+			sc.w / 2, 0, sc.w - sc.w / 2, sw_row_h);
+
 	// The "Load parameters" panel fills the rest of the tab: the file list on the
 	// left, and on the right the buttons, as wide as the "Connect" button above
-	int16_t params_y = MARGIN + account_frame_h + MARGIN;
+	int16_t params_y = software_y + software_frame_h + MARGIN;
 	uv_uiframewindow_init(&content.params_frame, content.params_frame_buf, style);
 	uv_uiframewindow_set_title(&content.params_frame, "Load parameters");
 	uv_uitabwindow_addxy(tabwin, &content.params_frame, frame_x, params_y,
@@ -707,6 +836,18 @@ void settingstab_step(void) {
 	else {
 	}
 
+	// the connect task is done: take its outcome over, whichever tab is shown
+	if (account_connecting && account_connect_done) {
+		account_connect_finish();
+		if (shown) {
+			account_refresh_status();
+		}
+		else {
+		}
+	}
+	else {
+	}
+
 	// the parameter file load finished: give the panel its buttons back. Watched
 	// whichever tab is shown, though the load keeps the user on this one.
 	if (params_loading && loadparam_load_files_is_finished()) {
@@ -723,6 +864,18 @@ void settingstab_step(void) {
 	if (shown) {
 		params_list_wheel_step();
 		params_step();
+		// Told by comparing the box against the stored setting, not by
+		// uv_uicheckbox_clicked(): the widget clears that flag in its own step,
+		// which runs before this is polled, so a click was never seen.
+		bool check = uv_uicheckbox_get_state(&content.updates_check);
+		if (check != credentials_get_check_updates()) {
+			credentials_set_check_updates(check);
+			printf("Checking for updates on start up %s.\n",
+					check ? "turned on" : "turned off");
+			fflush(stdout);
+		}
+		else {
+		}
 	}
 	else {
 	}
@@ -736,8 +889,10 @@ void settingstab_step(void) {
 	}
 
 	// persist the Account fields whenever the user commits an edit (Enter or click
-	// away). Editing them is equivalent to running with --user / --pwd.
-	if (shown) {
+	// away). Editing them is equivalent to running with --user / --pwd. Not while
+	// a connect runs: it logs in with what the fields held when it started, and
+	// dropping the session under it would race the session it is building.
+	if (shown && !account_connecting) {
 		bool account_edited = false;
 		if (uv_uitextedit_value_changed(&content.account_url)) {
 			credentials_set_url(uv_uitextedit_get_text(&content.account_url));
@@ -776,14 +931,9 @@ void settingstab_step(void) {
 			account_refresh_status();
 		}
 
-		// "Connect": log in to the file server with the current fields. This blocks
-		// for the round trip (curl, like the "Server files" browser does), which is
-		// short enough not to warrant its own task.
+		// "Connect": log in to both servers with the current fields, on the
+		// connect task; the status lines say "connecting" until it is done
 		if (uv_uibutton_clicked(&content.account_connect_btn)) {
-			strcpy(content.account_status_str, "Connecting...");
-			uv_uilabel_set_color(&content.account_status,
-					uv_uistyles[0].text_color);
-			uv_ui_refresh(&content.account_status);
 			account_connect();
 			account_refresh_status();
 		}

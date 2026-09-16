@@ -42,6 +42,11 @@
 bool settingstab_is_busy(void);
 
 
+/// @brief: True while the Account panel's connect task is logging in to the file
+/// server and opening the fleet broker session.
+bool settingstab_account_is_connecting(void);
+
+
 /// @brief: Populates the tab window's content area with the Settings view.
 ///
 /// The caller is responsible for clearing the tab window before calling this.

@@ -30,6 +30,8 @@
 #include "find.h"
 #include "logcap.h"
 #include "selfupdate.h"
+#include "credentials.h"
+#include "mqtt.h"
 #include "uvstdin.h"
 #include "ui/devicetab.h"
 #include "ui/fleettab.h"
@@ -37,6 +39,7 @@
 #include "remotecan.h"
 #include "ui/uv_uitextedit.h"
 #include "ui/uv_uiimage.h"
+#include "ui/uv_uiacceptdialog.h"
 // The Usevolt logo, compiled into the binary as a byte array (usevolt_bg_png /
 // usevolt_bg_png_len). Generated from media/usevolt_bg.png by the makefile and
 // drawn as a faint background watermark.
@@ -45,6 +48,11 @@
 // the tabs that carry one by uvui_get_remove_media(). Both generated headers
 // define their arrays, so each may be included in exactly one source file.
 #include "media_minus_hd.h"
+
+
+// How long the update dialog waits for the account's connect to settle before
+// it is opened anyway (see update_step())
+#define UPDATE_DIALOG_MAX_WAIT_MS	20000
 
 
 // Maximum number of device-tab-window tabs: "Overview" + one per device +
@@ -186,6 +194,7 @@ static void rebuild_tabs(void);
 static void show_active_tab(void);
 static uv_uiobject_ret_e tabwindow_step(void *me, const uint16_t step_ms);
 static color_t tab_dot_color(void *me, uint16_t tab_i);
+static void update_step(void);
 static void tabwindow_draw(void *me, const uv_bounding_box_st *pbb);
 static void tabwindow_touch(void *me, uv_touch_st *touch);
 static int16_t tab_dot_space(uint16_t tab_i);
@@ -286,11 +295,19 @@ void uvui_exec(void) {
 	uv_stdin_use_pipe();
 
 	// Ask the file server once, in the background, whether a newer uvcan has
-	// been published; update_notice_step() says so in the log when the answer
-	// comes back. Started here so the request runs while the UI is being built
-	// and nothing waits for it -- a failed check is silent, because a machine
-	// on a CAN bus in a field has no network and has not asked about this.
-	selfupdate_check_async();
+	// been published; update_step() tells the user when the answer comes back.
+	// Started here so the request runs while the UI is being built and nothing
+	// waits for it -- a failed check is silent, because a machine on a CAN bus
+	// in a field has no network and has not asked about this. Only when the
+	// Settings tab's "Check updates on start up" is ticked.
+	if (credentials_get_check_updates()) {
+		selfupdate_check_async();
+	}
+	else {
+		printf("Not checking for a newer uvcan: \"Check updates on start up\" is "
+				"off in the Settings tab.\n");
+		fflush(stdout);
+	}
 
 	uv_ui_init();
 
@@ -476,6 +493,10 @@ void uvui_exec(void) {
 		// the account: connects once at start-up whichever main tab is shown, and
 		// polls its own widgets while the Settings tab is
 		settingstab_step();
+
+		// a newer uvcan found by the start-up check: offer it, whichever main tab
+		// is shown
+		update_step();
 
 		// reflect any device that just came online: redraw the tab dots and
 		// refresh the active tab so its state label/dot update too. While an async
@@ -833,24 +854,117 @@ static void show_active_tab(void) {
 }
 
 
-// Says once, in the log, that a newer uvcan is out. The log is where uvcan
-// already talks to the user, and a line there needs no room made for it in a
-// panel that is laid out to the pixel.
-static void update_notice_step(void) {
-	static bool told;
+// Once the start-up check has found a newer uvcan: says so in the log, in yellow
+// so the line stands out from the rest of it, and asks whether to install it.
+// The install runs on a task of its own (the download takes a while and logs
+// its progress), and how it went is logged when it is done.
+//
+// Says nothing when "Check updates on start up" was unticked while the check
+// was still running: the user has just said they do not want to hear about it.
+//
+// The question is a modal dialog, and while one is up the main loop does not
+// run - nor, with it, the MQTT client. Opened in the middle of the account's
+// connect at start-up, it stalled the broker's TLS handshake until the broker
+// gave up on it. So the line goes into the log at once, but the dialog waits
+// for the connect to settle: up to UPDATE_DIALOG_MAX_WAIT_MS, since a broker
+// which never answers keeps the session "connecting" for minutes.
+static void update_step(void) {
+	static bool noticed;
+	static bool asked;
+	static uint32_t noticed_tick;
 	selfupdate_info_st info;
-	if (!told && selfupdate_available(&info)) {
-		told = true;
-		printf("A newer uvcan is available: %s (build %u); this is %s (build %u).\n",
-				info.name, (unsigned int) info.version,
-				selfupdate_this_name(),
-				(unsigned int) selfupdate_this_version());
-		if (info.notes[0] != '\0') {
-			printf("  %s\n", info.notes);
+	bool check_ok = false;
+	bool newer = false;
+	char check_err[256] = "";
+	if (selfupdate_check_poll(&info, &check_ok, &newer,
+			check_err, sizeof(check_err))) {
+		// how the check went, whichever way it went: a tool which only ever
+		// mentions updates when there is one leaves the user wondering whether
+		// it looked at all.
+		if (!check_ok) {
+			printf("Could not check for a newer uvcan: %s\n", check_err);
+		}
+		else if (!newer) {
+			printf("uvcan %s (build %u) is the newest published version.\n",
+					selfupdate_this_name(),
+					(unsigned int) selfupdate_this_version());
+		}
+		else if (!credentials_get_check_updates()) {
+			// unticked while the check was still running: the user has just
+			// said they do not want to hear about it
 		}
 		else {
+			noticed = true;
+			noticed_tick = uv_rtos_get_tick_count();
+			printf(PRINT_BOLDYELLOW "A newer uvcan is available: %s (build %u); "
+					"this is %s (build %u)." PRINT_RESET "\n",
+					info.name, (unsigned int) info.version,
+					selfupdate_this_name(),
+					(unsigned int) selfupdate_this_version());
+			if (info.notes[0] != '\0') {
+				printf(PRINT_YELLOW "  %s" PRINT_RESET "\n", info.notes);
+			}
+			else {
+			}
+			if (!selfupdate_can_apply()) {
+				// nothing to install over here, so say how it is done instead
+				// of offering to do it (see selfupdate_can_apply())
+				printf(PRINT_YELLOW "  Install it by running this in "
+						"PowerShell:" PRINT_RESET "\n"
+						PRINT_YELLOW "    irm %s/get-uvcan.ps1 | iex"
+						PRINT_RESET "\n", SELFUPDATE_URL);
+			}
+			else {
+			}
 		}
-		printf("  Install it by running 'uvcan --update' in a terminal.\n");
+		fflush(stdout);
+	}
+	else {
+	}
+
+	bool settled = !settingstab_account_is_connecting() &&
+			(mqtt_get_state() != MQTT_STATE_CONNECTING);
+	bool waited = noticed && (((uv_rtos_get_tick_count() - noticed_tick) *
+			UV_RTOS_TICK_PERIOD_MS) >= UPDATE_DIALOG_MAX_WAIT_MS);
+	if (noticed && !asked && (settled || waited) && selfupdate_can_apply() &&
+			credentials_get_check_updates() && selfupdate_available(&info)) {
+		asked = true;
+		char msg[512];
+		snprintf(msg, sizeof(msg),
+				"uvcan %s (build %u) is available. This is %s (build %u).\n\n"
+				"Download and install it now? uvcan has to be restarted to use it.",
+				info.name, (unsigned int) info.version,
+				selfupdate_this_name(), (unsigned int) selfupdate_this_version());
+		uv_uiacceptdialog_st dialog = { };
+		if (uv_uiacceptdialog_exec(&dialog, msg, "Update", "Not now",
+				&uv_uistyles[0]) == UIACCEPTDIALOG_RET_YES) {
+			printf("Updating uvcan to %s (build %u)...\n",
+					info.name, (unsigned int) info.version);
+			if (!selfupdate_apply_async()) {
+				printf("The update could not be started.\n");
+			}
+			else {
+			}
+		}
+		else {
+			printf("Update skipped. Install it later with 'uvcan --update'.\n");
+		}
+		fflush(stdout);
+	}
+	else {
+	}
+
+	bool ok = false;
+	char err[256] = "";
+	if (selfupdate_apply_poll(&ok, err, sizeof(err))) {
+		if (ok && selfupdate_available(&info)) {
+			printf(PRINT_BOLDGREEN "Updated to uvcan %s (build %u). "
+					"Restart uvcan to use it." PRINT_RESET "\n",
+					info.name, (unsigned int) info.version);
+		}
+		else {
+			printf("Updating uvcan failed: %s\n", err);
+		}
 		fflush(stdout);
 	}
 	else {
@@ -859,8 +973,6 @@ static void update_notice_step(void) {
 
 
 static uv_uiobject_ret_e tabwindow_step(void *me, const uint16_t step_ms) {
-	update_notice_step();
-
 	if (uv_uitabwindow_tab_changed(&this->tabwindow)) {
 		if (uv_uitabwindow_get_tab(&this->tabwindow) == this->add_tab_index &&
 				this->add_tab_index >= 0) {
