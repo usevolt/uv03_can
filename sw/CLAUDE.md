@@ -38,12 +38,14 @@ step.
 
 ## Versions and self-update
 
-uvcan reports two versions: the readable git-describe name (`1.1.1-204-g5746`)
-and a build number. `--version` prints both. The build number is
-`__UV_PROGRAM_VERSION`, i.e. `git rev-list --count HEAD`, and it is the one
+uvcan's version is `<build id>-g<hash>` (`300-g1905`), the same shape the
+firmware projects use; a build from a modified tree gets a `-dirty` suffix.
+`--version` prints it together with the bare build id, which is
+`__UV_PROGRAM_VERSION`, i.e. `git rev-list --count HEAD`. That id is what is
 compared when looking for an update, because it grows with every commit for the
-life of the project; the name counts commits since the nearest tag and restarts
-at every release, so it cannot be compared at all.
+life of the project, tag or no tag. Tags are not part of the version: a
+`git describe` name counts commits since the nearest tag and restarts at every
+release, so it cannot be compared at all.
 
 uvcan is published on the file server's **public** shelf,
 `https://files.usevolt.fi/pub/uvcan/` — served to anyone with no credentials,

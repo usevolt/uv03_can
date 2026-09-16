@@ -146,23 +146,25 @@ SOURCEDIRS := $(SOURCEDIRS) \
 
 
 SOURCES := $(shell find $(SOURCEDIRS) -maxdepth 1 -name '*.c') $(PLATFORM_EXTRA_SOURCES)
-GIT_VERSION := $(shell git describe --abbrev=4 --dirty --always --tags)
+# The version string is <build id>-g<hash>, e.g. 300-g1905, the same shape the
+# firmware projects use. The build id is the number of commits in HEAD's
+# history: it grows with every commit, tag or no tag, which is what makes it
+# comparable - and comparing it is how the self-updater tells a newer build from
+# this one. A git describe name cannot be compared at all: it counts the commits
+# since the nearest tag and restarts at every release. The abbreviated hash pins
+# the name to one commit (the count alone would not tell two branches apart),
+# and -dirty marks a build made from a modified tree.
 GIT_REV_ID := $(shell git rev-list --count HEAD)
-APP_NAME := $(shell basename `git rev-parse --show-toplevel`)
-FULL_NAME := $(APP_NAME)_$(GIT_VERSION)
-
-# Version used for the names of the shippable packages only; the strings
-# compiled into the binary keep $(GIT_VERSION) above. git describe counts the
-# commits since the nearest tag, which restarts at zero on every new tag, so
-# package names built from it do not increase over the project's life. The
-# rev-list count does: it is the number of commits in HEAD's history, and it
-# grows with every commit, tag or no tag. The abbreviated hash keeps the name
-# pointing at one exact commit (the count alone would not distinguish branches),
-# and -dirty marks a build made from a modified tree, as git describe does.
 GIT_HASH := $(shell git rev-parse --short=4 HEAD)
 GIT_DIRTY := $(shell git update-index -q --refresh >/dev/null 2>&1; \
 	git diff-index --quiet HEAD -- 2>/dev/null || echo -dirty)
-PKG_FULL_NAME := $(APP_NAME)_$(GIT_REV_ID)-g$(GIT_HASH)$(GIT_DIRTY)
+GIT_VERSION := $(GIT_REV_ID)-g$(GIT_HASH)$(GIT_DIRTY)
+APP_NAME := $(shell basename `git rev-parse --show-toplevel`)
+FULL_NAME := $(APP_NAME)_$(GIT_VERSION)
+
+# The shippable packages are named after the same version, so a published file
+# says which commit it was built from.
+PKG_FULL_NAME := $(FULL_NAME)
 
 
 
