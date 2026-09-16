@@ -30,6 +30,7 @@
 #include "remotefiles.h"
 #include "selfupdate.h"
 #include "ui/uvui.h"
+#include "ui/versionnotes_win.h"
 #include "ui/uv_uifileedit.h"
 #include "ui/uv_uitextedit.h"
 #include "ui/uv_uicheckbox.h"
@@ -76,13 +77,15 @@ static struct {
 	char account_status_str[256];
 	char account_status_fleet_str[256];
 
-	// The "Software" panel: this uvcan's version, and whether it looks for a
-	// newer one when it starts (stored beside the account, see credentials.h)
+	// The "Software" panel: this uvcan's version, whether it looks for a newer
+	// one when it starts (stored beside the account, see credentials.h) and the
+	// button opening the version notes this build carries
 	uv_uiframewindow_st software_frame;
-	uv_uiobject_st *software_frame_buf[4];
+	uv_uiobject_st *software_frame_buf[5];
 	uv_uilabel_st version_label;
 	char version_str[128];
 	uv_uicheckbox_st updates_check;
+	uv_uibutton_st notes_btn;
 
 	// The "Load parameters" panel: the file list on the left, the buttons on the
 	// right
@@ -754,10 +757,12 @@ void settingstab_show(uv_uitabwindow_st *tabwin) {
 			acc_status_x, acc_row_h + MARGIN + acc_status_line_h,
 			acc_status_w, acc_status_line_h);
 
-	// --- the "Software" panel: what this uvcan is, and whether it looks for a
-	// newer one when it starts. One row: the version on the left, the checkbox
-	// on the right. The checkbox's own box is two lines of text tall (see
-	// uv_uicheckbox's draw), which is what sizes the row.
+	// --- the "Software" panel: what this uvcan is, whether it looks for a newer
+	// one when it starts, and what it added to the build before it. One row: the
+	// version on the left, the checkbox next to it and the "Version notes"
+	// button on the right, under the "Connect" button it lines up with. The
+	// checkbox's own box is two lines of text tall (see uv_uicheckbox's draw),
+	// which is what sizes the row.
 	int16_t sw_row_h = 2 * uv_ui_get_font_height(style->font) + MARGIN / 2;
 	int16_t software_y = MARGIN + account_frame_h + MARGIN;
 	int16_t software_frame_h = sw_row_h + MARGIN + TITLE_H;
@@ -769,18 +774,27 @@ void settingstab_show(uv_uitabwindow_st *tabwin) {
 	uv_bounding_box_st sc =
 			uv_uiframewindow_get_content_bb(&content.software_frame);
 
+	// the button is as wide as the "Connect" button above it; the version and
+	// the checkbox share what is left
+	int16_t sw_btn_w = acc_conn_w;
+	int16_t sw_left_w = sc.w - sw_btn_w - MARGIN;
+
 	snprintf(content.version_str, sizeof(content.version_str),
 			"uvcan %s (build %u)", selfupdate_this_name(),
 			(unsigned int) selfupdate_this_version());
 	uv_uilabel_init(&content.version_label, style->font, ALIGN_CENTER_LEFT,
 			style->text_color, content.version_str);
 	uv_uiframewindow_addxy(&content.software_frame, &content.version_label,
-			MARGIN, 0, sc.w / 2 - MARGIN, sw_row_h);
+			MARGIN, 0, sw_left_w / 2 - MARGIN, sw_row_h);
 
 	uv_uicheckbox_init(&content.updates_check, credentials_get_check_updates(),
 			"Check updates on start up", style);
 	uv_uiframewindow_addxy(&content.software_frame, &content.updates_check,
-			sc.w / 2, 0, sc.w - sc.w / 2, sw_row_h);
+			sw_left_w / 2, 0, sw_left_w - sw_left_w / 2, sw_row_h);
+
+	uv_uibutton_init(&content.notes_btn, "Version notes", style);
+	uv_uiframewindow_addxy(&content.software_frame, &content.notes_btn,
+			sw_left_w + MARGIN, 0, sw_btn_w, sw_row_h);
 
 	// The "Load parameters" panel fills the rest of the tab: the file list on the
 	// left, and on the right the buttons, as wide as the "Connect" button above
@@ -864,6 +878,13 @@ void settingstab_step(void) {
 	if (shown) {
 		params_list_wheel_step();
 		params_step();
+		// "Version notes": what this build added to the one published before it,
+		// in a window of its own (the notes are compiled in, see versionnotes.h)
+		if (uv_uibutton_clicked(&content.notes_btn)) {
+			versionnotes_win_exec(&uv_uistyles[0]);
+		}
+		else {
+		}
 		// Told by comparing the box against the stored setting, not by
 		// uv_uicheckbox_clicked(): the widget clears that flag in its own step,
 		// which runs before this is polled, so a click was never seen.

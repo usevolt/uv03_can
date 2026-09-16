@@ -88,6 +88,32 @@ names, and runs the `install.sh` inside it. Arguments reach install.sh, so
 shelf keeps every release, and the newest by filename is not the newest by build
 number.
 
+### Version notes
+
+Every build carries its own release notes: the subject line of every commit made
+after the last published package, shown by the Settings tab's "Version notes"
+button (the Software panel) in a window of its own. Nothing is fetched -- the
+shelf holds no notes and a user who has just updated has no repository -- so the
+notes are compiled in.
+
+`packaging/gen-version-notes.sh` writes them into
+`release/generated/versionnotes_gen.h` on every build, `src/versionnotes.c` is
+the only file that includes it, and `src/ui/versionnotes_win.c` is the window.
+The range comes from `../prod/latest.json`, the manifest of the last published
+package: its `name` field names the commit that package was built from, so the
+notes are what `git log <that commit>..HEAD` gives, and the build numbers are
+the fallback when the clone does not have that commit. The header is only
+replaced when its content changes, so an ordinary rebuild does not recompile
+anything.
+
+`prod/` is not tracked, so a fresh clone has no manifest and cannot know what was
+last published. It then lists the newest 20 commits and reports the build they
+start from as 0, which the window says as "the newest changes" rather than naming
+a build. On the machine that publishes -- the only one whose builds are shipped
+-- the manifest is there, and it is still the previous release's while the new
+packages are being built, which is what makes `make package` produce notes
+covering exactly what it is about to publish.
+
 `src/http.c` holds the curl plumbing shared by `remotefiles.c` (the per-fleet,
 authenticated file panel) and `selfupdate.c` (the public, unauthenticated
 updater). Every request is made through a curl **config file** rather than a
@@ -171,6 +197,7 @@ the `.uvsys` system file).
 | sdo | `src/sdo.c` | Direct SDO read/write operations |
 | loadmedia | `src/loadmedia.c` | Media file upload via UV media protocol |
 | makeuvdev | `src/makeuvdev.c` | Assembles a .uvdev device package out of a build's artifacts |
+| versionnotes | `src/versionnotes.c` | This build's release notes, compiled in from git (see *Version notes*) |
 
 ### File formats: JSON and YAML
 

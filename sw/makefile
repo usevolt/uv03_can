@@ -43,6 +43,13 @@ EMBEDDED_MEDIA := $(GENERATEDDIR)/media_minus_hd.h \
 				$(GENERATEDDIR)/media_usevolt_bg.h \
 				$(GENERATEDDIR)/cert_uvca.h
 
+# The version notes compiled into the binary: the subject line of every commit
+# made after the last published package, i.e. what this build adds to what the
+# users have. Generated on every build by packaging/gen-version-notes.sh and
+# #included by src/versionnotes.c, which is what lets the UI's "Version notes"
+# window show them without anybody having the repository at hand.
+VERSION_NOTES_H := $(GENERATEDDIR)/versionnotes_gen.h
+
 
 ### Platform specific configuration ###############################
 ifeq ($(OS),win)
@@ -196,7 +203,7 @@ PKGDIR  := $(BUILDDIR)/$(PKGNAME)
 PRODDIR     := ../prod
 PUBLISH_TAR := $(PRODDIR)/$(PKG_FULL_NAME)-linux.tar.gz
 
-.PHONY: linux linux-package linux-package-stage win windows win-package win-package-stage image post-build clean install uninstall package publish
+.PHONY: FORCE linux linux-package linux-package-stage win windows win-package win-package-stage image post-build clean install uninstall package publish
 
 # Bare 'make' builds the Linux target.
 linux:
@@ -420,9 +427,23 @@ $(GENERATEDDIR)/cert_uvca.h: certs/uvca.crt
 	@mkdir -p $(@D)
 	cd $(<D) && xxd -i $(<F) > $(abspath $@)
 
+# The version notes, rebuilt on every run (hence FORCE): what they hold changes
+# with HEAD and with what was last published, and neither of those is a file
+# this could depend on. The result is only moved into place when it differs from
+# what is already there, so the one object that includes it is recompiled when
+# the notes actually change and not once per build.
+$(VERSION_NOTES_H): FORCE
+	@mkdir -p $(@D)
+	@packaging/gen-version-notes.sh "$(PUBLISH_MANIFEST)" "$(GIT_REV_ID)" > $@.tmp
+	@if cmp -s $@.tmp $@; then rm -f $@.tmp; else mv -f $@.tmp $@; fi
+
+FORCE:
+
 # Every object is built only after the embedded media headers exist (order-only:
 # regenerating the image doesn't force a full rebuild, only a missing header does).
-$(OBJECTS): | $(EMBEDDED_MEDIA)
+# The version notes are order-only for the same reason; the object that includes
+# them picks the change up through its own generated dependency file.
+$(OBJECTS): | $(EMBEDDED_MEDIA) $(VERSION_NOTES_H)
 
 $(BUILDDIR)/%.o: %.c
 	@mkdir -p $(@D)
