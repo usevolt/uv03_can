@@ -110,4 +110,12 @@ void credentials_fleet_set_username(const char *username);
 void credentials_fleet_set_password(const char *password);
 
 
+/// @brief: Whether the UI asks the update server for a newer uvcan when it
+/// opens: the Settings tab's "Check updates on start up". Stored in the same
+/// file as the accounts, and true when nothing is stored, which is what uvcan
+/// did before the setting existed. The setter persists the file.
+bool credentials_get_check_updates(void);
+void credentials_set_check_updates(bool value);
+
+
 #endif /* CREDENTIALS_H_ */

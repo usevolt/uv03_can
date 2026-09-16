@@ -46,6 +46,10 @@ static char fleet_username[CREDENTIALS_MAX];
 static char fleet_password[CREDENTIALS_MAX];
 static char fleet_url[CREDENTIALS_MAX];
 
+// Whether the UI checks for a newer uvcan on start-up, persisted in the same
+// file under "check_updates"
+static bool check_updates = true;
+
 
 // Creates *path* and any missing parent directories (best effort, like mkdir -p).
 // Existing directories and failures are ignored - the caller's fopen() reports any
@@ -139,6 +143,7 @@ static bool cred_write_file(void) {
 			fprintf(f, "fleet_username=%s\n", fleet_username);
 			fprintf(f, "fleet_password=%s\n", fleet_password);
 			fprintf(f, "fleet_url=%s\n", fleet_url);
+			fprintf(f, "check_updates=%d\n", check_updates ? 1 : 0);
 			fclose(f);
 			ret = true;
 		}
@@ -174,6 +179,7 @@ void credentials_init(void) {
 	fleet_username[0] = '\0';
 	fleet_password[0] = '\0';
 	fleet_url[0] = '\0';
+	check_updates = true;
 	char path[1024];
 	if (cred_path(path, sizeof(path))) {
 		FILE *f = fopen(path, "r");
@@ -197,6 +203,11 @@ void credentials_init(void) {
 				}
 				else if (strncmp(line, "fleet_url=", 10) == 0) {
 					cred_parse_value(line, fleet_url, sizeof(fleet_url));
+				}
+				else if (strncmp(line, "check_updates=", 14) == 0) {
+					char v[8] = "";
+					cred_parse_value(line, v, sizeof(v));
+					check_updates = (atoi(v) != 0);
 				}
 				else if (strncmp(line, "fleet_name=", 11) == 0) {
 					// a fleet name used to be stored here, back when the client
@@ -297,4 +308,15 @@ void credentials_fleet_set_username(const char *username) {
 
 void credentials_fleet_set_password(const char *password) {
 	fleet_set(fleet_password, password);
+}
+
+
+bool credentials_get_check_updates(void) {
+	return check_updates;
+}
+
+
+void credentials_set_check_updates(bool value) {
+	check_updates = value;
+	cred_write_file();
 }
