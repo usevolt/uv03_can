@@ -52,6 +52,8 @@ static char rf_pass[CREDENTIALS_MAX];
 static char rf_fleets[REMOTEFILES_MAX_FLEETS][REMOTEFILES_FLEET_MAX];
 static uint8_t rf_fleet_count;
 static bool rf_logged_in;
+// set for the duration of remotefiles_login(), see remotefiles_login_is_running()
+static volatile bool rf_login_running;
 // The product store: grown on demand rather than a fixed array, so no fleet
 // layout can silently lose entries. Owned here and freed by rf_free_products(),
 // which every fresh listing and every logout calls.
@@ -175,6 +177,7 @@ const char *remotefiles_get_fleet(uint8_t index) {
 bool remotefiles_login(const char *url, const char *username,
 		const char *password, char *err, unsigned int err_len) {
 	bool ret = false;
+	rf_login_running = true;
 	rf_logged_in = false;
 	rf_fleet_count = 0;
 	rf_cfg_sanitize(rf_url, sizeof(rf_url), (url != NULL) ? url : "");
@@ -239,6 +242,7 @@ bool remotefiles_login(const char *url, const char *username,
 		}
 		free(body);
 	}
+	rf_login_running = false;
 	return ret;
 }
 
@@ -960,6 +964,11 @@ bool remotefiles_is_logged_in(void) {
 }
 
 
+bool remotefiles_login_is_running(void) {
+	return rf_login_running;
+}
+
+
 void remotefiles_logout(void) {
 	rf_logged_in = false;
 	rf_user[0] = '\0';
@@ -974,6 +983,10 @@ void remotefiles_logout(void) {
 
 
 bool remotefiles_is_logged_in(void) {
+	return false;
+}
+
+bool remotefiles_login_is_running(void) {
 	return false;
 }
 

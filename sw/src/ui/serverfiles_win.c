@@ -885,6 +885,13 @@ bool serverfiles_win_exec(const uv_uistyle_st *style) {
 	filter_applied[0] = '\0';
 	filter_dir = -1;
 
+	// The Settings tab's connect logs in on a task of its own. Logging in here
+	// while it runs would have the two overwrite the one session they share.
+	if (remotefiles_login_is_running()) {
+		sfw_message("Still connecting to the file server. Try again in a moment.");
+		return false;
+	}
+
 	// 1. log in and fetch the file list (blocks; failures are reported and abort)
 	char err[256] = "";
 	if (!remotefiles_login(credentials_get_url(), credentials_get_username(),

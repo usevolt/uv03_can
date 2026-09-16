@@ -827,11 +827,15 @@ void mqtt_add_fleet(const char *name) {
 }
 
 
-bool mqtt_connect(const char *host, const char *username,
+static void mqtt_disconnect_locked(void);
+
+
+// mqtt_connect() for a caller holding handle_lock.
+static bool mqtt_connect_locked(const char *host, const char *username,
 		const char *password) {
 	bool ret = false;
 
-	mqtt_disconnect();
+	mqtt_disconnect_locked();
 
 	strncpy(host_str, (host != NULL) ? host : "", sizeof(host_str) - 1);
 	host_str[sizeof(host_str) - 1] = '\0';
@@ -915,7 +919,8 @@ bool mqtt_connect(const char *host, const char *username,
 }
 
 
-void mqtt_disconnect(void) {
+// mqtt_disconnect() for a caller holding handle_lock.
+static void mqtt_disconnect_locked(void) {
 	if ((state == MQTT_STATE_CONNECTED) || (state == MQTT_STATE_CONNECTING)) {
 		printf("MQTT: disconnecting from %s\n", host_str);
 		fflush(stdout);
@@ -953,34 +958,86 @@ void mqtt_disconnect(void) {
 /// a flood from holding the UI.
 #define MQTT_LOOP_MAX_PASSES	64
 
-void mqtt_step(void) {
-	// pump from the moment the async connect was started: the loop is what
-	// carries it through the handshake and then delivers the CONNACK
-	if (mosq != NULL) {
-		for (uint8_t i = 0; i < MQTT_LOOP_MAX_PASSES; i++) {
-			int rc = mosquitto_loop(mosq, 0, 1);
-			if (rc == MOSQ_ERR_SUCCESS) {
-				// there may be more waiting; keep going until the bound
-			}
-			else if (rc == MOSQ_ERR_NO_CONN) {
-				break;
-			}
-			else if ((rc == MOSQ_ERR_ERRNO) && (errno == EINTR)) {
-				// Expected: the FreeRTOS POSIX port drives its scheduler with
-				// signals, so the loop's select() is interrupted regularly.
-				// Not a transport failure, and not a reason to stop draining.
-			}
-			else {
-				if (state == MQTT_STATE_CONNECTED) {
-					mqtt_fail(mosquitto_strerror(rc));
-				}
-				else {
-				}
-				break;
-			}
-		}
+// Guards the mosquitto handle between the UI thread, which pumps it in
+// mqtt_step(), and the Settings tab's connect task, which creates it in
+// mqtt_connect(). Those two and mqtt_disconnect() are all that replace or pump
+// the handle. The publishing functions need no lock: they publish only in
+// MQTT_STATE_CONNECTED, which on_connect() alone sets, from inside mqtt_step().
+//
+// mqtt_step() never waits for it. A connect holds it while the broker's address
+// is resolved, which blocks for as long as DNS does, and waiting for that on the
+// UI thread would bring back the very freeze the connect task exists to avoid.
+// A step which finds it taken pumps nothing and tries again on the next one.
+//
+// Created on first use, which is on the UI thread: it steps the client from the
+// start, and disconnects before it starts a connect task.
+static uv_mutex_st handle_lock;
+static bool handle_lock_inited;
+
+
+static void handle_lock_init(void) {
+	if (!handle_lock_inited) {
+		uv_mutex_init(&handle_lock);
+		handle_lock_inited = true;
 	}
 	else {
+	}
+}
+
+
+bool mqtt_connect(const char *host, const char *username,
+		const char *password) {
+	handle_lock_init();
+	uv_mutex_lock(&handle_lock);
+	bool ret = mqtt_connect_locked(host, username, password);
+	uv_mutex_unlock(&handle_lock);
+	return ret;
+}
+
+
+void mqtt_disconnect(void) {
+	handle_lock_init();
+	uv_mutex_lock(&handle_lock);
+	mqtt_disconnect_locked();
+	uv_mutex_unlock(&handle_lock);
+}
+
+
+void mqtt_step(void) {
+	handle_lock_init();
+	if (!uv_mutex_lock_ms(&handle_lock, 0)) {
+		// a connect is building the handle right now; pump it on the next step
+	}
+	else {
+		// pump from the moment the async connect was started: the loop is what
+		// carries it through the handshake and then delivers the CONNACK
+		if (mosq != NULL) {
+			for (uint8_t i = 0; i < MQTT_LOOP_MAX_PASSES; i++) {
+				int rc = mosquitto_loop(mosq, 0, 1);
+				if (rc == MOSQ_ERR_SUCCESS) {
+					// there may be more waiting; keep going until the bound
+				}
+				else if (rc == MOSQ_ERR_NO_CONN) {
+					break;
+				}
+				else if ((rc == MOSQ_ERR_ERRNO) && (errno == EINTR)) {
+					// Expected: the FreeRTOS POSIX port drives its scheduler with
+					// signals, so the loop's select() is interrupted regularly.
+					// Not a transport failure, and not a reason to stop draining.
+				}
+				else {
+					if (state == MQTT_STATE_CONNECTED) {
+						mqtt_fail(mosquitto_strerror(rc));
+					}
+					else {
+					}
+					break;
+				}
+			}
+		}
+		else {
+		}
+		uv_mutex_unlock(&handle_lock);
 	}
 }
 

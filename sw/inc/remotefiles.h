@@ -128,6 +128,13 @@ const char *remotefiles_get_fleet(uint8_t index);
 bool remotefiles_is_logged_in(void);
 
 
+/// @brief: True while a remotefiles_login() call is in progress, on whichever
+/// thread made it. The Settings tab logs in on a task of its own, so a login
+/// started meanwhile (the "Server files" window's) has to wait for it rather
+/// than overwrite the session it is building.
+bool remotefiles_login_is_running(void);
+
+
 /// @brief: Drops the session token, so the next server access needs a fresh
 /// remotefiles_login(). Called when the user edits any of the account fields:
 /// the token belongs to the credentials that were in them at login time.
