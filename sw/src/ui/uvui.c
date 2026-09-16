@@ -294,6 +294,11 @@ void uvui_exec(void) {
 	// typed answer. See uvstdin.c.
 	uv_stdin_use_pipe();
 
+	// The broker client runs on a task of its own from here on, rather than
+	// being stepped by this loop: what it carries - the fleet view, and the CAN
+	// frames of a bridged bus - should not wait for a UI cycle.
+	mqtt_start_pump();
+
 	// Ask the file server once, in the background, whether a newer uvcan has
 	// been published; update_step() tells the user when the answer comes back.
 	// Started here so the request runs while the UI is being built and nothing

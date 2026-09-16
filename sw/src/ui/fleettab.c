@@ -681,12 +681,17 @@ bool fleettab_step(void) {
 	else {
 	}
 
-	// keep the client running whichever main tab is shown, so the connection
-	// survives a visit to the System tab and the fleet list keeps filling in
-	mqtt_step();
-	// and with it the bridge: what is written to the netdev has to reach the
-	// device whether or not anybody is looking at this tab
-	remotecan_step();
+	// The client and the bridge are not pumped from here any more: each runs on
+	// a task of its own (mqtt_start_pump(), remotecan_start()), stepping every
+	// couple of milliseconds instead of once per 20 ms UI cycle. Driven from
+	// this loop, every frame crossing the bridge waited up to 20 ms on the way
+	// out and another 20 on the way back, which is most of the round trip an
+	// SDO transfer pays for every single frame of a conversation.
+	//
+	// What the pump task must not do itself - draw a mirrored frame, decode an
+	// asset, answer a close - it leaves here, for the thread that owns the
+	// widgets.
+	mqtt_ui_step();
 
 	// A bridge cannot outlive the connection that carries it. The device stops
 	// forwarding on its own when the broker session drops, and an interface

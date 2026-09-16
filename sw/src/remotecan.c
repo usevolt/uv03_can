@@ -20,6 +20,8 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <uv_rtos.h>
+#include <uv_remote_proto.h>
 #include "mqtt.h"
 
 #if CONFIG_TARGET_LINUX
@@ -61,10 +63,21 @@ static bool allow_ext;
 // that showed only half of it without being asked would be a trap.
 static bool sdo_only;
 
-// How many steps between checks that the device is still actually forwarding.
-// The step runs on the UI cycle (20 ms), so this is a couple of seconds.
-#define REASSERT_STEPS		100
+// How often the bridge steps: reads what has been written to the netdev and
+// hands it to the broker. Short on purpose. Every frame of an SDO conversation
+// waits for this twice - once here, once for the reply - and at the 20 ms UI
+// cycle this used to run on, that alone was most of the transfer's round trip.
+#define REMOTECAN_STEP_MS	2
+
+// How many steps between checks that the device is still actually forwarding;
+// a couple of seconds, whatever the step period is.
+#define REASSERT_STEPS		(2000 / REMOTECAN_STEP_MS)
 static uint16_t reassert_ticks;
+
+// The bridge's own task. Started with the first bridge and then left running:
+// remotecan_step() does nothing while no bridge is up, and a task that outlives
+// the bridge cannot be caught mid-step by one being torn down under it.
+static bool task_started;
 
 static remotecan_filter_st filters[REMOTECAN_FILTER_MAX];
 static uint8_t filter_count;
@@ -97,6 +110,406 @@ static void filters_set_default(void) {
 	// An empty table carries nothing, in either direction — which is what
 	// clearing both boxes asks for, so it is left empty rather than quietly
 	// filled in with something.
+}
+
+
+// defined with the other frame conversion below; the offload writes synthesised
+// answers onto the netdev with it
+static void msg_to_frame(const uv_can_msg_st *msg, struct can_frame *frame);
+
+
+// ---- offloaded SDO transfers -----------------------------------------------
+//
+// An SDO transfer written to the netdev is a conversation: the client sends one
+// frame and waits for its answer before sending the next. Forwarded frame by
+// frame, every frame of it pays the link's latency - about a tenth of a second
+// - so a transfer of a hundred bytes costs some twenty round trips to move a
+// hundred bytes, and a parameter load takes minutes.
+//
+// So the bridge recognises the conversation instead of relaying it: it collects
+// what the client is asking for, has the device run the whole transfer on its
+// own bus (REMOTE_MSG_TYPE_SDO_REQ) and answers the client here, out of the
+// result. One round trip per transfer, whatever the transfer.
+//
+// It is done at this level, rather than in uvcan's own SDO client, so that
+// everything speaking SocketCAN to the interface gets it: candump and cansend,
+// a second uvcan started with -c uvremote0, anything else on the bus.
+//
+// All of the state below belongs to the bridge task. The result arrives on the
+// broker's pump task, which does nothing but park it and set *sdo_res_ready*.
+
+// COB-ids of the two halves of an SDO conversation, and the command bytes of
+// the frames exchanged. Plain CANopen (CiA 301), spelled out here rather than
+// taken from the stack's internals: this parses someone else's frames off a
+// socket, not the stack's own.
+#define SDO_REQUEST_ID			0x600
+#define SDO_RESPONSE_ID			0x580
+// client -> server, the top three bits of the command byte
+#define SDO_CCS_DOWNLOAD_SEG	0x00
+#define SDO_CCS_DOWNLOAD_INIT	0x20
+#define SDO_CCS_UPLOAD_INIT		0x40
+#define SDO_CCS_UPLOAD_SEG		0x60
+#define SDO_CS_ABORT			0x80
+// server -> client
+#define SDO_SCS_DOWNLOAD_SEG	0x20
+#define SDO_SCS_DOWNLOAD_INIT	0x60
+#define SDO_SCS_UPLOAD_INIT		0x40
+#define SDO_SCS_UPLOAD_SEG		0x00
+#define SDO_CMD_TOGGLE			0x10
+
+/// @brief: How long the bridge waits for the device before telling the client
+/// the transfer failed. The client's own timeout is shorter - a second is the
+/// usual CANopen default - so it will often have given up and retried first;
+/// this is only what stops this end waiting for ever on an answer that is not
+/// coming.
+#define SDO_OFFLOAD_TIMEOUT_MS	5000
+
+typedef enum {
+	SDO_IDLE = 0,
+	// collecting the segments of a download the client is still sending
+	SDO_DL_COLLECT,
+	// the whole transfer is at the device
+	SDO_WAIT,
+	// handing an upload's result back to the client, segment by segment
+	SDO_UL_SERVE,
+} sdo_state_e;
+
+// whether the bridged device reported the offload applied; without it every
+// transfer is relayed frame by frame as before
+static bool sdo_offload_on;
+
+static sdo_state_e sdo_state;
+static uint8_t sdo_node;
+static uint16_t sdo_mindex;
+static uint8_t sdo_sindex;
+static bool sdo_write;
+static uint8_t sdo_buf[REMOTE_SDO_DATA_MAX];
+static uint16_t sdo_len;
+// how far through *sdo_buf* the upload being served has got, and the toggle bit
+// the next segment carries
+static uint16_t sdo_pos;
+static bool sdo_toggle;
+// the answer a finished transfer still owes the client: a download's last
+// segment is answered with a segment reply, its first frame with an initiate
+// reply, and the toggle has to match the request being answered
+static bool sdo_reply_is_segment;
+static bool sdo_reply_toggle;
+static uint32_t sdo_wait_ms;
+static uint32_t sdo_count;
+
+// The result, written by the broker's pump task and read by the bridge task.
+static volatile bool sdo_res_ready;
+static uint32_t sdo_res_abort;
+static uint8_t sdo_res_buf[REMOTE_SDO_DATA_MAX];
+static uint16_t sdo_res_len;
+static uint8_t sdo_res_node;
+static uint16_t sdo_res_mindex;
+static uint8_t sdo_res_sindex;
+static bool sdo_res_write;
+
+
+/// @brief: Writes one synthesised SDO response onto the netdev, as though the
+/// device on *sdo_node* had answered it.
+static void sdo_to_client(const uint8_t *data) {
+	uv_can_msg_st msg;
+	memset(&msg, 0, sizeof(msg));
+	msg.type = CAN_STD;
+	msg.id = (uint32_t) (SDO_RESPONSE_ID + sdo_node);
+	msg.data_length = 8;
+	memcpy(msg.data_8bit, data, 8);
+
+	struct can_frame frame;
+	msg_to_frame(&msg, &frame);
+	if (write(sock, &frame, sizeof(frame)) == (ssize_t) sizeof(frame)) {
+		rx_count++;
+	}
+	else {
+		error_count++;
+	}
+}
+
+
+/// @brief: Tells the client the transfer failed, with *code* as the reason.
+static void sdo_abort_to_client(uint32_t code) {
+	uint8_t d[8];
+	d[0] = SDO_CS_ABORT;
+	d[1] = (uint8_t) (sdo_mindex & 0xFFu);
+	d[2] = (uint8_t) ((sdo_mindex >> 8) & 0xFFu);
+	d[3] = sdo_sindex;
+	d[4] = (uint8_t) (code & 0xFFu);
+	d[5] = (uint8_t) ((code >> 8) & 0xFFu);
+	d[6] = (uint8_t) ((code >> 16) & 0xFFu);
+	d[7] = (uint8_t) ((code >> 24) & 0xFFu);
+	sdo_to_client(d);
+}
+
+
+/// @brief: Answers one download frame: the initiate, or a segment carrying
+/// *toggle*.
+static void sdo_download_reply(bool segment, bool toggle) {
+	uint8_t d[8];
+	memset(d, 0, sizeof(d));
+	if (segment) {
+		d[0] = (uint8_t) (SDO_SCS_DOWNLOAD_SEG | (toggle ? SDO_CMD_TOGGLE : 0));
+	}
+	else {
+		d[0] = SDO_SCS_DOWNLOAD_INIT;
+		d[1] = (uint8_t) (sdo_mindex & 0xFFu);
+		d[2] = (uint8_t) ((sdo_mindex >> 8) & 0xFFu);
+		d[3] = sdo_sindex;
+	}
+	sdo_to_client(d);
+}
+
+
+/// @brief: Answers an upload's initiate with the data itself when it fits in
+/// the frame, or with its size when the client has to come back for segments.
+static void sdo_upload_init_reply(void) {
+	uint8_t d[8];
+	memset(d, 0, sizeof(d));
+	d[1] = (uint8_t) (sdo_mindex & 0xFFu);
+	d[2] = (uint8_t) ((sdo_mindex >> 8) & 0xFFu);
+	d[3] = sdo_sindex;
+	if (sdo_len <= 4) {
+		// expedited: e and s set, and n says how many of the four bytes are
+		// not data
+		d[0] = (uint8_t) (SDO_SCS_UPLOAD_INIT |
+				(((4u - sdo_len) & 0x03u) << 2) | 0x03u);
+		memcpy(&d[4], sdo_buf, sdo_len);
+	}
+	else {
+		// segmented, size indicated
+		d[0] = (uint8_t) (SDO_SCS_UPLOAD_INIT | 0x01u);
+		d[4] = (uint8_t) (sdo_len & 0xFFu);
+		d[5] = (uint8_t) ((sdo_len >> 8) & 0xFFu);
+		d[6] = 0;
+		d[7] = 0;
+	}
+	sdo_to_client(d);
+}
+
+
+/// @brief: Answers one upload segment request out of the result already here.
+static void sdo_upload_segment_reply(bool toggle) {
+	uint8_t d[8];
+	memset(d, 0, sizeof(d));
+	uint16_t left = (uint16_t) (sdo_len - sdo_pos);
+	uint8_t n = (left > 7u) ? 7u : (uint8_t) left;
+	bool last = (left <= 7u);
+	d[0] = (uint8_t) (SDO_SCS_UPLOAD_SEG |
+			(toggle ? SDO_CMD_TOGGLE : 0) |
+			(((7u - n) & 0x07u) << 1) |
+			(last ? 0x01u : 0u));
+	memcpy(&d[1], &sdo_buf[sdo_pos], n);
+	sdo_pos = (uint16_t) (sdo_pos + n);
+	sdo_to_client(d);
+	if (last) {
+		sdo_state = SDO_IDLE;
+	}
+	else {
+	}
+}
+
+
+/// @brief: Hands the collected transfer to the device.
+static void sdo_offload(void) {
+	sdo_wait_ms = 0;
+	sdo_state = SDO_WAIT;
+	sdo_res_ready = false;
+	if (!mqtt_dev_send_sdo_req((uint8_t) bridged_fleet, (uint8_t) bridged_dev,
+			sdo_write, sdo_node, sdo_mindex, sdo_sindex,
+			sdo_buf, sdo_write ? sdo_len : REMOTE_SDO_DATA_MAX)) {
+		// nothing went out, so nothing is coming back
+		sdo_abort_to_client(REMOTE_SDO_ABORT_BUSY);
+		sdo_state = SDO_IDLE;
+	}
+	else {
+		sdo_count++;
+	}
+}
+
+
+/// @brief: Takes one frame the client wrote to the netdev. Returns true when
+/// the bridge has dealt with it, i.e. when it must not also be forwarded.
+static bool sdo_intercept(const uv_can_msg_st *msg) {
+	bool ret = false;
+	uint8_t node = (uint8_t) (msg->id & 0x7Fu);
+	if (!sdo_offload_on ||
+			(msg->type != CAN_STD) ||
+			((msg->id & ~0x7Fu) != SDO_REQUEST_ID) ||
+			(msg->data_length < 8u) ||
+			(node == 0u)) {
+		// not an SDO request, or the device cannot run it for us
+	}
+	else if ((sdo_state != SDO_IDLE) && (node != sdo_node)) {
+		// one transfer at a time: another node's conversation is relayed the
+		// old way rather than queued behind this one
+	}
+	else {
+		uint8_t cmd = msg->data_8bit[0];
+		uint16_t mindex = (uint16_t) ((uint16_t) msg->data_8bit[1] |
+				((uint16_t) msg->data_8bit[2] << 8));
+		uint8_t sindex = msg->data_8bit[3];
+		ret = true;
+
+		if ((cmd & 0xE0u) == SDO_CCS_DOWNLOAD_INIT) {
+			bool expedited = ((cmd & 0x02u) != 0);
+			bool sized = ((cmd & 0x01u) != 0);
+			sdo_node = node;
+			sdo_mindex = mindex;
+			sdo_sindex = sindex;
+			sdo_write = true;
+			sdo_toggle = false;
+			sdo_pos = 0;
+			if (expedited) {
+				sdo_len = sized ? (uint16_t) (4u - ((cmd >> 2) & 0x03u)) : 4u;
+				memcpy(sdo_buf, &msg->data_8bit[4], sdo_len);
+				sdo_reply_is_segment = false;
+				sdo_reply_toggle = false;
+				sdo_offload();
+			}
+			else {
+				// the client will send the data in segments; answer at once so
+				// it starts, and collect them here
+				sdo_len = 0;
+				sdo_state = SDO_DL_COLLECT;
+				sdo_download_reply(false, false);
+			}
+		}
+		else if (((cmd & 0xE0u) == SDO_CCS_DOWNLOAD_SEG) &&
+				(sdo_state == SDO_DL_COLLECT)) {
+			bool toggle = ((cmd & SDO_CMD_TOGGLE) != 0);
+			bool last = ((cmd & 0x01u) != 0);
+			uint8_t n = (uint8_t) (7u - ((cmd >> 1) & 0x07u));
+			if ((sdo_len + n) > REMOTE_SDO_DATA_MAX) {
+				// larger than the offload carries; tell the client so, and let
+				// it start again - the next attempt is relayed frame by frame
+				sdo_abort_to_client(REMOTE_SDO_ABORT_TOO_LONG);
+				sdo_state = SDO_IDLE;
+			}
+			else {
+				memcpy(&sdo_buf[sdo_len], &msg->data_8bit[1], n);
+				sdo_len = (uint16_t) (sdo_len + n);
+				if (last) {
+					// the answer to this one waits for the device
+					sdo_reply_is_segment = true;
+					sdo_reply_toggle = toggle;
+					sdo_offload();
+				}
+				else {
+					sdo_download_reply(true, toggle);
+				}
+			}
+		}
+		else if ((cmd & 0xE0u) == SDO_CCS_UPLOAD_INIT) {
+			sdo_node = node;
+			sdo_mindex = mindex;
+			sdo_sindex = sindex;
+			sdo_write = false;
+			sdo_len = 0;
+			sdo_pos = 0;
+			sdo_toggle = false;
+			sdo_reply_is_segment = false;
+			sdo_offload();
+		}
+		else if (((cmd & 0xE0u) == SDO_CCS_UPLOAD_SEG) &&
+				(sdo_state == SDO_UL_SERVE)) {
+			sdo_upload_segment_reply((cmd & SDO_CMD_TOGGLE) != 0);
+		}
+		else if (cmd == SDO_CS_ABORT) {
+			// the client gave up; so does this end
+			sdo_state = SDO_IDLE;
+		}
+		else {
+			// a block transfer, or a frame that makes no sense where the
+			// conversation has got to: relay it and let the two ends sort it
+			// out between themselves
+			sdo_state = SDO_IDLE;
+			ret = false;
+		}
+	}
+	return ret;
+}
+
+
+/// @brief: Parks the device's answer for the bridge task. Runs on the broker's
+/// pump task, so it touches nothing the bridge task owns.
+static void sdo_from_dev(uint8_t fleet_index, uint8_t dev_index,
+		bool write, uint8_t node, uint16_t mindex, uint8_t sindex,
+		uint32_t abort, const uint8_t *data, uint16_t len, void *user) {
+	(void) user;
+	if (active &&
+			(fleet_index == bridged_fleet) &&
+			(dev_index == bridged_dev) &&
+			!sdo_res_ready) {
+		sdo_res_write = write;
+		sdo_res_node = node;
+		sdo_res_mindex = mindex;
+		sdo_res_sindex = sindex;
+		sdo_res_abort = abort;
+		sdo_res_len = (len > sizeof(sdo_res_buf)) ?
+				(uint16_t) sizeof(sdo_res_buf) : len;
+		if ((data != NULL) && (sdo_res_len > 0)) {
+			memcpy(sdo_res_buf, data, sdo_res_len);
+		}
+		else {
+		}
+		sdo_res_ready = true;
+	}
+	else {
+		// not this bridge's, or the last answer has not been dealt with yet
+	}
+}
+
+
+/// @brief: Turns a parked result into the client's answer, and gives up on a
+/// transfer the device never answered. Called from the bridge's step.
+static void sdo_result_step(uint16_t step_ms) {
+	if (sdo_res_ready) {
+		bool mine = ((sdo_state == SDO_WAIT) &&
+				(sdo_res_node == sdo_node) &&
+				(sdo_res_mindex == sdo_mindex) &&
+				(sdo_res_sindex == sdo_sindex) &&
+				(sdo_res_write == sdo_write));
+		if (!mine) {
+			// an answer to something this end has already given up on
+		}
+		else if (sdo_res_abort != 0) {
+			sdo_abort_to_client(sdo_res_abort);
+			sdo_state = SDO_IDLE;
+		}
+		else if (sdo_write) {
+			sdo_download_reply(sdo_reply_is_segment, sdo_reply_toggle);
+			sdo_state = SDO_IDLE;
+		}
+		else {
+			sdo_len = sdo_res_len;
+			memcpy(sdo_buf, sdo_res_buf, sdo_len);
+			sdo_pos = 0;
+			// an upload that fits the initiate frame is finished by it; a
+			// larger one is served segment by segment from here
+			sdo_state = (sdo_len <= 4u) ? SDO_IDLE : SDO_UL_SERVE;
+			sdo_upload_init_reply();
+		}
+		sdo_res_ready = false;
+	}
+	else if (sdo_state == SDO_WAIT) {
+		sdo_wait_ms += step_ms;
+		if (sdo_wait_ms >= SDO_OFFLOAD_TIMEOUT_MS) {
+			printf("remote CAN: no answer to the offloaded transfer of "
+					"0x%x:%u at node 0x%x\n",
+					(unsigned int) sdo_mindex, (unsigned int) sdo_sindex,
+					(unsigned int) sdo_node);
+			fflush(stdout);
+			sdo_abort_to_client(REMOTE_SDO_ABORT_BUSY);
+			sdo_state = SDO_IDLE;
+		}
+		else {
+		}
+	}
+	else {
+		// idle, collecting, or serving: nothing waits on the device
+	}
 }
 
 
@@ -199,6 +612,31 @@ static void can_from_dev(uint8_t fleet_index, uint8_t dev_index,
 }
 
 
+/// @brief: Task body: steps the bridge every REMOTECAN_STEP_MS for the life of
+/// the program. The step is what carries a frame written to the netdev on to
+/// the device, so how often it runs is half the bridge's latency.
+static void remotecan_task(void *ptr) {
+	(void) ptr;
+	while (true) {
+		remotecan_step();
+		uv_rtos_task_delay(REMOTECAN_STEP_MS);
+	}
+}
+
+
+/// @brief: Starts the task above, once.
+static void remotecan_start_task(void) {
+	if (!task_started) {
+		task_started = true;
+		uv_rtos_task_create(&remotecan_task, "remotecan",
+				UV_RTOS_MIN_STACK_SIZE * 3, NULL,
+				UV_RTOS_IDLE_PRIORITY + 1, NULL);
+	}
+	else {
+	}
+}
+
+
 bool remotecan_start(uint8_t fleet_index, uint8_t dev_index) {
 	bool ret = false;
 	remotecan_stop();
@@ -245,6 +683,13 @@ bool remotecan_start(uint8_t fleet_index, uint8_t dev_index) {
 	}
 
 	if (ret) {
+		remotecan_start_task();
+		// a new bridge starts with no transfer in flight, whatever the last one
+		// was doing when it was closed
+		sdo_state = SDO_IDLE;
+		sdo_res_ready = false;
+		sdo_offload_on = false;
+		mqtt_set_sdo_callb(&sdo_from_dev, NULL);
 		active = true;
 		bridged_fleet = (int16_t) fleet_index;
 		bridged_dev = (int16_t) dev_index;
@@ -286,6 +731,10 @@ void remotecan_stop(void) {
 	if (active) {
 		active = false;
 		mqtt_set_can_callb(NULL, NULL);
+		mqtt_set_sdo_callb(NULL, NULL);
+		sdo_state = SDO_IDLE;
+		sdo_res_ready = false;
+		sdo_offload_on = false;
 		if ((bridged_fleet >= 0) && (bridged_dev >= 0)) {
 			(void) mqtt_dev_send_rxclear((uint8_t) bridged_fleet,
 					(uint8_t) bridged_dev);
@@ -370,6 +819,20 @@ void remotecan_step(void) {
 	else {
 	}
 
+	if (active && (bridged_fleet >= 0)) {
+		// Whether the device is running transfers for us. It says so in the
+		// feature mask it reports applied, which drops to nothing on every
+		// reconnect - so this follows it rather than being latched on.
+		sdo_offload_on = ((mqtt_get_dev_features((uint8_t) bridged_fleet,
+				(uint8_t) bridged_dev) & REMOTE_IOT_FEATURE_SDO) != 0);
+		// answers that arrived since the last step, and transfers the device
+		// never answered at all
+		sdo_result_step(REMOTECAN_STEP_MS);
+	}
+	else {
+		sdo_offload_on = false;
+	}
+
 	if (active && (sock >= 0)) {
 		// Everything that has been written to the interface since the last
 		// step, up to a bound: a flood on the interface must not keep the UI
@@ -391,6 +854,10 @@ void remotecan_step(void) {
 				frame_to_msg(&frame, &msg);
 				if (!filter_passes(msg.id, msg.type)) {
 					filtered_count++;
+				}
+				else if (sdo_intercept(&msg)) {
+					// part of a conversation the device is running for us; it
+					// is answered from here, not relayed
 				}
 				else if (mqtt_dev_send_can((uint8_t) bridged_fleet,
 						(uint8_t) bridged_dev, &msg)) {

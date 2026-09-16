@@ -139,47 +139,79 @@ static uint8_t fleet_count;
 // Set whenever the state or the tree changed, cleared by mqtt_poll_changed().
 static bool changed;
 
-// ---- the network task ---------------------------------------------------
+// ---- the pump task -------------------------------------------------------
 //
-// libmosquitto's loop is where the blocking work lives: the broker's DNS lookup
-// and the TLS handshake both happen inside it. Driven from the UI's own step --
-// as this was -- a machine with no route to the internet stops the entire
-// interface for as long as the resolver takes, which is tens of seconds per
-// attempt, over and over. So the socket lives on a task of its own.
+// The client is pumped by a task of its own (mqtt_start_pump()), every
+// MQTT_PUMP_MS. It used to be stepped from the UI's 20 ms cycle, which put that
+// latency on every message in both directions. A bridged CAN bus paid it worst:
+// an SDO transfer is one frame at a time, each waiting for the answer to the
+// last, so 40 ms of the round trip of every single frame was this cycle.
 //
-// The device tree stays where it was, owned by the UI thread: the network task
-// only copies arriving messages into this queue, and mqtt_step() parses them on
-// the UI side exactly as before. Nothing that the UI reads is written by the
-// other thread, which is what keeps the tree free of locking.
-#define MQTT_RX_QUEUE_LEN		64
-#define MQTT_RX_TOPIC_MAX		(MQTT_NAME_MAX * 2 + 32)
-#define MQTT_RX_PAYLOAD_MAX		1024
-/// How long the loop may wait in select(). Off the UI thread this can block
-/// properly rather than spin, which is also what keeps a bridged CAN bus
-/// keeping up.
-#define MQTT_NET_LOOP_MS		50
+// What that moves off the UI thread, and what it does not:
+//
+// * mosquitto_loop() and with it on_message(): the device tree, the per-device
+//   framer and the CAN callback now run on the pump task. The CAN callback
+//   only writes a frame to the netdev socket, which is what makes it safe
+//   there - and it is exactly the path whose latency this is all about.
+// * the UI's frame, asset and close callbacks do NOT run there. They open
+//   windows, draw and touch widgets, which belong to the UI thread. The pump
+//   task records them below and mqtt_ui_step() runs them where they belong.
+#define MQTT_PUMP_MS			2
+
+static volatile bool pump_started;
+
+/// Guards the device tree - the fleets, their devices, the framer state and the
+/// heap buffers a device's UI frames and assets are collected into - between the
+/// pump task, which fills it, and the UI thread, which removes devices from it
+/// (mqtt_remove_dev() frees the very buffers the pump task writes into).
+///
+/// The plain getters below read single fields and are deliberately left
+/// unlocked: a stale count or name for one frame costs nothing, and the slots
+/// themselves only ever move on the UI thread, which is where those getters are
+/// called from.
+static uv_mutex_st tree_lock;
+static bool tree_lock_inited;
+
+static void tree_lock_take(void) {
+	if (!tree_lock_inited) {
+		uv_mutex_init(&tree_lock);
+		tree_lock_inited = true;
+	}
+	else {
+	}
+	uv_mutex_lock(&tree_lock);
+}
+
+static void tree_lock_give(void) {
+	uv_mutex_unlock(&tree_lock);
+}
+
+
+/// Something that arrived on the pump task but has to happen on the UI thread.
+/// A frame and an asset carry a copy of their bytes, which mqtt_ui_step() frees
+/// once the callback has had it: the device's own buffer is refilled by the next
+/// message and cannot be handed across a thread boundary.
+#define MQTT_UI_EVENT_MAX		8
+
+typedef enum {
+	MQTT_UI_EVENT_FRAME = 0,
+	MQTT_UI_EVENT_ASSET,
+	MQTT_UI_EVENT_CLOSE,
+} mqtt_ui_event_e;
 
 typedef struct {
-	char topic[MQTT_RX_TOPIC_MAX];
-	uint8_t payload[MQTT_RX_PAYLOAD_MAX];
-	uint16_t payloadlen;
-} mqtt_rxmsg_st;
+	mqtt_ui_event_e type;
+	uint8_t fleet_index;
+	uint8_t dev_index;
+	uint8_t kind;
+	uint32_t id;
+	uint8_t *data;
+	uint32_t len;
+} mqtt_ui_event_st;
 
-static mqtt_rxmsg_st rx_queue[MQTT_RX_QUEUE_LEN];
-static volatile uint16_t rx_head;	///< written by the network task
-static volatile uint16_t rx_tail;	///< written by the UI thread
-static uint32_t rx_dropped;
-
-/// Guards the handle against being used while the network task replaces it,
-/// and the queue's bookkeeping. Never held across mosquitto_loop(): that is
-/// the call that blocks, and holding it there would hand the freeze straight
-/// back to whichever thread publishes next.
-static uv_mutex_st mqtt_mutex;
-static bool mqtt_mutex_inited;
-
-static volatile bool net_task_started;
-static volatile bool net_connect_req;
-static volatile bool net_disconnect_req;
+static mqtt_ui_event_st ui_events[MQTT_UI_EVENT_MAX];
+static uint8_t ui_event_count;
+static uint32_t ui_event_dropped;
 
 // Devices the user has removed from the view. A removed device is still out
 // there publishing, so without this it would be back in the tree on its next
@@ -191,6 +223,66 @@ typedef struct {
 
 static mqtt_ignored_st ignored[MQTT_MAX_DEVS];
 static uint8_t ignored_count;
+
+
+/// @brief: Records an event for the UI thread. *data* is copied. The caller
+/// holds the tree lock.
+///
+/// A frame replaces one already waiting for the same device rather than
+/// queueing behind it: a display frame is the latest picture of that screen, and
+/// an older one nobody has drawn yet is of no interest.
+static void ui_event_push(mqtt_ui_event_e type, uint8_t fleet_index,
+		uint8_t dev_index, uint8_t kind, uint32_t id,
+		const uint8_t *data, uint32_t len) {
+	mqtt_ui_event_st *e = NULL;
+	if (type == MQTT_UI_EVENT_FRAME) {
+		for (uint8_t i = 0; i < ui_event_count; i++) {
+			if ((ui_events[i].type == MQTT_UI_EVENT_FRAME) &&
+					(ui_events[i].fleet_index == fleet_index) &&
+					(ui_events[i].dev_index == dev_index)) {
+				e = &ui_events[i];
+				free(e->data);
+				break;
+			}
+			else {
+			}
+		}
+	}
+	else {
+	}
+	if ((e == NULL) && (ui_event_count < MQTT_UI_EVENT_MAX)) {
+		e = &ui_events[ui_event_count];
+		ui_event_count++;
+	}
+	else {
+	}
+
+	if (e == NULL) {
+		// the UI thread has not drained in a while; nothing here is worth
+		// growing a queue for
+		ui_event_dropped++;
+	}
+	else {
+		e->type = type;
+		e->fleet_index = fleet_index;
+		e->dev_index = dev_index;
+		e->kind = kind;
+		e->id = id;
+		e->data = NULL;
+		e->len = 0;
+		if ((data != NULL) && (len > 0)) {
+			e->data = malloc(len);
+			if (e->data != NULL) {
+				memcpy(e->data, data, len);
+				e->len = len;
+			}
+			else {
+			}
+		}
+		else {
+		}
+	}
+}
 
 
 /// @brief: True while (*fleet*, *dev*) is one the user has removed.
@@ -219,6 +311,8 @@ static mqtt_close_callb_t close_callb;
 static void *close_user;
 static mqtt_can_callb_t can_callb;
 static void *can_user;
+static mqtt_sdo_callb_t sdo_callb;
+static void *sdo_user;
 
 
 // Connection parameters, copied here so the connect task can use them after
@@ -555,9 +649,10 @@ static void asset_chunk(mqtt_dev_st *d, const uint8_t *msg, uint8_t len,
 	if ((flags & REMOTE_UI_FLAG_FRAME_END) != 0) {
 		if (asset_callb != NULL) {
 			// a zero length is the "cannot serve it" answer, and is reported as
-			// such rather than swallowed
-			asset_callb(fleet_index, dev_index, d->asset_kind, d->asset_id,
-					d->asset_buf, d->asset_len, asset_user);
+			// such rather than swallowed. Handed to the UI thread, which is
+			// what decodes it into a font or a bitmap.
+			ui_event_push(MQTT_UI_EVENT_ASSET, fleet_index, dev_index,
+					d->asset_kind, d->asset_id, d->asset_buf, d->asset_len);
 		}
 		free(d->asset_buf);
 		d->asset_buf = NULL;
@@ -601,8 +696,10 @@ static void ui_chunk(mqtt_dev_st *d, const uint8_t *msg, uint8_t len,
 		if (((flags & REMOTE_UI_FLAG_FRAME_END) != 0) &&
 				(ui_frame_callb != NULL) &&
 				(d->ui_len > 0)) {
-			ui_frame_callb(fleet_index, dev_index, d->ui_buf, d->ui_len,
-					ui_frame_user);
+			// drawn by the UI thread, from its own copy: this runs on the pump
+			// task and d->ui_buf is refilled by the next frame
+			ui_event_push(MQTT_UI_EVENT_FRAME, fleet_index, dev_index, 0, 0,
+					d->ui_buf, d->ui_len);
 			d->ui_len = 0;
 		}
 	}
@@ -674,6 +771,32 @@ static void dev_frame_callb(void *user, remote_msg_types_e type,
 		break;
 	}
 
+	case REMOTE_MSG_TYPE_SDO_RES:
+		// [start][type][payload_len][flags][node][mindex:2][sindex][len:2]
+		//       [abort:4][data]
+		if (sdo_callb != NULL) {
+			uint16_t dlen = (uint16_t) ((uint16_t) data[8] |
+					((uint16_t) data[9] << 8));
+			if (dlen > (uint16_t) (len - REMOTE_MSG_TYPE_SDO_RES_HDR_LEN)) {
+				// the framer bounds the message; trust its length over a length
+				// field which disagrees with it
+				dlen = (uint16_t) (len - REMOTE_MSG_TYPE_SDO_RES_HDR_LEN);
+			}
+			uint32_t abort = (uint32_t) data[10] |
+					((uint32_t) data[11] << 8) |
+					((uint32_t) data[12] << 16) |
+					((uint32_t) data[13] << 24);
+			sdo_callb(ctx->fleet_index, ctx->dev_index,
+					((data[3] & REMOTE_SDO_FLAG_WRITE) != 0), data[4],
+					(uint16_t) ((uint16_t) data[5] | ((uint16_t) data[6] << 8)),
+					data[7], abort,
+					&data[REMOTE_MSG_TYPE_SDO_RES_HDR_LEN], dlen, sdo_user);
+		}
+		else {
+			// nothing is offloading transfers to this device
+		}
+		break;
+
 	case REMOTE_MSG_TYPE_CAN_STATS:
 		if (len >= REMOTE_MSG_TYPE_CAN_STATS_LEN) {
 			memcpy(&d->can_stats, &data[2], sizeof(d->can_stats));
@@ -693,16 +816,19 @@ static void dev_frame_callb(void *user, remote_msg_types_e type,
 		printf("MQTT: device '%s' closed the remote session from its own end\n",
 				d->name);
 		fflush(stdout);
-		// Answered at once, and whatever else is or is not open at this end.
-		// A close is the machine operator taking their machine back, and the
-		// device holds out against anything still being asked for until this
-		// arrives -- so an unanswered close would leave remote access dead
-		// with neither end able to start it again. This is what lets a press
-		// of the button start a new session.
-		(void) mqtt_dev_set_features(ctx->fleet_index, ctx->dev_index, 0);
-		if (close_callb != NULL) {
-			close_callb(ctx->fleet_index, ctx->dev_index, close_user);
-		}
+		// Answered from the UI thread, and whatever else is or is not open at
+		// this end. A close is the machine operator taking their machine back,
+		// and the device holds out against anything still being asked for
+		// until the answer arrives -- so an unanswered close would leave remote
+		// access dead with neither end able to start it again. This is what
+		// lets a press of the button start a new session.
+		//
+		// Not answered here: this runs inside mosquitto_loop(), and publishing
+		// from there would take the handle lock the pump task is already
+		// holding. The same drain runs the close callback, which stops the CAN
+		// bridge and touches the Fleet tab's widgets.
+		ui_event_push(MQTT_UI_EVENT_CLOSE, ctx->fleet_index, ctx->dev_index,
+				0, 0, NULL, 0);
 		break;
 
 	default:
@@ -761,6 +887,9 @@ static void on_message(struct mosquitto *m, void *obj,
 		const struct mosquitto_message *msg) {
 	(void) m;
 	(void) obj;
+	// Runs on the pump task: everything it touches of the device tree is shared
+	// with the UI thread, which removes devices from it.
+	tree_lock_take();
 	if ((msg != NULL) && (msg->topic != NULL)) {
 		topic_parse(msg->topic);
 
@@ -819,6 +948,7 @@ static void on_message(struct mosquitto *m, void *obj,
 			}
 		}
 	}
+	tree_lock_give();
 }
 
 
@@ -985,6 +1115,24 @@ static void handle_lock_init(void) {
 }
 
 
+/// How long a publisher waits for the handle. The pump task holds it only for
+/// one non-blocking loop pass, so this is about a connect, which holds it while
+/// the broker's address is resolved: a publish made during one has nothing to
+/// go out on anyway, and the UI must not wait for DNS.
+#define MQTT_PUBLISH_LOCK_MS	20
+
+/// @brief: Takes the handle for a publish. Returns false when it could not be
+/// had, which the caller reports as a message that did not go out.
+static bool publish_lock_take(void) {
+	handle_lock_init();
+	return uv_mutex_lock_ms(&handle_lock, MQTT_PUBLISH_LOCK_MS);
+}
+
+static void publish_lock_give(void) {
+	uv_mutex_unlock(&handle_lock);
+}
+
+
 bool mqtt_connect(const char *host, const char *username,
 		const char *password) {
 	handle_lock_init();
@@ -1038,6 +1186,86 @@ void mqtt_step(void) {
 		else {
 		}
 		uv_mutex_unlock(&handle_lock);
+	}
+}
+
+
+/// @brief: Task body: pumps the client every MQTT_PUMP_MS for the life of the
+/// program. What it carries should not wait for a UI cycle - see the note on
+/// MQTT_PUMP_MS.
+static void mqtt_pump_task(void *ptr) {
+	(void) ptr;
+	while (true) {
+		mqtt_step();
+		uv_rtos_task_delay(MQTT_PUMP_MS);
+	}
+}
+
+
+void mqtt_start_pump(void) {
+	if (!pump_started) {
+		pump_started = true;
+		uv_rtos_task_create(&mqtt_pump_task, "mqtt_pump",
+				UV_RTOS_MIN_STACK_SIZE * 5, NULL,
+				UV_RTOS_IDLE_PRIORITY + 1, NULL);
+	}
+	else {
+	}
+}
+
+
+void mqtt_ui_step(void) {
+	// Taken one at a time, with the lock released around the callback: the
+	// callbacks draw, open windows and stop the CAN bridge, and holding the
+	// tree lock across all that would stall the pump task for a whole frame.
+	while (true) {
+		mqtt_ui_event_st e;
+		tree_lock_take();
+		if (ui_event_count == 0) {
+			tree_lock_give();
+			break;
+		}
+		else {
+		}
+		e = ui_events[0];
+		for (uint8_t i = 1; i < ui_event_count; i++) {
+			ui_events[i - 1] = ui_events[i];
+		}
+		ui_event_count--;
+		tree_lock_give();
+
+		switch (e.type) {
+		case MQTT_UI_EVENT_FRAME:
+			if (ui_frame_callb != NULL) {
+				ui_frame_callb(e.fleet_index, e.dev_index, e.data, e.len,
+						ui_frame_user);
+			}
+			else {
+			}
+			break;
+
+		case MQTT_UI_EVENT_ASSET:
+			if (asset_callb != NULL) {
+				asset_callb(e.fleet_index, e.dev_index, e.kind, e.id,
+						e.data, e.len, asset_user);
+			}
+			else {
+			}
+			break;
+
+		case MQTT_UI_EVENT_CLOSE:
+		default:
+			// the answer the device is waiting for, and then this end's own
+			// tidying up (see the CLOSE case of dev_frame_callb)
+			(void) mqtt_dev_set_features(e.fleet_index, e.dev_index, 0);
+			if (close_callb != NULL) {
+				close_callb(e.fleet_index, e.dev_index, close_user);
+			}
+			else {
+			}
+			break;
+		}
+		free(e.data);
 	}
 }
 
@@ -1147,6 +1375,12 @@ void mqtt_disconnect(void) {
 void mqtt_step(void) {
 }
 
+void mqtt_start_pump(void) {
+}
+
+void mqtt_ui_step(void) {
+}
+
 mqtt_state_e mqtt_get_state(void) {
 	return MQTT_STATE_DISCONNECTED;
 }
@@ -1219,6 +1453,9 @@ static mqtt_dev_st *dev_at(uint8_t fleet_index, uint8_t dev_index) {
 
 
 bool mqtt_remove_dev(uint8_t fleet_index, uint8_t dev_index) {
+	// the pump task is filling this tree, and the buffers freed below are the
+	// ones it collects a device's frames and assets into
+	tree_lock_take();
 	mqtt_dev_st *d = dev_at(fleet_index, dev_index);
 	bool ret = false;
 	if (d != NULL) {
@@ -1262,6 +1499,7 @@ bool mqtt_remove_dev(uint8_t fleet_index, uint8_t dev_index) {
 	else {
 		// no such device; nothing to remove
 	}
+	tree_lock_give();
 	return ret;
 }
 
@@ -1320,8 +1558,18 @@ bool mqtt_dev_set_features(uint8_t fleet_index, uint8_t dev_index,
 				REMOTE_MSG_TYPE_IOT_CTRL,
 				features
 		};
-		int rc = mosquitto_publish(mosq, NULL, topic, (int) sizeof(frame),
-				frame, 0, false);
+		// the handle is the pump task's while it loops, and a disconnect
+		// destroys it; publishing into either would be a use of a handle that
+		// is not ours (see handle_lock)
+		bool locked = publish_lock_take();
+		int rc = locked ?
+				mosquitto_publish(mosq, NULL, topic, (int) sizeof(frame),
+						frame, 0, false) : MOSQ_ERR_NO_CONN;
+		if (locked) {
+			publish_lock_give();
+		}
+		else {
+		}
 		if (rc == MOSQ_ERR_SUCCESS) {
 			ret = true;
 		}
@@ -1353,6 +1601,49 @@ void mqtt_set_can_callb(mqtt_can_callb_t callb, void *user) {
 }
 
 
+void mqtt_set_sdo_callb(mqtt_sdo_callb_t callb, void *user) {
+	sdo_callb = callb;
+	sdo_user = user;
+}
+
+
+// defined with the other publishing below; the offload is declared up here with
+// the callback it answers
+static bool dev_publish(uint8_t fleet_index, uint8_t dev_index,
+		const uint8_t *frame, uint16_t len);
+
+
+bool mqtt_dev_send_sdo_req(uint8_t fleet_index, uint8_t dev_index,
+		bool write, uint8_t node, uint16_t mindex, uint8_t sindex,
+		const uint8_t *data, uint16_t data_len) {
+	bool ret = false;
+	if (data_len > REMOTE_SDO_DATA_MAX) {
+		// larger than the device will take; the caller drives it frame by frame
+	}
+	else {
+		uint8_t frame[REMOTE_MSG_TYPE_SDO_REQ_MAX_LEN];
+		uint8_t len = (uint8_t) REMOTE_MSG_TYPE_SDO_REQ_LEN(data_len);
+		frame[0] = REMOTE_MSG_START_BYTE;
+		frame[1] = REMOTE_MSG_TYPE_SDO_REQ;
+		frame[2] = (uint8_t) (len - 3);
+		frame[3] = write ? REMOTE_SDO_FLAG_WRITE : 0;
+		frame[4] = node;
+		frame[5] = (uint8_t) (mindex & 0xFFu);
+		frame[6] = (uint8_t) ((mindex >> 8) & 0xFFu);
+		frame[7] = sindex;
+		frame[8] = (uint8_t) (data_len & 0xFFu);
+		frame[9] = (uint8_t) ((data_len >> 8) & 0xFFu);
+		if (write && (data != NULL) && (data_len > 0)) {
+			memcpy(&frame[REMOTE_MSG_TYPE_SDO_REQ_HDR_LEN], data, data_len);
+		}
+		else {
+		}
+		ret = dev_publish(fleet_index, dev_index, frame, len);
+	}
+	return ret;
+}
+
+
 /// @brief: Publishes one REMOTE frame on a device's to_dev topic. Everything
 /// this end sends a device goes out this way.
 static bool dev_publish(uint8_t fleet_index, uint8_t dev_index,
@@ -1363,8 +1654,15 @@ static bool dev_publish(uint8_t fleet_index, uint8_t dev_index,
 		char topic[MQTT_NAME_MAX * 2 + 32];
 		snprintf(topic, sizeof(topic), "%s%s/clients/%s/to_dev",
 				TOPIC_ROOT, fleets[fleet_index].name, d->name);
-		ret = (mosquitto_publish(mosq, NULL, topic, (int) len,
-				frame, 0, false) == MOSQ_ERR_SUCCESS);
+		bool locked = publish_lock_take();
+		ret = locked &&
+				(mosquitto_publish(mosq, NULL, topic, (int) len,
+						frame, 0, false) == MOSQ_ERR_SUCCESS);
+		if (locked) {
+			publish_lock_give();
+		}
+		else {
+		}
 	}
 	else {
 	}
@@ -1382,6 +1680,12 @@ bool mqtt_dev_set_can_active(uint8_t fleet_index, uint8_t dev_index,
 		uint8_t mask = d->features;
 		if (active) {
 			mask |= REMOTE_IOT_FEATURE_CAN;
+			// Asked for with the bridge, always. It carries the SDO
+			// conversations of the bus being bridged, which is what the bridge
+			// is slowest at; a device whose firmware predates the offload
+			// simply does not apply the bit, and those transfers go frame by
+			// frame as they always did.
+			mask |= REMOTE_IOT_FEATURE_SDO;
 			if (sdo_only) {
 				mask |= REMOTE_IOT_FEATURE_CAN_SDO;
 			}
@@ -1489,8 +1793,15 @@ bool mqtt_dev_request_asset(uint8_t fleet_index, uint8_t dev_index,
 				(uint8_t) ((id >> 16) & 0xFFu),
 				(uint8_t) ((id >> 24) & 0xFFu)
 		};
-		ret = (mosquitto_publish(mosq, NULL, topic, (int) sizeof(frame),
-				frame, 0, false) == MOSQ_ERR_SUCCESS);
+		bool locked = publish_lock_take();
+		ret = locked &&
+				(mosquitto_publish(mosq, NULL, topic, (int) sizeof(frame),
+						frame, 0, false) == MOSQ_ERR_SUCCESS);
+		if (locked) {
+			publish_lock_give();
+		}
+		else {
+		}
 	}
 	return ret;
 }
@@ -1515,8 +1826,15 @@ bool mqtt_dev_send_input(uint8_t fleet_index, uint8_t dev_index,
 				(uint8_t) (int8_t) scroll,
 				(uint8_t) key
 		};
-		ret = (mosquitto_publish(mosq, NULL, topic, (int) sizeof(frame),
-				frame, 0, false) == MOSQ_ERR_SUCCESS);
+		bool locked = publish_lock_take();
+		ret = locked &&
+				(mosquitto_publish(mosq, NULL, topic, (int) sizeof(frame),
+						frame, 0, false) == MOSQ_ERR_SUCCESS);
+		if (locked) {
+			publish_lock_give();
+		}
+		else {
+		}
 	}
 	return ret;
 }

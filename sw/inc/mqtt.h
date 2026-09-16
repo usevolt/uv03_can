@@ -113,6 +113,30 @@ void mqtt_disconnect(void);
 void mqtt_step(void);
 
 
+/// @brief: Starts the task that calls mqtt_step() every couple of milliseconds,
+/// once. Call it when the program starts; it returns at once if the task is
+/// already running, and does nothing at all where there is no broker client.
+///
+/// The client used to be pumped from the UI's 20 ms cycle, which put that
+/// latency on every message in both directions - ruinous for a bridged CAN bus,
+/// where an SDO transfer waits for one message after another, each of them
+/// twice over.
+void mqtt_start_pump(void);
+
+
+/// @brief: Runs what arrived on the pump task but belongs to the UI thread: the
+/// device's UI frames and assets, and its close request. Call it every UI cycle;
+/// it returns at once when there is nothing waiting.
+///
+/// The callbacks registered with mqtt_set_ui_frame_callb(),
+/// mqtt_set_asset_callb() and mqtt_set_close_callb() are called from here, not
+/// from the pump task: they draw, open windows and stop the CAN bridge. The CAN
+/// callback is the exception - it is called straight from the pump task, because
+/// all it does is write the frame to a socket and waiting for a UI cycle is the
+/// very latency the pump task exists to avoid.
+void mqtt_ui_step(void);
+
+
 /// @brief: Current connection state.
 mqtt_state_e mqtt_get_state(void);
 
@@ -302,6 +326,31 @@ bool mqtt_dev_send_rxdone(uint8_t fleet_index, uint8_t dev_index);
 
 
 /// @brief: Sends one CAN frame to a device, which puts it on its own bus.
+/// @brief: Asks *dev_index* to run one whole SDO transfer on its own bus and
+/// send back the result (REMOTE_MSG_TYPE_SDO_REQ). *write* selects a download,
+/// *data* / *data_len* are the bytes to write, or on a read the most to take
+/// back. Returns false when the message could not be published.
+///
+/// Only for a device whose applied features carry REMOTE_IOT_FEATURE_SDO: one
+/// without it - firmware older than the offload - answers nothing at all, and
+/// the transfer has to be driven frame by frame as before.
+bool mqtt_dev_send_sdo_req(uint8_t fleet_index, uint8_t dev_index,
+		bool write, uint8_t node, uint16_t mindex, uint8_t sindex,
+		const uint8_t *data, uint16_t data_len);
+
+
+/// @brief: Called from the pump task with the result of one offloaded transfer.
+/// *abort* is 0 on success, otherwise the abort code it ended with; *data* /
+/// *len* carry what a read returned. Registered like the CAN callback, and
+/// called on the same task, for the same reason: the answer goes straight back
+/// onto the netdev and waiting for a UI cycle is the latency being removed.
+typedef void (*mqtt_sdo_callb_t)(uint8_t fleet_index, uint8_t dev_index,
+		bool write, uint8_t node, uint16_t mindex, uint8_t sindex,
+		uint32_t abort, const uint8_t *data, uint16_t len, void *user);
+
+void mqtt_set_sdo_callb(mqtt_sdo_callb_t callb, void *user);
+
+
 bool mqtt_dev_send_can(uint8_t fleet_index, uint8_t dev_index,
 		const uv_can_msg_st *msg);
 
