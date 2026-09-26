@@ -92,6 +92,11 @@ typedef struct {
 	// load can tell the user which of the two went wrong, and so a broken file
 	// is never mistaken for a device which refused the parameters.
 	bool file_invalid;
+
+	// Set when the user answers a failed parameter write with 'f' (force
+	// continue): every later failed write of the same load is skipped without
+	// asking. Cleared when loadparam_step() starts a new load.
+	bool force_continue;
 } loadparam_st;
 
 

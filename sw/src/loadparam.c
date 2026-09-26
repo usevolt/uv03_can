@@ -809,6 +809,72 @@ static int query_get(parser_node_st obj, char *dest_str, int dest_len,
 }
 
 
+/// @brief: Returns true if *str* holds nothing but an empty line, i.e. the user
+/// only pressed enter.
+static bool is_empty_line(const char *str) {
+	return str[strspn(str, " \t\r\n")] == '\0';
+}
+
+
+/// @brief: Asks the user how the load should go on after writing the parameter
+/// *info* failed with an SDO error (already logged by the caller). A single
+/// refused parameter does not have to mean the rest of the file would fail, so
+/// the user decides instead of the whole load being stopped outright.
+///
+/// The answer is read with uv_stdin_getline(), which blocks without halting the
+/// scheduler, so the UI stays live and offers its log command line for it.
+///
+/// Answering 'f' (force continue) skips this parameter and every later one
+/// which fails during the same load without asking again (see
+/// loadparam_st.force_continue).
+///
+/// @return: true to skip this parameter and go on with the next one (an empty
+/// line or 'f'), false to stop the whole parameter load ('q')
+static bool loadparam_ask_sdo_continue(const char *info) {
+	bool ret = true;
+	bool answered = this->force_continue;
+
+	if (answered) {
+		printf("Force continue: skipping '%s'\n", info);
+	}
+	while (!answered) {
+		PROMPT("\nWriting the parameter '%s' failed.\n"
+				"Press ENTER (empty line) to skip it and continue loading the "
+				"parameters,\n"
+				"type 'f' to force continue, skipping this and any later failing "
+				"parameter without asking,\n"
+				"or type 'q' to quit the whole parameter load.\n\n",
+				info);
+		char str[128] = {};
+		uv_stdin_getline(str, sizeof(str) - 1);
+		const char *ans = str + strspn(str, " \t\r\n");
+		if (*ans == '\0') {
+			printf("User selected: skip '%s' and continue\n", info);
+			answered = true;
+		}
+		else if ((ans[0] == 'f' || ans[0] == 'F') &&
+				is_empty_line(ans + 1)) {
+			printf("User selected: force continue, skipping any failing "
+					"parameter from now on\n");
+			this->force_continue = true;
+			answered = true;
+		}
+		else if ((ans[0] == 'q' || ans[0] == 'Q') &&
+				is_empty_line(ans + 1)) {
+			printf("User selected: quit the parameter load\n");
+			ret = false;
+			answered = true;
+		}
+		else {
+			// neither answer: ask again rather than guess
+		}
+	}
+	fflush(stdout);
+
+	return ret;
+}
+
+
 static uv_errors_e load_param(parser_node_st param_obj,
 							  uint16_t mindex,
 							  canopen_object_type_e objtype,
@@ -929,19 +995,29 @@ static uv_errors_e load_param(parser_node_st param_obj,
 			// *array* refers to the array node
 			for (uint32_t i = 0; i < parser_array_get_size(array); i++) {
 				switch (parser_array_get_type(array, i)) {
-					case PARSER_INT:
+					case PARSER_INT: {
 						uint32_t d = parser_array_get_int(array, i);
 						LOG("Writing '%s' (0x%x) [%u] = 0x%x",
 								info, mindex, i + 1 + sindex_offset, d);
-						ret |= loadparam_sdo_write(db_get_nodeid(&dev.db),
+						uv_errors_e e = loadparam_sdo_write(db_get_nodeid(&dev.db),
 													mindex,
 													i + 1 + sindex_offset,
 													CANOPEN_SIZEOF(objtype), &d);
-						if (ret == ERR_NONE) {
+						if (e == ERR_NONE) {
 							// mark the successful CAN-bus write on the same line
 							LOG_OK();
 						}
+						else {
+							LOG_END();
+							ERROR("Array loading failed for subindex %u\n",
+								  i + 1 + sindex_offset);
+							LOG_SDO_ERROR();
+							if (!loadparam_ask_sdo_continue(info)) {
+								ret |= e;
+							}
+						}
 						break;
+					}
 						case PARSER_OBJECT: {
 							parser_node_st obj = parser_array_at(array, i);
 							// child objects are loaded recursively (they log and
@@ -962,11 +1038,8 @@ static uv_errors_e load_param(parser_node_st param_obj,
 						break;
 				}
 				if (ret != ERR_NONE) {
-					LOG_END();
-					ERROR("Array loading failed for subindex %u\n",
-						  i + 1 + sindex_offset);
-					LOG_SDO_ERROR();
-					// stop the whole array on the first failed transfer
+					// the user chose to quit after a failed transfer (already
+					// logged and asked about where it failed): stop the array
 					break;
 				}
 			}
@@ -992,12 +1065,15 @@ static uv_errors_e load_param(parser_node_st param_obj,
 			}
 			LOG("Writing '%s' (0x%x) = \"%s\"",
 					info, mindex, str);
-			ret |= loadparam_sdo_write(db_get_nodeid(&dev.db),
+			uv_errors_e e = loadparam_sdo_write(db_get_nodeid(&dev.db),
 					mindex, sindex + sindex_offset, strlen(str) + 1, str);
-			if (ret != ERR_NONE) {
+			if (e != ERR_NONE) {
 				LOG_END();
 				ERROR("Loading string '%s' failed.\n", str);
 				LOG_SDO_ERROR();
+				if (!loadparam_ask_sdo_continue(info)) {
+					ret |= e;
+				}
 			}
 			else {
 				// mark the successful CAN-bus write on the same line
@@ -1018,12 +1094,15 @@ static uv_errors_e load_param(parser_node_st param_obj,
 			}
 			LOG("Writing '%s' (0x%x) = 0x%x",
 					info, mindex, d);
-			ret |= loadparam_sdo_write(db_get_nodeid(&dev.db),
+			uv_errors_e e = loadparam_sdo_write(db_get_nodeid(&dev.db),
 					mindex, sindex + sindex_offset, CANOPEN_SIZEOF(objtype), &d);
-			if (ret != ERR_NONE) {
+			if (e != ERR_NONE) {
 				LOG_END();
 				ERROR("Parameter loading failed for subindex %u\n", sindex);
 				LOG_SDO_ERROR();
+				if (!loadparam_ask_sdo_continue(info)) {
+					ret |= e;
+				}
 			}
 			else {
 				// mark the successful CAN-bus write on the same line
@@ -1050,13 +1129,6 @@ static uv_errors_e load_param(parser_node_st param_obj,
 	return ret;
 }
 
-
-
-/// @brief: Returns true if *str* holds nothing but an empty line, i.e. the user
-/// only pressed enter.
-static bool is_empty_line(const char *str) {
-	return str[strspn(str, " \t\r\n")] == '\0';
-}
 
 
 // Standard object-dictionary location of the "suppress EMCY messages" object,
@@ -1638,6 +1710,7 @@ void loadparam_step(void *ptr) {
 	this->finished = false;
 	this->success = false;
 	this->file_invalid = false;
+	this->force_continue = false;
 
 	// NOTE: the file list (this->files) is prepared by the caller. The
 	// command-line entry (loadparam_run_files) collects the primary file and any
