@@ -318,10 +318,11 @@ static void read_devname(char *dest, size_t len) {
 /// directory temporarily changed into the extracted package (mirroring the
 /// firmware build). cmd_db's progress output is suppressed. Returns true on
 /// success; the caller must db_deinit() once the fields have been read.
-/// *version_out* receives the package version and *has_media_out* whether it
-/// bundles a media directory; both may be NULL.
+/// *version_out* receives the package version, *has_media_out* whether it
+/// bundles a media directory and *has_esp32_out* whether it bundles ESP32
+/// firmware; all may be NULL.
 static bool load_uvdev_database(const char *filepath, char *version_out,
-		size_t version_len, bool *has_media_out) {
+		size_t version_len, bool *has_media_out, bool *has_esp32_out) {
 	bool ret = false;
 	uvdev_st pkg;
 	if (uvdev_open(&pkg, filepath)) {
@@ -333,6 +334,9 @@ static bool load_uvdev_database(const char *filepath, char *version_out,
 		// independent of whether the database below loads)
 		if (has_media_out != NULL) {
 			*has_media_out = (strlen(pkg.media) != 0);
+		}
+		if (has_esp32_out != NULL) {
+			*has_esp32_out = (pkg.esp32_count != 0);
 		}
 		char cwd[1024] = {};
 		if ((strlen(pkg.database) != 0) &&
@@ -381,6 +385,7 @@ static void device_assign_file(device_st *device, const char *filepath,
 	device->nodeid = nodeid;
 	device->default_nodeid = 0;
 	device->has_media = false;
+	device->has_esp32 = false;
 	device->conf_version[0] = '\0';
 	device->if_version_mindex = 0;
 	device->if_version_sindex = 0;
@@ -389,7 +394,8 @@ static void device_assign_file(device_st *device, const char *filepath,
 	device->dev_revision = 0;
 
 	if (load_uvdev_database(filepath, device->conf_version,
-			sizeof(device->conf_version), &device->has_media)) {
+			sizeof(device->conf_version), &device->has_media,
+			&device->has_esp32)) {
 		device->revision = db_get_revision_number(&dev.db);
 		device->vendor_id = db_get_vendor_id(&dev.db);
 		device->product_code = db_get_product_code(&dev.db);
@@ -585,7 +591,7 @@ void system_set_device_file(device_st *device, const char *filepath) {
 uint8_t system_read_file_nodeid(const char *filepath) {
 	uint8_t ret = 0;
 	if ((filepath != NULL) && (strlen(filepath) != 0) &&
-			load_uvdev_database(filepath, NULL, 0, NULL)) {
+			load_uvdev_database(filepath, NULL, 0, NULL, NULL)) {
 		ret = db_get_nodeid(&dev.db);
 		// unload so the rest of the program still sees "no database loaded"
 		db_deinit();

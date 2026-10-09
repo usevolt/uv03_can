@@ -29,6 +29,7 @@
 #include "savesys.h"
 #include "load.h"
 #include "loadmedia.h"
+#include "loadesp32.h"
 #include "uvui.h"
 #include "simrun.h"
 #include "terminaltab.h"
@@ -271,6 +272,10 @@ static struct {
 	// device's .uvdev package bundles a media directory
 	uv_uibutton_st media_btn;
 
+	// "Flash ESP32 firmware" button, shown above "Load media files" only when
+	// the device's .uvdev package bundles ESP32 module firmware
+	uv_uibutton_st esp32_btn;
+
 	// "Save parameters" / "Load parameters" buttons
 	uv_uibutton_st save_btn;
 	uv_uibutton_st load_btn;
@@ -380,6 +385,7 @@ typedef enum {
 	OP_NONE = 0,
 	OP_FLASH,
 	OP_MEDIA,
+	OP_ESP32,
 	OP_SAVE,
 	OP_LOAD,
 	OP_SEARCH,
@@ -434,6 +440,9 @@ static bool busy_finished(void) {
 		break;
 	case OP_MEDIA:
 		ret = loadmedia_load_device_is_finished();
+		break;
+	case OP_ESP32:
+		ret = loadesp32_load_device_is_finished();
 		break;
 	case OP_SAVE:
 		ret = saveparam_is_finished(&dev.saveparam);
@@ -1058,13 +1067,16 @@ static void build_device_view(uv_uitabwindow_st *tabwin, device_st *device) {
 
 		// Button stack at the bottom of the panel, from the bottom up: the
 		// "Save parameters" / "Load parameters" row, then "Flash firmware", and
-		// (only when the package bundles media) "Load media files" between them.
-		// Polled in devicetab_step().
+		// between them "Load media files" (only when the package bundles media)
+		// and above it "Flash ESP32 firmware" (only when the package bundles
+		// ESP32 firmware). Polled in devicetab_step().
 		bool has_media = device->has_media;
+		bool has_esp32 = device->has_esp32;
 		int16_t btn_w = (rc.w - MARGIN) / 2;
 		int16_t btn_y = rc.h - BUTTON_H;
 		int16_t media_y = btn_y - BUTTON_H - MARGIN;
-		int16_t flash_y = has_media ? (media_y - BUTTON_H - MARGIN) : media_y;
+		int16_t esp32_y = has_media ? (media_y - BUTTON_H - MARGIN) : media_y;
+		int16_t flash_y = has_esp32 ? (esp32_y - BUTTON_H - MARGIN) : esp32_y;
 		uv_uibutton_init(&content.flash_btn, "Flash firmware", style);
 		uv_uiframewindow_addxy(&content.right_frame, &content.flash_btn,
 				0, flash_y, rc.w, BUTTON_H);
@@ -1072,6 +1084,11 @@ static void build_device_view(uv_uitabwindow_st *tabwin, device_st *device) {
 			uv_uibutton_init(&content.media_btn, "Load media files", style);
 			uv_uiframewindow_addxy(&content.right_frame, &content.media_btn,
 					0, media_y, rc.w, BUTTON_H);
+		}
+		if (has_esp32) {
+			uv_uibutton_init(&content.esp32_btn, "Flash ESP32 firmware", style);
+			uv_uiframewindow_addxy(&content.right_frame, &content.esp32_btn,
+					0, esp32_y, rc.w, BUTTON_H);
 		}
 		uv_uibutton_init(&content.save_btn, "Save parameters", style);
 		uv_uiframewindow_addxy(&content.right_frame, &content.save_btn,
@@ -1086,6 +1103,9 @@ static void build_device_view(uv_uitabwindow_st *tabwin, device_st *device) {
 		if (strlen(device->filepath) == 0) {
 			if (has_media) {
 				uv_uiobject_disable(&content.media_btn);
+			}
+			if (has_esp32) {
+				uv_uiobject_disable(&content.esp32_btn);
 			}
 			uv_uiobject_disable(&content.save_btn);
 			uv_uiobject_disable(&content.load_btn);
@@ -1948,6 +1968,25 @@ bool devicetab_step(void) {
 				loadmedia_load_device_async(current_device->filepath,
 						current_device->nodeid);
 				start_busy(OP_MEDIA);
+			}
+		}
+		// "Flash ESP32 firmware": confirm, then flash the ESP32 module firmware
+		// bundled in the device's .uvdev package over the module's USB port
+		// (same flash as --loadesp32). Runs asynchronously; the frames stay
+		// disabled until it finishes. The button is only laid out when the
+		// package bundles ESP32 firmware, so guard on has_esp32 too.
+		else if (current_device->has_esp32 &&
+				uv_uibutton_clicked(&content.esp32_btn)) {
+			uv_uiacceptdialog_st dialog = { };
+			if (uv_uiacceptdialog_exec(&dialog,
+					"Flash the ESP32 firmware bundled in the configuration "
+					"package to this device's ESP32 module?\n\n"
+					"The module's USB port has to be connected to this computer, "
+					"and esptool installed (pip install esptool).",
+					"Yes", "No", &uv_uistyles[0]) == UIACCEPTDIALOG_RET_YES) {
+				loadesp32_load_device_async(current_device->filepath,
+						current_device->nodeid);
+				start_busy(OP_ESP32);
 			}
 		}
 		// the user clicked "Remove": drop this device from the system and ask the

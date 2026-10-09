@@ -37,6 +37,32 @@ static void manifest_get_str(parser_node_st manifest, const char *key,
 }
 
 
+// Reads the ESP32 manifest entry, an object mapping each flash offset to its
+// image, into *this*. Entries which are not "<offset>": "<file>" are skipped.
+static void manifest_get_esp32(parser_node_st manifest, uvdev_st *this) {
+	this->esp32_count = 0;
+	parser_node_st esp32 = parser_find_child(manifest, "ESP32");
+	if (parser_node_is_valid(esp32) && (parser_get_type(esp32) == PARSER_OBJECT)) {
+		unsigned int count = parser_get_child_count(esp32);
+		for (unsigned int i = 0; (i < count) &&
+				(this->esp32_count < UVDEV_ESP32_MAX_COUNT); i++) {
+			parser_node_st child = parser_get_child(esp32, (uint16_t) i);
+			uvdev_esp32_image_st *img = &this->esp32[this->esp32_count];
+			char key[32];
+			char *end = NULL;
+			if (parser_get_obj_name(child, key, sizeof(key)) &&
+					(parser_get_type(child) == PARSER_STRING) &&
+					parser_get_string(child, img->file, sizeof(img->file))) {
+				img->offset = (uint32_t) strtoul(key, &end, 0);
+				if ((end != key) && (*end == '\0')) {
+					this->esp32_count++;
+				}
+			}
+		}
+	}
+}
+
+
 bool uvdev_open(uvdev_st *this, const char *uvdev_path) {
 	bool ret = false;
 	memset(this, 0, sizeof(*this));
@@ -76,6 +102,7 @@ bool uvdev_open(uvdev_st *this, const char *uvdev_path) {
 							this->version, sizeof(this->version));
 					manifest_get_str(manifest, "MEDIA",
 							this->media, sizeof(this->media));
+					manifest_get_esp32(manifest, this);
 					ret = true;
 				}
 				else {

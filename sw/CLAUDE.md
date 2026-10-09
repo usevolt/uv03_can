@@ -203,6 +203,7 @@ the `.uvsys` system file).
 | terminal | `src/terminal.c` | Interactive terminal via SDO reply protocol |
 | sdo | `src/sdo.c` | Direct SDO read/write operations |
 | loadmedia | `src/loadmedia.c` | Media file upload via UV media protocol |
+| loadesp32 | `src/loadesp32.c` | Flashes a package's ESP32 module firmware with esptool (`--loadesp32`, device tab "Flash ESP32 firmware") |
 | makeuvdev | `src/makeuvdev.c` | Assembles a .uvdev device package out of a build's artifacts |
 | versionnotes | `src/versionnotes.c` | This build's release notes, compiled in from git (see *Version notes*) |
 
@@ -274,6 +275,7 @@ plain zip archive holding a `uvdev.json` manifest plus the files it names:
 | `BOOTLOADER` | `--bootloader` | optional |
 | `MEDIA` | `--media` | optional, a media file or a directory of them; can be given more than once |
 | | `--mediadir` | optional, the name the media directory gets in the package (default `media`); the device stores its media under package-relative names, so this is the prefix the firmware asks its media by (e.g. `media_hd` for a high-resolution build) |
+| `ESP32` | `--esp32` | optional, `<offset>=<file>`, can be given more than once; the images go into `esp32/` and the key is an object mapping each flash offset to its image, like the `flash_files` of esptool's `flasher_args.json`. `--loadesp32` (and the device tab) flash them |
 | `VERSION` | `--fwversion` | optional, usually the `git describe` version the firmware was built with |
 
 The `"content"` files are not searched for again: `db` records each of them as

@@ -32,6 +32,19 @@
 /// dictionary database (plus its json includes), together with a uvdev.json
 /// manifest naming each. See make_uvdev.sh in the uvcan submodule for how the
 /// package is assembled.
+/// @brief: Maximum count of ESP32 flash images read from a package manifest
+#define UVDEV_ESP32_MAX_COUNT	16
+
+
+/// @brief: One ESP32 flash image of a package
+typedef struct {
+	/// @brief: The flash offset which the image is written to
+	uint32_t offset;
+	/// @brief: The image path, relative to the package root
+	char file[256];
+} uvdev_esp32_image_st;
+
+
 typedef struct {
 	/// @brief: Temporary directory the package was extracted into.
 	char dir[1024];
@@ -52,6 +65,12 @@ typedef struct {
 	/// relative to the package root (*dir*). Empty if the package bundles no
 	/// media. Used to load the media onto the device with the UV media protocol.
 	char media[512];
+	/// @brief: ESP32 manifest entry: the ESP32 module's flash images, in the
+	/// form of esptool's flasher_args.json "flash_files", i.e. an object
+	/// mapping each flash offset to its image. *esp32_count* is 0 when the
+	/// package bundles no ESP32 firmware.
+	uvdev_esp32_image_st esp32[UVDEV_ESP32_MAX_COUNT];
+	uint16_t esp32_count;
 } uvdev_st;
 
 

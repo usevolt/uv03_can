@@ -39,6 +39,10 @@
 /// @brief: The name which the media directory of the package gets when
 /// --mediadir is not given, i.e. the default value of the manifest's MEDIA key
 #define MEDIA_DIR_DEFAULT	"media"
+/// @brief: Maximum count of --esp32 options which can be given
+#define ESP32_MAX_COUNT		16
+/// @brief: The directory of the package which the ESP32 images are put into
+#define ESP32_DIR			"esp32"
 
 
 // The files which the package is assembled from, as given with the options of
@@ -52,6 +56,14 @@ static unsigned int media_count;
 // the name which the media directory gets in the package, given with
 // --mediadir. Empty when it was not given, i.e. MEDIA_DIR_DEFAULT is used.
 static char mediadir[256];
+// the ESP32 flash images given with --esp32, each with the flash offset which
+// esptool writes it to
+typedef struct {
+	unsigned long offset;
+	char file[1024];
+} esp32_image_st;
+static esp32_image_st esp32[ESP32_MAX_COUNT];
+static unsigned int esp32_count;
 
 
 
@@ -142,6 +154,37 @@ bool cmd_mediadir(const char *arg) {
 		ret = set_arg(arg, mediadir, sizeof(mediadir), "mediadir");
 		if (ret) {
 			PRINT("The media directory of the package set to '%s'\n", mediadir);
+		}
+	}
+	return ret;
+}
+
+
+bool cmd_esp32(const char *arg) {
+	bool ret = false;
+	const char *sep = (arg != NULL) ? strchr(arg, '=') : NULL;
+	char *end = NULL;
+	unsigned long offset = 0;
+	if (sep != NULL) {
+		offset = strtoul(arg, &end, 0);
+	}
+
+	if (esp32_count >= ESP32_MAX_COUNT) {
+		ERROR("At most %u 'esp32' options can be given.\n",
+				(unsigned int) ESP32_MAX_COUNT);
+	}
+	else if ((sep == NULL) || (end != sep) || (sep == arg)) {
+		ERROR("Give the 'esp32' option as <offset>=<file>, e.g. "
+				"'0x60000=esp-at.bin', not '%s'.\n", (arg != NULL) ? arg : "");
+	}
+	else {
+		ret = set_arg(sep + 1, esp32[esp32_count].file,
+				sizeof(esp32[0].file), "esp32");
+		if (ret) {
+			esp32[esp32_count].offset = offset;
+			PRINT("Added ESP32 image '%s' at 0x%lx to the package\n",
+					esp32[esp32_count].file, offset);
+			esp32_count++;
 		}
 	}
 	return ret;
@@ -369,6 +412,20 @@ static bool write_manifest(const char *stage, const char *dbrel) {
 	if (media_count != 0) {
 		e |= parser_writer_add_string(&writer, "MEDIA", media_dirname());
 	}
+	if (esp32_count != 0) {
+		// the same offset -> file form as the "flash_files" of esptool's
+		// flasher_args.json
+		e |= parser_writer_begin_object(&writer, "ESP32");
+		for (unsigned int i = 0; i < esp32_count; i++) {
+			char key[16];
+			char file[1100];
+			snprintf(key, sizeof(key), "0x%lx", esp32[i].offset);
+			snprintf(file, sizeof(file), "%s/%s", ESP32_DIR,
+					path_basename(esp32[i].file));
+			e |= parser_writer_add_string(&writer, key, file);
+		}
+		e |= parser_writer_end_object(&writer);
+	}
 	e |= parser_writer_add_string(&writer, "DATABASE", dbrel);
 	e |= parser_writer_end(&writer);
 
@@ -476,6 +533,31 @@ static bool check_inputs(void) {
 				ret = false;
 			}
 		}
+		for (unsigned int i = 0; (i < esp32_count) && ret; i++) {
+			if (!is_file(esp32[i].file)) {
+				ERROR("ERROR: the ESP32 image '%s' was not found.\n",
+						esp32[i].file);
+				ret = false;
+			}
+			// the images share the package's esp32 directory, so they need
+			// names and offsets of their own
+			for (unsigned int j = 0; (j < i) && ret; j++) {
+				if (strcmp(path_basename(esp32[i].file),
+						path_basename(esp32[j].file)) == 0) {
+					ERROR("ERROR: the ESP32 images '%s' and '%s' have the same "
+							"file name.\n", esp32[j].file, esp32[i].file);
+					ret = false;
+				}
+				else if (esp32[i].offset == esp32[j].offset) {
+					ERROR("ERROR: the ESP32 images '%s' and '%s' have the same "
+							"offset 0x%lx.\n", esp32[j].file, esp32[i].file,
+							esp32[i].offset);
+					ret = false;
+				}
+				else {
+				}
+			}
+		}
 	}
 
 	return ret;
@@ -538,6 +620,16 @@ bool cmd_makeuvdev(const char *arg) {
 							media[i], media_dirname());
 					ok = stage_media(mediapath, media[i]);
 				}
+			}
+
+			// the ESP32 images are collected into a directory of their own
+			for (unsigned int i = 0; (i < esp32_count) && ok; i++) {
+				char rel[1100];
+				snprintf(rel, sizeof(rel), "%s/%s", ESP32_DIR,
+						path_basename(esp32[i].file));
+				printf("Adding ESP32 image '%s' at 0x%lx\n", rel,
+						esp32[i].offset);
+				ok = stage_file(stage, esp32[i].file, rel);
 			}
 
 			char dbrel[512] = {};

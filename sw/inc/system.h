@@ -116,6 +116,10 @@ typedef struct {
 	/// @brief: True when the device's .uvdev package bundles a media directory
 	/// (the MEDIA manifest entry). Lets the device tab offer "Load media files".
 	bool has_media;
+	/// @brief: True when the device's .uvdev package bundles ESP32 module
+	/// firmware (the ESP32 manifest entry). Lets the device tab offer "Flash
+	/// ESP32 firmware".
+	bool has_esp32;
 	/// @brief: True when the device was discovered on the bus but is not a Usevolt
 	/// device (its Identity vendor id differs from Usevolt's). Such devices have no
 	/// configuration package: the UI shows only their CAN-bus identity.

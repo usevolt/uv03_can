@@ -31,6 +31,7 @@
 #include "loadmedia.h"
 #include "clearmedia.h"
 #include "makeuvdev.h"
+#include "loadesp32.h"
 #include "sdo.h"
 #include "system.h"
 #include "simrun.h"
@@ -442,6 +443,16 @@ commands_st commands[] = {
 				.callback = &cmd_mediadir
 		},
 		{
+				.cmd_long = "esp32",
+				.str = "Adds an ESP32 flash image into the .uvdev package which *makeuvdev* writes,\n"
+						"given as <offset>=<file>, e.g. '0x60000=esp-at.bin'. Optional, and can be\n"
+						"given more than once. The images go into the package's 'esp32' directory\n"
+						"and the manifest's ESP32 key maps each flash offset to its image, in the\n"
+						"form of the \"flash_files\" of esptool's flasher_args.json.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_esp32
+		},
+		{
 				.cmd_long = "fwversion",
 				.str = "Sets the firmware version string which *makeuvdev* stores in the .uvdev\n"
 						"package. Usually the same git describe based version which the firmware\n"
@@ -456,12 +467,34 @@ commands_st commands[] = {
 						"database pulls in with a \"content\" reference) and the firmware binary given\n"
 						"with *firmware*; both of them are mandatory and have to be given before this\n"
 						"command. The Linux simulator (*linuxbin*), the bootloader binary\n"
-						"(*bootloader*), the media files (*media*) and the firmware version\n"
-						"(*fwversion*) are optional and are left out of the package when not given.\n"
+						"(*bootloader*), the media files (*media*), the ESP32 flash images (*esp32*)\n"
+						"and the firmware version (*fwversion*) are optional and are left out of the package when not given.\n"
 						"The directory of the output file is created if it doesn't exist, and the\n"
 						"'.uvdev' extension is added to the file name when it is missing.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_makeuvdev
+		},
+		{
+				.cmd_long = "loadesp32",
+				.str = "Flashes the ESP32 module firmware bundled in a .uvdev package (see *esp32*)\n"
+						"over the module's USB serial port with esptool, which has to be installed\n"
+						"(v5 or newer, pip install esptool). The argument is the package, optionally as\n"
+						"<file>:<nodeid> naming the device which hosts the module; without one, the\n"
+						"device loaded with --dev / --sys whose package bundles ESP32 firmware is\n"
+						"flashed. The device is asked over the CAN terminal to leave the module alone\n"
+						"for the duration ('esp \"comm\" 0'), and to resume afterwards, which resets\n"
+						"the module into the new firmware. The port is the one given with\n"
+						"*esp32port*, or else an Espressif USB port found under /dev/serial/by-id.",
+				.args = ARG_OPTIONAL,
+				.callback = &cmd_loadesp32
+		},
+		{
+				.cmd_long = "esp32port",
+				.str = "Sets the serial port which *loadesp32* flashes the ESP32 module through,\n"
+						"e.g. /dev/ttyACM0 or COM5. Optional: by default an Espressif USB port is\n"
+						"looked for, and when none is found esptool scans the ports itself.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_esp32port
 		},
 		{
 				.cmd_long = "clearmedia",

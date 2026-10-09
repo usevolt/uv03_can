@@ -33,6 +33,7 @@
 ///   * the Linux simulator executable, optional           (key LINUX_BIN)
 ///   * the bootloader binary, optional                    (key BOOTLOADER)
 ///   * a directory of display media assets, optional      (key MEDIA)
+///   * the ESP32 module's flash images, optional          (key ESP32)
 ///   * a uvdev.json manifest naming which file is which, plus the firmware
 ///     version string                                     (key VERSION)
 ///
@@ -47,6 +48,7 @@
 ///           --bootloader bootloader_LPC4078.bin
 ///           --media media
 ///           --mediadir media
+///           --esp32 0x0=bootloader.bin --esp32 0x60000=esp-at.bin
 ///           --fwversion $(GIT_VERSION)
 ///           --makeuvdev ../prod/uv0d_jhc_uv0d1_$(GIT_VERSION).uvdev
 
@@ -71,6 +73,13 @@ bool cmd_media(const char *arg);
 /// which asks for "media_hd/icon_hd.png" needs its package made with
 /// '--mediadir media_hd'.
 bool cmd_mediadir(const char *arg);
+
+/// @brief: --esp32: Adds an ESP32 flash image as <offset>=<file>, e.g.
+/// '0x60000=esp-at.bin'. Optional, can be given more than once. The images go
+/// into the package's esp32 directory, and the manifest's ESP32 key maps each
+/// offset to its image in the form of esptool's flasher_args.json
+/// "flash_files", i.e. { "0x60000": "esp32/esp-at.bin", ... }.
+bool cmd_esp32(const char *arg);
 
 /// @brief: --fwversion: The firmware version string stored in the manifest.
 /// Optional.
