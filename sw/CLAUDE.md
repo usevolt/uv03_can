@@ -32,7 +32,9 @@ The binary is output as `./uvcan`. Build artifacts go to `release/`. Version is 
 `./install.sh` does the same from scratch: it installs those dependencies (adding
 the -dev packages only when the run actually builds), builds uvcan if no binary
 is there yet, and installs it into `~/.local` along with the `.uvsys` / `.uvdev`
-desktop integration (MIME types, file icons and the handler entry). `--system`
+desktop integration (MIME types, file icons and the handler entry). It also
+installs esptool v5+ with pipx for `--loadesp32`, unless one is already on the
+PATH (the distributions' own esptool is too old). `--system`
 installs machine-wide, `--build` forces a rebuild and `--no-deps` skips the apt
 step.
 

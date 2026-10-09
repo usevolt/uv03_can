@@ -143,13 +143,27 @@ static bool find_port(char *dest, size_t dest_len) {
 
 
 // Runs esptool with *argv* and waits for it to finish. _spawnvp() does not go
-// through the shell, so no path reaches cmd.exe.
+// through the shell, so no path reaches cmd.exe. A 'pip install --user' puts
+// esptool.exe in a Scripts folder which is often not on the PATH, so the
+// Python launcher's 'py -m esptool' is tried last.
 static bool run_esptool(char **argv) {
 	fflush(stdout);
 	intptr_t rc = _spawnvp(_P_WAIT, "esptool", (const char *const *) argv);
 	if (rc == -1) {
 		argv[0] = "esptool.py";
 		rc = _spawnvp(_P_WAIT, "esptool.py", (const char *const *) argv);
+	}
+	if (rc == -1) {
+		char *pyargv[3 + 16 + (2 * UVDEV_ESP32_MAX_COUNT)];
+		uint16_t n = 0;
+		pyargv[n++] = "py";
+		pyargv[n++] = "-m";
+		pyargv[n++] = "esptool";
+		for (uint16_t i = 1; argv[i] != NULL; i++) {
+			pyargv[n++] = argv[i];
+		}
+		pyargv[n] = NULL;
+		rc = _spawnvp(_P_WAIT, "py", (const char *const *) pyargv);
 	}
 	if (rc == -1) {
 		printf(PRINT_BOLDRED "ERROR: esptool was not found. Install it with "

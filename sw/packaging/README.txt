@@ -25,6 +25,11 @@ Requirements
     packages with the built-in tar.exe (in C:\Windows\System32), which ships
     with that release on. Nothing extra to install.
 
+  * Only for flashing ESP32 modules (--loadesp32, "Flash ESP32 firmware"):
+    esptool v5 or newer. get-uvcan.ps1 installs it when Python is present;
+    otherwise install Python from https://www.python.org/ and run
+      py -m pip install --user esptool
+
 Open the graphical UI
 ---------------------
   Double-click  uvcan-ui.bat

@@ -16,7 +16,8 @@
 # machine-wide install under /usr/local + /usr/share (needs root).
 #
 # The dependency step installs the runtime libraries always, and the -dev
-# packages needed to compile uvcan whenever this run builds it from source.
+# packages needed to compile uvcan whenever this run builds it from source,
+# and esptool (v5 or newer, from PyPI with pipx) for flashing ESP32 modules.
 #
 # Usage:
 #   ./install.sh [--system] [--no-deps] [--build] [--uninstall] [-h|--help]
@@ -50,7 +51,7 @@ while [ $# -gt 0 ]; do
 		--build)     DO_BUILD="yes" ;;
 		--uninstall) ACTION="uninstall" ;;
 		-h|--help)
-			sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
+			sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
 			exit 0 ;;
 		*)
 			echo "Unknown option: $1" >&2
@@ -253,10 +254,10 @@ fi
 
 # ---- dependencies -----------------------------------------------------------
 # zenity/zip/unzip/shared-mime-info/desktop-file-utils: installer + .uvsys /
-# .uvdev handling. libglfw3/libglew2.2/libfreetype6/libreadline8/libmosquitto1:
+# .uvdev handling. pipx: installs esptool, see below. libglfw3/libglew2.2/libfreetype6/libreadline8/libmosquitto1:
 # runtime shared libs the binary links against for the OpenGL UI, the
 # interactive terminal and the fleet MQTT connection (not pulled in otherwise).
-RUNTIME_DEPS="zenity zip unzip shared-mime-info desktop-file-utils
+RUNTIME_DEPS="zenity zip unzip shared-mime-info desktop-file-utils pipx
 	libglfw3 libglew2.2 libfreetype6 libreadline8 libmosquitto1"
 # A source build additionally needs the development packages of everything the
 # makefile hands to pkg-config (ncurses, glfw3, glew, gl, freetype2,
@@ -277,6 +278,40 @@ if [ "$DO_DEPS" -eq 1 ]; then
 		warn "apt-get not found; skipping dependency install. Ensure these are"
 		warn "present, under whatever names your distribution gives them:"
 		warn "  $(echo $DEPS)"
+	fi
+fi
+
+# ---- esptool ----------------------------------------------------------------
+# *loadesp32* and the device tab's "Flash ESP32 firmware" run esptool, with the
+# command spellings of esptool v5. The distributions package an older one
+# (Ubuntu 24.04 has 4.7), so it comes from PyPI with pipx instead: per user
+# into ~/.local/bin, or with --system into /usr/local/bin. An esptool v5 or
+# newer already on the PATH is left alone.
+ESPTOOL_MIN_MAJOR=5
+
+# the installed esptool's version, e.g. "5.1.0"; empty when there is none
+esptool_version() {
+	{ esptool version 2>/dev/null || true; } | tail -n 1
+}
+
+if [ "$DO_DEPS" -eq 1 ]; then
+	esptool_ver="$(esptool_version)"
+	esptool_major="${esptool_ver%%.*}"
+	if [[ "$esptool_major" =~ ^[0-9]+$ ]] && [ "$esptool_major" -ge "$ESPTOOL_MIN_MAJOR" ]; then
+		say "esptool $esptool_ver is already installed"
+	elif command -v pipx >/dev/null; then
+		say "Installing esptool (pipx)"
+		if [ "$MODE" = "system" ]; then
+			priv env PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin \
+				pipx install --force esptool ||
+				warn "installing esptool failed; ESP32 modules cannot be flashed."
+		else
+			pipx install --force esptool ||
+				warn "installing esptool failed; ESP32 modules cannot be flashed."
+		fi
+	else
+		warn "pipx not found; skipping esptool. Install esptool v$ESPTOOL_MIN_MAJOR or newer"
+		warn "(e.g. 'pipx install esptool') to flash ESP32 modules."
 	fi
 fi
 

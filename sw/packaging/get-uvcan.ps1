@@ -145,6 +145,26 @@ Write-Host ''
 Write-Host 'It needs the PEAK PCAN-USB driver from https://www.peak-system.com/ ,'
 Write-Host 'which PCANBasic.dll here is only the API shim for.'
 
+# *loadesp32* and the device tab's "Flash ESP32 firmware" run esptool (v5 or
+# newer) from PyPI. uvcan runs it as 'esptool', or failing that as
+# 'py -m esptool', so a pip install whose Scripts folder is not on the PATH
+# works too.
+if (-not (Get-Command esptool -ErrorAction SilentlyContinue)) {
+    $py = Get-Command py -ErrorAction SilentlyContinue
+    Write-Host ''
+    if ($py) {
+        Write-Host 'Installing esptool for flashing ESP32 modules (py -m pip)...'
+        & py -m pip install --user --upgrade esptool
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host 'Installing esptool failed; ESP32 modules cannot be flashed.'
+        }
+    } else {
+        Write-Host 'esptool was not installed: Python was not found. To flash ESP32'
+        Write-Host 'modules, install Python from https://www.python.org/ and run'
+        Write-Host '  py -m pip install --user esptool'
+    }
+}
+
 if (-not $NoPath) {
     # The user's own PATH, not the machine's: this install needs no
     # administrator rights and must not start needing them here.
