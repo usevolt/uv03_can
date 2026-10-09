@@ -114,6 +114,13 @@ a build. On the machine that publishes -- the only one whose builds are shipped
 packages are being built, which is what makes `make package` produce notes
 covering exactly what it is about to publish.
 
+**Commit subject lines are public.** Because the notes are the subject lines
+verbatim, every commit's first line ends up in front of uvcan users. Write it
+for them: say what changed in terms a user would recognise, keep it
+self-contained, and leave out internal names of customers, machines, people,
+hosts or credentials, and anything that should not be published. Implementation
+detail belongs in the commit body, which is never shown.
+
 `src/http.c` holds the curl plumbing shared by `remotefiles.c` (the per-fleet,
 authenticated file panel) and `selfupdate.c` (the public, unauthenticated
 updater). Every request is made through a curl **config file** rather than a
