@@ -38,6 +38,7 @@
 #include "credentials.h"
 #include "selfupdate.h"
 #include "remotefiles.h"
+#include "fleetcmd.h"
 #include <time.h>
 #include "ui/uvui.h"
 #include <uv_ui.h>
@@ -591,6 +592,49 @@ commands_st commands[] = {
 						"Equivalent to typing the password in the UI Account panel.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_pwd
+		},
+		{
+				.cmd_long = "login",
+				.str = "Logs in to the file server and the fleet broker with the account "
+						"in *user* / *pwd*, as the UI's Account panel does, and says how it "
+						"went. The remote commands (*remotelist*, *remoteui*, *remotecan*) "
+						"log in by themselves when no session is open, so this is only needed "
+						"to check the account.",
+				.args = ARG_NONE,
+				.callback = &cmd_login
+		},
+		{
+				.cmd_long = "remotelist",
+				.str = "Lists the devices of every fleet the account in *user* / *pwd* holds, "
+						"as the UI's Fleet tab does: client id, name, uptime, whether remote UI "
+						"and CAN are on, and when each was last heard from. A device is only "
+						"known once it publishes, which an idle one does every 5 seconds, so "
+						"this listens for a while first: the optional argument is how many "
+						"seconds (default 7).",
+				.args = ARG_OPTIONAL,
+				.callback = &cmd_remotelist
+		},
+		{
+				.cmd_long = "remoteui",
+				.str = "Mirrors the display of a fleet device in a window of its own, as the "
+						"Fleet tab's \"Open remote UI\" does. Clicks and drags in the window "
+						"touch the device's screen. The argument names the device, as "
+						"*remotelist* shows it: '<fleet>/<client id>', a client id, or the "
+						"device's name. Blocks until the window is closed or the device ends "
+						"the session.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_remoteui
+		},
+		{
+				.cmd_long = "remotecan",
+				.str = "Bridges the CAN bus of a fleet device to the netdev uvremote0 on this "
+						"computer, as the Fleet tab's \"Remote CAN\" does. The argument names "
+						"the device like *remoteui*'s. Blocks until Ctrl-C or until the device "
+						"ends the session; meanwhile anything that speaks SocketCAN reaches "
+						"the remote bus, e.g. a second 'uvcan -c uvremote0 --terminal'. "
+						"Creating the netdev needs root, which is asked for with sudo.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_remotecan
 		},
 		{
 				.cmd_long = "silent",

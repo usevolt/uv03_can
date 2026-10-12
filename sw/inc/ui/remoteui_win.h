@@ -110,6 +110,12 @@ void remoteui_win_set_link_age(uint32_t seconds);
 void remoteui_win_step(void);
 
 
+/// @brief: Processes the windowing system's events. The main UI loop does this
+/// for every window of the process, this one included; a mirror opened without
+/// the main UI (uvcan --remoteui) calls this instead, before remoteui_win_step().
+void remoteui_win_poll_events(void);
+
+
 #endif
 
 #endif /* UI_REMOTEUI_WIN_H_ */

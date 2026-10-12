@@ -23,8 +23,8 @@
 #include <stdio.h>
 #include <string.h>
 #include "mqtt.h"
+#include "fleet.h"
 #include "remotecan.h"
-#include "ui/remoteui_win.h"
 #include "uv_remote_proto.h"
 // for the "Remove" button image, the same one the System tab's device tabs use
 #include "ui/uvui.h"
@@ -80,10 +80,6 @@ static uv_uicheckbox_st dev_std_cb;
 static uv_uicheckbox_st dev_ext_cb;
 // ...and the one that narrows what the device forwards to a parameter transfer
 static uv_uicheckbox_st dev_sdo_cb;
-// Which device the mirror window is showing, so the button on every other tab
-// reads "Open" and closing it targets the right device.
-static int16_t ui_fleet = -1;
-static int16_t ui_dev = -1;
 static uv_uilabel_st placeholder;
 static char placeholder_str[320];
 
@@ -106,122 +102,14 @@ void fleettab_set_shown(bool value) {
 /// @brief: (Re)builds the active device tab's information text from what the
 /// client currently knows about that device.
 static void build_dev_info_str(void) {
-	uint8_t f = (uint8_t) selected_fleet;
-	uint8_t d = (uint8_t) selected_dev;
-	const char *devname = mqtt_get_dev_devname(f, d);
-	uint8_t feat = mqtt_get_dev_features(f, d);
-	uint16_t w = 0;
-	uint16_t h = 0;
-	char size_str[32];
-	if (mqtt_get_dev_ui_size(f, d, &w, &h)) {
-		snprintf(size_str, sizeof(size_str), "%u x %u", w, h);
-	}
-	else {
-		strcpy(size_str, "unknown until mirrored");
-	}
-	uint32_t up = mqtt_get_dev_uptime_s(f, d);
-
-	// What the device says about the CAN traffic it is forwarding. The dropped
-	// counts are the reason this is shown at all: from here a frame the device
-	// threw away is indistinguishable from one that was never sent, so without
-	// them a bridge that is quietly losing half the bus looks perfectly healthy.
-	char can_str[512];
-	can_str[0] = '\0';
-	if (remotecan_shows(f, d)) {
-		remote_can_stats_st st;
-		char classes[320];
-		classes[0] = '\0';
-		if (mqtt_get_dev_can_stats(f, d, &st)) {
-			for (uint8_t i = 0; i < REMOTE_CAN_CLASS_COUNT; i++) {
-				char line[80];
-				snprintf(line, sizeof(line),
-						"  %-5s %8u fwd %8u drop  q %u\n",
-						remote_can_class_to_str((remote_can_class_e) i),
-						(unsigned int) st.forwarded[i],
-						(unsigned int) st.dropped[i],
-						(unsigned int) st.queued[i]);
-				strncat(classes, line, sizeof(classes) - strlen(classes) - 1);
-			}
-			char line[96];
-			snprintf(line, sizeof(line), "  injected %u   filters %u%s\n",
-					(unsigned int) st.injected,
-					(unsigned int) st.rxconf_count,
-					((st.flags & REMOTE_CAN_STATS_FLAG_RX_ALL) != 0) ?
-							" (whole bus)" : "");
-			strncat(classes, line, sizeof(classes) - strlen(classes) - 1);
-		}
-		else {
-			strcpy(classes, "  (waiting for the device's first report)\n");
-		}
-		const char *carried;
-		if (remotecan_get_allow_std() && remotecan_get_allow_ext()) {
-			carried = "STD and EXT";
-		}
-		else if (remotecan_get_allow_std()) {
-			carried = "STD";
-		}
-		else if (remotecan_get_allow_ext()) {
-			carried = "EXT";
-		}
-		else {
-			carried = "no";
-		}
-		snprintf(can_str, sizeof(can_str),
-				"\nRemote CAN: netdev %s, %s messages%s%s\n"
-				"%s"
-				"  to netdev %u   from netdev %u   filtered %u   failed %u\n",
-				remotecan_get_ifname(),
-				carried,
-				// the bulk class is where the saving shows: with this on its
-				// forwarded count stops rising while the other two carry on
-				remotecan_get_sdo_only() ? ", SDO only" : "",
-				// the device is the one that decides; while it says no, the
-				// interface is there but nothing is coming through it
-				mqtt_dev_get_can_active(f, d) ? "" :
-						"   (device reports CAN off)",
-				classes,
-				(unsigned int) remotecan_get_rx_count(),
-				(unsigned int) remotecan_get_tx_count(),
-				(unsigned int) remotecan_get_filtered_count(),
-				(unsigned int) remotecan_get_error_count());
-	}
-	else {
-	}
-
-	snprintf(dev_info_str, sizeof(dev_info_str),
-			"Name:       %s\n"
-			"Fleet:      %s\n"
-			"Client id:  %s\n"
-			"State:      %u\n"
-			"Uptime:     %u h %02u min\n"
-			"Remote:     UI %s, CAN %s%s\n"
-			"Display:    %s\n"
-			"Messages:   %u\n"
-			"Last seen:  %u s ago\n"
-			"%s",
-			(devname[0] != '\0') ? devname : "(not heard from yet)",
-			mqtt_get_fleet_name(f),
-			mqtt_get_dev_name(f, d),
-			(unsigned int) mqtt_get_dev_state(f, d),
-			(unsigned int) (up / 3600u), (unsigned int) ((up / 60u) % 60u),
-			((feat & REMOTE_IOT_FEATURE_UI) != 0) ? "on" : "off",
-			((feat & REMOTE_IOT_FEATURE_CAN) != 0) ? "on" : "off",
-			// what the device says it is doing, which is the only account of
-			// it that counts: the device may have been told one thing and
-			// applied another
-			((feat & REMOTE_IOT_FEATURE_CAN_SDO) != 0) ? " (SDO only)" : "",
-			size_str,
-			(unsigned int) mqtt_get_dev_msg_count(f, d),
-			(unsigned int) mqtt_get_dev_age_s(f, d),
-			can_str);
+	fleet_dev_info((uint8_t) selected_fleet, (uint8_t) selected_dev,
+			dev_info_str, sizeof(dev_info_str));
 }
 
 
 /// @brief: True while the mirror window is showing the device whose tab is open.
 static bool ui_shows_selected(void) {
-	return remoteui_win_is_open() &&
-			(ui_fleet == selected_fleet) &&
-			(ui_dev == selected_dev);
+	return fleet_ui_shows((uint8_t) selected_fleet, (uint8_t) selected_dev);
 }
 
 
@@ -268,180 +156,6 @@ static void refresh_can_btn(void) {
 	uv_ui_refresh(&dev_std_cb);
 	uv_ui_refresh(&dev_ext_cb);
 	uv_ui_refresh(&dev_sdo_cb);
-}
-
-
-/// @brief: Stops mirroring whoever is being mirrored, closing the window and
-/// telling the device to stop sending.
-static void ui_stop(void) {
-	if ((ui_fleet >= 0) && (ui_dev >= 0)) {
-		(void) mqtt_dev_set_ui_active((uint8_t) ui_fleet, (uint8_t) ui_dev,
-				false);
-	}
-	ui_fleet = -1;
-	ui_dev = -1;
-	remoteui_win_close();
-}
-
-
-/// @brief: The device has ended the session from its own screen — the machine
-/// operator touched the notification bar that said remote access was on.
-///
-/// The window goes now rather than sitting there showing a screen that has
-/// stopped moving, and the reason is logged: a view that vanishes on its own is
-/// otherwise indistinguishable from one that broke.
-static void ui_close_callb(uint8_t fleet_index, uint8_t dev_index, void *user) {
-	(void) user;
-	if (remotecan_shows(fleet_index, dev_index)) {
-		// the same close ends the CAN bridge, and with it the netdev: the
-		// device has switched every feature off at its end
-		printf("remote CAN: closing the bridge - the device sent a close "
-				"request\n");
-		fflush(stdout);
-		remotecan_stop();
-		// The toggle has to come off with it. fleettab_step() compares the
-		// toggle against what is actually running and starts a bridge whenever
-		// the toggle is on and none is — self-correcting for a bridge that
-		// failed, and a way of undoing the operator's close if the button is
-		// left standing.
-		if (shown) {
-			refresh_can_btn();
-		}
-		else {
-		}
-	}
-	else {
-	}
-	if ((fleet_index == ui_fleet) && (dev_index == ui_dev)) {
-		printf("remote UI: closing the mirrored view - the device sent a close "
-				"request\n");
-		fflush(stdout);
-		ui_stop();
-		if (shown) {
-			refresh_ui_btn();
-		}
-		else {
-		}
-	}
-	else {
-		// a device we are not mirroring; it has no view of ours to close
-	}
-}
-
-
-/// @brief: Receives one mirrored frame. Frames for a device other than the one
-/// on screen are ignored: the device may still be finishing a frame that was in
-/// flight when mirroring was switched off.
-static void ui_open_window(uint16_t w, uint16_t h);
-
-
-static void ui_frame_callb(uint8_t fleet_index, uint8_t dev_index,
-		const uint8_t *cmds, uint32_t len, void *user) {
-	(void) user;
-	if ((fleet_index == ui_fleet) && (dev_index == ui_dev)) {
-		if (!remoteui_win_is_open()) {
-			// The first frame can arrive in the same batch as the size that
-			// the window is opened from, before the step that opens it has
-			// run. Opening here rather than dropping it matters because the
-			// device sends a frame when it has something new to show, and a
-			// display sitting still may not have anything new for a long time.
-			uint16_t w = 0;
-			uint16_t h = 0;
-			if (mqtt_get_dev_ui_size((uint8_t) ui_fleet, (uint8_t) ui_dev,
-					&w, &h)) {
-				ui_open_window(w, h);
-			}
-			else {
-			}
-		}
-		else {
-		}
-		if (remoteui_win_is_open()) {
-			remoteui_win_draw_frame(cmds, len);
-		}
-		else {
-		}
-	}
-	else {
-	}
-}
-
-
-/// @brief: Opens the mirror window for the device being mirrored, sized and
-/// titled from what it has told us. Safe to call when one is already open.
-static void ui_open_window(uint16_t w, uint16_t h) {
-	if (!remoteui_win_is_open() && (ui_fleet >= 0) && (ui_dev >= 0)) {
-		char title[160];
-		const char *devname = mqtt_get_dev_devname((uint8_t) ui_fleet,
-				(uint8_t) ui_dev);
-		snprintf(title, sizeof(title), "%s - %s",
-				(devname[0] != '\0') ? devname : "remote device",
-				mqtt_get_dev_name((uint8_t) ui_fleet, (uint8_t) ui_dev));
-		if (!remoteui_win_open(title, w, h)) {
-			ui_stop();
-		}
-		else {
-		}
-	}
-	else {
-	}
-}
-
-
-/// @brief: Carries what the user does on the mirrored view to the device, which
-/// treats it as its own screen being touched.
-static void ui_input_callb(uint8_t action, int16_t x, int16_t y,
-		int16_t scroll, char key, void *user) {
-	(void) user;
-	if ((ui_fleet >= 0) && (ui_dev >= 0)) {
-		(void) mqtt_dev_send_input((uint8_t) ui_fleet, (uint8_t) ui_dev,
-				action, x, y, scroll, key);
-	}
-	else {
-	}
-}
-
-
-/// @brief: Carries the mirrored view's request for an asset to the device it is
-/// mirroring. Only that device can answer: the id means nothing anywhere else.
-static void ui_asset_req_callb(uint8_t kind, uint32_t id, void *user) {
-	(void) user;
-	if ((ui_fleet >= 0) && (ui_dev >= 0)) {
-		(void) mqtt_dev_request_asset((uint8_t) ui_fleet, (uint8_t) ui_dev,
-				kind, id);
-	}
-}
-
-
-/// @brief: Hands an asset the device sent to the mirrored view, provided it is
-/// still the device being mirrored.
-static void ui_asset_callb(uint8_t fleet_index, uint8_t dev_index,
-		uint8_t kind, uint32_t id, const uint8_t *data, uint32_t len,
-		void *user) {
-	(void) user;
-	if (remoteui_win_is_open() &&
-			(fleet_index == ui_fleet) &&
-			(dev_index == ui_dev)) {
-		remoteui_win_asset_received(kind, id, data, len);
-	}
-}
-
-
-/// @brief: Starts mirroring the selected device. The window can only be sized
-/// once the device has said how big its display is, so this asks first and the
-/// window opens from fleettab_step() when the answer arrives.
-static void ui_start(void) {
-	ui_stop();
-	ui_fleet = selected_fleet;
-	ui_dev = selected_dev;
-	mqtt_set_ui_frame_callb(&ui_frame_callb, NULL);
-	mqtt_set_asset_callb(&ui_asset_callb, NULL);
-	remoteui_win_set_asset_request_callb(&ui_asset_req_callb, NULL);
-	remoteui_win_set_input_callb(&ui_input_callb, NULL);
-	if (!mqtt_dev_set_ui_active((uint8_t) ui_fleet, (uint8_t) ui_dev, true)) {
-		ui_fleet = -1;
-		ui_dev = -1;
-	}
 }
 
 
@@ -666,46 +380,15 @@ static uv_uiobject_ret_e dev_tabs_step(void *me, const uint16_t step_ms) {
 bool fleettab_step(void) {
 	bool ret = false;
 
-	// A device ending the session from its own screen has to be heard whatever
-	// is open at this end, so this is registered once and for good rather than
-	// when a mirror is started. It used not to be, and the CAN bridge was the
-	// casualty: nothing was listening for the close, the bridge kept re-asking
-	// for the feature the operator had just refused, and the takeover bar they
-	// had touched to be rid of came straight back. The notification bar says
-	// touching it ends remote access; this is half of what makes that true.
-	static bool close_callb_set;
-	if (!close_callb_set) {
-		close_callb_set = true;
-		mqtt_set_close_callb(&ui_close_callb, NULL);
-	}
-	else {
-	}
-
-	// The client and the bridge are not pumped from here any more: each runs on
-	// a task of its own (mqtt_start_pump(), remotecan_start()), stepping every
-	// couple of milliseconds instead of once per 20 ms UI cycle. Driven from
-	// this loop, every frame crossing the bridge waited up to 20 ms on the way
-	// out and another 20 on the way back, which is most of the round trip an
-	// SDO transfer pays for every single frame of a conversation.
-	//
-	// What the pump task must not do itself - draw a mirrored frame, decode an
-	// asset, answer a close - it leaves here, for the thread that owns the
-	// widgets.
-	mqtt_ui_step();
-
-	// A bridge cannot outlive the connection that carries it. The device stops
-	// forwarding on its own when the broker session drops, and an interface
-	// with nothing behind it is worse than no interface at all.
-	if (remotecan_is_active() && !mqtt_is_connected()) {
-		printf("remote CAN: closing the bridge - the broker connection is "
-				"gone\n");
-		fflush(stdout);
-		remotecan_stop();
-		if (shown) {
-			refresh_can_btn();
-		}
-		else {
-		}
+	// The sessions are pumped whichever tab is shown: what arrived for the
+	// mirror window, a device ending the session from its own screen, a bridge
+	// whose broker connection is gone. When one of them started or ended the
+	// buttons are put back in step before anything below compares against
+	// them: the CAN toggle left on after the device closed the bridge would
+	// otherwise start it straight back up.
+	if (fleet_step() && shown && (dev_tab_count > 0)) {
+		refresh_ui_btn();
+		refresh_can_btn();
 	}
 	else {
 	}
@@ -713,10 +396,11 @@ bool fleettab_step(void) {
 	if (shown) {
 		if ((dev_tab_count > 0) && uv_uibutton_clicked(&dev_ui_btn)) {
 			if (ui_shows_selected()) {
-				ui_stop();
+				fleet_ui_stop();
 			}
 			else {
-				ui_start();
+				(void) fleet_ui_start((uint8_t) selected_fleet,
+						(uint8_t) selected_dev);
 			}
 			refresh_ui_btn();
 		}
@@ -790,28 +474,8 @@ bool fleettab_step(void) {
 		// rebuilt from the client's device list, so the removal shows up as the
 		// tab disappearing.
 		if ((dev_tab_count > 0) && uv_uimediabutton_clicked(&dev_remove_btn)) {
-			if (remotecan_shows((uint8_t) selected_fleet,
-					(uint8_t) selected_dev)) {
-				// a bridge to a device that is no longer in the view would have
-				// nothing to show it through
-				remotecan_stop();
-			}
-			else {
-			}
-			if (ui_shows_selected()) {
-				// mirroring a device that is being taken out of the view cannot
-				// outlive it
-				ui_stop();
-			}
-			else if ((ui_fleet == selected_fleet) &&
-					(ui_dev > selected_dev)) {
-				// the mirrored device is addressed by index, and everything
-				// after the removed one moves down a slot
-				ui_dev--;
-			}
-			else {
-			}
-			if (mqtt_remove_dev((uint8_t) selected_fleet,
+			// the sessions held with the device end with it
+			if (fleet_remove_dev((uint8_t) selected_fleet,
 					(uint8_t) selected_dev)) {
 				// land on the tab before the removed one rather than on
 				// whichever device shifted into its place
@@ -837,48 +501,6 @@ bool fleettab_step(void) {
 			build_dev_info_str();
 			if (strcmp(prev, dev_info_str) != 0) {
 				uv_ui_refresh(&dev_info);
-			}
-		}
-	}
-
-	// The window is opened here rather than from the button, because it can only
-	// be sized once the device has answered with its display geometry - the
-	// button only asks it to start mirroring.
-	if ((ui_fleet >= 0) && (ui_dev >= 0) && !remoteui_win_is_open()) {
-		uint16_t w;
-		uint16_t h;
-		if (mqtt_get_dev_ui_size((uint8_t) ui_fleet, (uint8_t) ui_dev,
-				&w, &h)) {
-			ui_open_window(w, h);
-			if (shown) {
-				refresh_ui_btn();
-			}
-		}
-	}
-
-	// The mirrored view cannot tell a still screen from a dead link by itself -
-	// the device only sends a frame when something changes - so it is told how
-	// long ago the device was last heard from at all. The heartbeat counts, so
-	// this keeps ticking over even while the display sits still.
-	if (remoteui_win_is_open() && (ui_fleet >= 0) && (ui_dev >= 0)) {
-		remoteui_win_set_link_age(mqtt_get_dev_age_s((uint8_t) ui_fleet,
-				(uint8_t) ui_dev));
-	}
-	else {
-	}
-
-	// the user can close the mirror window from its own title bar, which leaves
-	// the device still sending until we notice and tell it to stop
-	remoteui_win_step();
-	if ((ui_fleet >= 0) && (ui_dev >= 0) && !remoteui_win_is_open()) {
-		uint16_t w;
-		uint16_t h;
-		if (mqtt_get_dev_ui_size((uint8_t) ui_fleet, (uint8_t) ui_dev,
-				&w, &h)) {
-			// it was open and the user closed it
-			ui_stop();
-			if (shown) {
-				refresh_ui_btn();
 			}
 		}
 	}

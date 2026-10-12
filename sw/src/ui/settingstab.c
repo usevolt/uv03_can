@@ -27,6 +27,7 @@
 #include "credentials.h"
 #include "loadparam.h"
 #include "mqtt.h"
+#include "fleet.h"
 #include "remotefiles.h"
 #include "selfupdate.h"
 #include "ui/uvui.h"
@@ -154,46 +155,21 @@ static bool account_autoconnect_tried;
 // Connect button are disabled, so nothing changes the account under it.
 static volatile bool account_connecting;
 static volatile bool account_connect_done;
-static volatile bool account_files_ok;
-static volatile bool account_fleet_ok;
-// what the task connects with, copied before it starts, and the reason the file
-// server login failed ("" when it did not)
+// what the task connects with, copied before it starts, and how it went
 static char account_task_url[CREDENTIALS_MAX];
 static char account_task_fleet_url[CREDENTIALS_MAX];
 static char account_task_user[CREDENTIALS_MAX];
 static char account_task_pass[CREDENTIALS_MAX];
-static char account_task_err[256];
+static fleet_login_st account_task_result;
 
 
 /// @brief: Task body of the connect: logs in to the file server, then opens the
-/// fleet broker session with the same account.
+/// fleet broker session with the same account. The same login the command
+/// line's --login makes.
 static void account_connect_task(void *ptr) {
 	(void) ptr;
-	printf("File server: connecting to '%s' as '%s'...\n",
-			account_task_url, account_task_user);
-	fflush(stdout);
-	account_task_err[0] = '\0';
-	account_files_ok = remotefiles_login(account_task_url, account_task_user,
-			account_task_pass, account_task_err, sizeof(account_task_err));
-	if (account_files_ok) {
-		printf("File server: connected to '%s' as '%s', %u fleet(s):",
-				account_task_url, account_task_user,
-				(unsigned int) remotefiles_get_fleet_count());
-		for (uint8_t i = 0; i < remotefiles_get_fleet_count(); i++) {
-			printf(" %s", remotefiles_get_fleet(i));
-		}
-		printf("\n");
-	}
-	else {
-		printf("File server: connecting to '%s' failed: %s\n",
-				account_task_url, account_task_err);
-	}
-	fflush(stdout);
-
-	// the same account opens the fleet broker, so one action does both
-	account_fleet_ok = mqtt_connect(account_task_fleet_url, account_task_user,
-			account_task_pass);
-
+	fleet_login(account_task_url, account_task_fleet_url, account_task_user,
+			account_task_pass, &account_task_result);
 	account_connect_done = true;
 	uv_rtos_task_delete(NULL);
 }
@@ -229,21 +205,8 @@ static void account_connect(void) {
 /// @brief: Takes the finished connect's outcome over on the UI thread.
 static void account_connect_finish(void) {
 	account_connecting = false;
-	snprintf(account_err, sizeof(account_err), "%s", account_task_err);
-	if (account_fleet_ok) {
-		// The file server already said which fleets this account holds, so
-		// their tabs can exist before any device has published. Only the
-		// broker knows whether they are alive; only the file server knows
-		// they exist at all when they are quiet.
-		for (uint8_t i = 0; i < remotefiles_get_fleet_count(); i++) {
-			mqtt_add_fleet(remotefiles_get_fleet(i));
-		}
-	}
-	else if (account_err[0] == '\0') {
-		snprintf(account_err, sizeof(account_err), "%s", mqtt_get_error());
-	}
-	else {
-	}
+	fleet_login_finish(&account_task_result);
+	snprintf(account_err, sizeof(account_err), "%s", account_task_result.err);
 }
 
 

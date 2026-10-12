@@ -208,6 +208,33 @@ the `.uvsys` system file).
 | loadesp32 | `src/loadesp32.c` | Flashes a package's ESP32 module firmware with esptool (`--loadesp32`, device tab "Flash ESP32 firmware") |
 | makeuvdev | `src/makeuvdev.c` | Assembles a .uvdev device package out of a build's artifacts |
 | versionnotes | `src/versionnotes.c` | This build's release notes, compiled in from git (see *Version notes*) |
+| fleet | `src/fleet.c` | The remote fleet session shared by the CLI and the UI: login, device lookup/info, remote UI session, session pump (see *Remote fleet*) |
+| fleetcmd | `src/fleetcmd.c` | `--login`, `--remotelist`, `--remoteui`, `--remotecan` |
+
+### Remote fleet
+
+Devices with the remote (ESP32/MQTT) module are reached through the fleet
+broker. `src/fleet.c` holds everything about that which is not the broker
+client (`mqtt.c`) or the CAN bridge (`remotecan.c`) themselves, and both ends
+use it: the UI's Account panel and Fleet tab, and the command line options.
+
+- `--login` logs in to the file server and the broker with the stored account
+  (`--user` / `--pwd`, `account.conf`). The other remote options log in by
+  themselves when no session is open, so it is only needed to check the account.
+- `--remotelist [seconds]` lists every device of the account's fleets. A device
+  is only known once it publishes (its heartbeat comes every 5 s), so it listens
+  for a while first, 7 s by default.
+- `--remoteui <device>` mirrors a device's display in its own window and blocks
+  until the window is closed or the device ends the session.
+- `--remotecan <device>` bridges a device's bus to the netdev `uvremote0` and
+  blocks until Ctrl-C or the device ends the session. A second uvcan reaches the
+  remote bus with `-c uvremote0` (e.g. `--terminal`, `--loadparam`).
+
+A device is named as `--remotelist` shows it: `<fleet>/<client id>`, a client id
+or the device's own name (the latter two case-insensitive). The UI's Fleet tab
+calls the same `fleet_ui_start()` / `fleet_ui_stop()` / `fleet_remove_dev()` /
+`fleet_dev_info()` and pumps the sessions with `fleet_step()`; the Account panel
+logs in with `fleet_login()` on a task of its own.
 
 ### File formats: JSON and YAML
 

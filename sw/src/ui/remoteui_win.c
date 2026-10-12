@@ -1615,4 +1615,13 @@ void remoteui_win_step(void) {
 }
 
 
+void remoteui_win_poll_events(void) {
+	if (win != NULL) {
+		glfwPollEvents();
+	}
+	else {
+	}
+}
+
+
 #endif
