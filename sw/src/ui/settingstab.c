@@ -117,6 +117,11 @@ static bool params_loading;
 // window clears them whenever another main tab is picked.
 static bool shown;
 
+#if CONFIG_TARGET_WEB
+// How long the web build waits before opening a dropped session again
+#define WEB_RECONNECT_MS		10000U
+#endif
+
 // Text buffers backing the "Account" panel's fields. They must outlive the tab
 // rebuilds (the textedits read/write them in place), so they are file-scope
 // rather than part of *content*. Seeded once from the stored credentials the
@@ -828,6 +833,36 @@ void settingstab_step(void) {
 	}
 	else {
 	}
+
+#if CONFIG_TARGET_WEB
+	// The page has no Connect button to press again - there is no Settings tab
+	// in a browser - so a session that drops (the server restarted or reloaded,
+	// the network went away) is reopened here, with the account the login form
+	// gave, until it is back.
+	{
+		static uint32_t retry_tick;
+		mqtt_state_e st = mqtt_get_state();
+		if (!account_connecting &&
+				((st == MQTT_STATE_ERROR) || (st == MQTT_STATE_DISCONNECTED)) &&
+				(credentials_get_username()[0] != '\0')) {
+			uint32_t now = uv_rtos_get_tick_count();
+			if (retry_tick == 0U) {
+				retry_tick = now;
+			}
+			else if ((now - retry_tick) >= WEB_RECONNECT_MS) {
+				retry_tick = 0U;
+				printf("Connecting again...\n");
+				fflush(stdout);
+				account_connect();
+			}
+			else {
+			}
+		}
+		else {
+			retry_tick = 0U;
+		}
+	}
+#endif
 
 	// the connect task is done: take its outcome over, whichever tab is shown
 	if (account_connecting && account_connect_done) {
