@@ -129,6 +129,54 @@ updater). Every request is made through a curl **config file** rather than a
 command line, so nothing user- or server-supplied reaches a shell and no
 credentials appear in the process arguments. Redirects are never followed.
 
+## Web browser build
+
+`make web` builds the Fleet tab for a web browser, into
+`release/web/`: `uvcan.js` + `uvcan.wasm` (Emscripten, `emcc` on the PATH --
+`source ~/emsdk/emsdk_env.sh`), the page `web/index.html` with its stylesheet,
+and the two Liberation fonts. It shares `release/` with the other targets, so
+build it from a clean tree. The files are public like the rest of uvcan and go
+to the public shelf, `uvupload -d web pub release/web/*`, which the file server
+answers at `https://files.usevolt.fi/uvcan/` (see the uv3b_iotbrkr Caddyfile).
+
+The page is a login form first. It checks the account the way uvcan itself
+does -- `GET /fleets.json` with Basic credentials and an `X-Uvcan-Web: 1`
+header, which makes the server answer a wrong password without the challenge
+that would open the browser's own login dialog -- and only then loads the
+program and starts it with `--ui`. `src/web/weblogin.c` takes the account into
+the credentials, and the Settings tab's usual start-up connect logs in with it.
+The password stays in memory only.
+
+It is the Linux build as far as the sources go (`CONFIG_TARGET_LINUX`), with
+`CONFIG_TARGET_WEB` for what a page does differently:
+
+- **FreeRTOS** runs on `hal/uv_hal/freertos/portable/ThirdParty/GCC/Emscripten`:
+  every task is an Emscripten fiber, they take turns on the page's one thread
+  (no preemption), and the browser gets the thread whenever only the idle task
+  is ready -- and at least every 50 ms. A task which spins without ever
+  blocking or yielding freezes the page. Hence `-sASYNCIFY`, and `-O2`: an
+  unoptimised Asyncify build is large and slow.
+- **The UI** draws on a canvas, `hal/uv_hal/src_web/uv_ui_canvas.c`, with the
+  browser's own text rendering. The 1200 x 720 display is scaled to the page.
+- **Fleet tab only**: there is no CAN bus for the System tab, and the account
+  comes from the login form, so the Settings tab is not shown either (it is
+  still stepped, which is what connects the account).
+- **No CAN**: `hal/uv_hal/src_web/uv_can.c` reports no interface. The Remote
+  CAN button and its filters are left out of the Fleet tab, and `main()` runs the `--ui` task directly,
+  without `step()`'s hand over (which relies on preemption).
+- **MQTT** goes over a WebSocket: `src/web/mosquitto_web.c` is a small MQTT
+  3.1.1 client behind the part of libmosquitto's interface `src/mqtt.c` uses.
+  The Fleet URL is the broker's WebSocket address, `wss://<host>/mqtt`.
+- **HTTP** is `fetch()`: `src/http.c` reads the curl config its callers write
+  and makes the requests itself.
+- **The log strip** gets the program's output from the page
+  (`Module.uvLogQueue`), not from a pipe.
+- **Remote UI** is `src/web/remoteui_web.c`: the device's display on a canvas
+  of its own size in an overlay over the page, with a Close button (and Esc).
+  It decodes the stream like `src/ui/remoteui_win.c` and asks for fonts and
+  images the same way; the canvas keeps its pixels, which is what
+  FRAME_BEGIN_KEEP needs. Presses, drags and the wheel go to the device.
+
 ## Architecture
 
 ### HAL Submodule
@@ -210,6 +258,7 @@ the `.uvsys` system file).
 | versionnotes | `src/versionnotes.c` | This build's release notes, compiled in from git (see *Version notes*) |
 | fleet | `src/fleet.c` | The remote fleet session shared by the CLI and the UI: login, device lookup/info, remote UI session, session pump (see *Remote fleet*) |
 | fleetcmd | `src/fleetcmd.c` | `--login`, `--remotelist`, `--remoteui`, `--remotecan` |
+| web | `src/web/` | The web browser build's own parts (see *Web browser build*) |
 
 ### Remote fleet
 

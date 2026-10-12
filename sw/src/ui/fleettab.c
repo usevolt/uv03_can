@@ -307,10 +307,15 @@ static void show_active_dev_tab(void) {
 		// The toggle shows what is actually in effect, which is what the device
 		// last reported — a device configured to refuse remote CAN
 		// (`remote allowcan 0`) leaves it springing straight back off.
+		//
+		// A web browser has no network interface to put the bus on, so there
+		// the toggle and its filters are made but left out of the window: they
+		// are never clicked, and the rest of the tab reads them as off.
 		uv_uitogglebutton_init(&dev_can_btn,
 				remotecan_shows((uint8_t) selected_fleet,
 						(uint8_t) selected_dev),
 				"Remote CAN", style);
+#if !CONFIG_TARGET_WEB
 		uv_uitabwindow_addxy(&dev_tabs, &dev_can_btn,
 				MARGIN + 2 * (5 * BUTTON_H + MARGIN), btn_y,
 				5 * BUTTON_H, BUTTON_H);
@@ -342,6 +347,14 @@ static void show_active_dev_tab(void) {
 				"SDO only", style);
 		uv_uitabwindow_addxy(&dev_tabs, &dev_sdo_cb, cb_x, btn_y,
 				cb_w, BUTTON_H);
+#else
+		uv_uicheckbox_init(&dev_std_cb, remotecan_get_allow_std(),
+				"STD", style);
+		uv_uicheckbox_init(&dev_ext_cb, remotecan_get_allow_ext(),
+				"EXT", style);
+		uv_uicheckbox_init(&dev_sdo_cb, remotecan_get_sdo_only(),
+				"SDO only", style);
+#endif
 		refresh_can_btn();
 
 		uv_uitabwindow_set_stepcallb(&dev_tabs, &dev_tabs_step, NULL);

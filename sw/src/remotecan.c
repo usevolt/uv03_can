@@ -25,7 +25,7 @@
 #include <uv_terminal.h>
 #include "mqtt.h"
 
-#if CONFIG_TARGET_LINUX
+#if CONFIG_TARGET_LINUX && !CONFIG_TARGET_WEB
 
 #include <errno.h>
 #include <fcntl.h>
@@ -1091,7 +1091,7 @@ void remotecan_set_filters(const remotecan_filter_st *value, uint8_t count) {
 }
 
 
-#else /* !CONFIG_TARGET_LINUX */
+#else /* !CONFIG_TARGET_LINUX || CONFIG_TARGET_WEB */
 
 
 // No SocketCAN, so there is no interface to put a remote bus on. Every entry

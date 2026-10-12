@@ -13,6 +13,7 @@
 #   make windows    # alias for 'make win'
 #   make win-package # build win + zip a double-clickable package under release/
 #   make publish    # build linux tarball + windows zip into ../prod
+#   make web        # the Fleet tab for a web browser, into release/web (emcc)
 #   make clean      # remove build artifacts of both targets
 #
 ##############################################
@@ -29,6 +30,8 @@ OS ?= linux
 
 #Sepcify the optimizations used. Os == optimize for size, Og = optimize for debug, O3, O2, O1
 O := Og
+# Debug information in the objects
+DEBUGFLAGS := -g3
 
 # Name of the directory where build files will be saved
 BUILDDIR := release
@@ -97,6 +100,54 @@ PLATFORM_EXTRA_SOURCES := hal/uv_hal/src_linux/uv_ui_opengl.c \
 				hal/uv_hal/src_linux/lodepng.c \
 				thirdparty_win/glew.c
 
+else ifeq ($(OS),web)
+
+# The browser build: the Fleet tab compiled to WebAssembly with
+# Emscripten (emcc on PATH, e.g. from `source ~/emsdk/emsdk_env.sh`). It is the
+# Linux build as far as the sources are concerned (CONFIG_TARGET_LINUX), with
+# CONFIG_TARGET_WEB on top for what a browser does differently:
+#   * FreeRTOS runs on the Emscripten port: the tasks are fibers and run in
+#     turn on the page's one thread (see its port.c), hence -sASYNCIFY
+#   * the UI draws on a canvas (src_web/uv_ui_canvas.c)
+#   * there is no CAN bus (src_web/uv_can.c answers that there is none)
+#   * the broker is reached over a WebSocket (src/web/mosquitto_web.c stands in
+#     for libmosquitto) and the file server with fetch() (src/http.c)
+# The page around it, with the login form, is web/index.html. `make web`
+# collects everything the server needs into release/web/.
+CC := emcc
+CORE := CORE_LINUX
+TARGET := CONFIG_TARGET_LINUX
+BINARY := $(BUILDDIR)/web/uvcan.js
+
+PLATFORM_SRCDIR := hal/uv_hal/src_web
+PLATFORM_PORTDIR := hal/uv_hal/freertos/portable/ThirdParty/GCC/Emscripten
+PLATFORM_PORTSRCDIRS := $(PLATFORM_PORTDIR)
+PLATFORM_INCLUDEDIRS := -I"$(PLATFORM_PORTDIR)" -I"src/web"
+PLATFORM_CFLAGS := -DCONFIG_TARGET_WEB=1 -DCONFIG_UI_CANVAS=1
+# Asyncify keeps a switched-out task's call stack, and it is what costs: an
+# unoptimised build of it is both large and slow, hence -O2 rather than -Og.
+O := O2
+# Debug information is several times the size of the program itself, which
+# every visitor would download, and it keeps the linker from optimising fully
+DEBUGFLAGS := -g0
+PLATFORM_LDFLAGS := -sASYNCIFY=1 -sASYNCIFY_STACK_SIZE=65536 \
+				-sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=67108864 \
+				-sSTACK_SIZE=1048576 -sFETCH=1 -lwebsocket.js \
+				-sENVIRONMENT=web -sEXIT_RUNTIME=0 \
+				-sEXPORTED_RUNTIME_METHODS=UTF8ToString,stringToUTF8,callMain \
+				-sINVOKE_RUN=0
+PLATFORM_LIBS := -lm
+# The Linux HAL sources which have nothing to do with the hardware, plus the
+# browser's own (src_web, a source directory of its own below)
+PLATFORM_EXTRA_SOURCES := hal/uv_hal/src_linux/uv_rtos.c \
+				hal/uv_hal/src_linux/heap_3.c \
+				hal/uv_hal/src_linux/uv_memory.c \
+				hal/uv_hal/src_linux/uv_eeprom.c \
+				hal/uv_hal/src_linux/lodepng.c \
+				$(wildcard src/web/*.c)
+# What the browser has none of: a GL context, a terminal, other processes
+WEB_EXCLUDE := src/ui/remoteui_win.c
+
 else
 
 # Builds on this hardware (native Linux).
@@ -152,7 +203,7 @@ SOURCEDIRS := $(SOURCEDIRS) \
 
 
 
-SOURCES := $(shell find $(SOURCEDIRS) -maxdepth 1 -name '*.c') $(PLATFORM_EXTRA_SOURCES)
+SOURCES := $(filter-out $(WEB_EXCLUDE),$(shell find $(SOURCEDIRS) -maxdepth 1 -name '*.c')) $(PLATFORM_EXTRA_SOURCES)
 # The version string is <build id>-g<hash>, e.g. 300-g1905, the same shape the
 # firmware projects use. The build id is the number of commits in HEAD's
 # history: it grows with every commit, tag or no tag, which is what makes it
@@ -178,9 +229,9 @@ PKG_FULL_NAME := $(FULL_NAME)
 # __UV_APP_VERSION is a CFLAG, not an LDFLAG: -D on the link command defines
 # nothing (there is no source being compiled there), and --version and the
 # self-updater need the string in the objects themselves.
-CFLAGS := $(PLATFORM_CFLAGS) -D$(TARGET)=1 -D__UV_PROJECT_NAME=$(FULL_NAME) -D__UV_PROGRAM_VERSION=$(GIT_REV_ID) -D__UV_APP_VERSION=\"$(GIT_VERSION)\" $(INCLUDEDIRS) -D$(CORE) -$(O) -g3 -Wall -fmessage-length=0 -fno-builtin -ffunction-sections -fdata-sections
+CFLAGS := $(PLATFORM_CFLAGS) -D$(TARGET)=1 -D__UV_PROJECT_NAME=$(FULL_NAME) -D__UV_PROGRAM_VERSION=$(GIT_REV_ID) -D__UV_APP_VERSION=\"$(GIT_VERSION)\" $(INCLUDEDIRS) -D$(CORE) -$(O) $(DEBUGFLAGS) -Wall -fmessage-length=0 -fno-builtin -ffunction-sections -fdata-sections
 
-LDFLAGS :=
+LDFLAGS := $(PLATFORM_LDFLAGS)
 
 
 
@@ -203,11 +254,19 @@ PKGDIR  := $(BUILDDIR)/$(PKGNAME)
 PRODDIR     := ../prod
 PUBLISH_TAR := $(PRODDIR)/$(PKG_FULL_NAME)-linux.tar.gz
 
-.PHONY: FORCE linux linux-package linux-package-stage win windows win-package win-package-stage image post-build clean install uninstall package publish
+.PHONY: FORCE linux web linux-package linux-package-stage win windows win-package win-package-stage image post-build clean install uninstall package publish
 
 # Bare 'make' builds the Linux target.
 linux:
 	@$(MAKE) --no-print-directory OS=linux image
+
+# The browser build, into release/web/. It shares release/ with the other
+# targets' objects, so build it from a clean tree (see 'package').
+web:
+	@$(MAKE) --no-print-directory OS=web image
+	@cp web/index.html web/uvcan-web.css "$(BUILDDIR)/web/"
+	@cp fonts/LiberationSans-Regular.ttf fonts/LiberationMono-Regular.ttf "$(BUILDDIR)/web/"
+	@echo "Created $(BUILDDIR)/web/"
 
 # Per-user desktop install: builds (if needed) and registers the binary, the
 # .uvsys and .uvdev file associations, icons and launcher. Use 'sudo make install ARGS=--system'
@@ -454,6 +513,7 @@ $(BINARY): $(OBJECTS)
 	@echo ""
 	@echo "Linking target"
 	@echo ""
+	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJECTS) -o "$(BINARY)" $(PLATFORM_LIBS) $(LIBS)
 
 

@@ -24,7 +24,7 @@
 #include <string.h>
 
 
-#if !CONFIG_TARGET_WIN
+#if !CONFIG_TARGET_WIN && !CONFIG_TARGET_WEB
 
 #include <unistd.h>
 #include <errno.h>
@@ -1088,7 +1088,7 @@ void simrun_load_params_async(system_st *sys,
 }
 
 
-#else /* CONFIG_TARGET_WIN: simulators are a Linux-only feature */
+#else /* CONFIG_TARGET_WIN || CONFIG_TARGET_WEB: simulators are a Linux-only feature */
 
 
 void simrun_init(void) {

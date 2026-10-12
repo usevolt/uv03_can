@@ -28,6 +28,9 @@
 #include "credentials.h"
 #include "simrun.h"
 #include "remotecan.h"
+#if CONFIG_TARGET_WEB
+#include "weblogin.h"
+#endif
 
 
 struct _dev_st dev;
@@ -54,7 +57,7 @@ void init(void *me) {
 
 	strcpy(this->can_channel, "can0");
 	char cmd[256];
-#if CONFIG_TARGET_LINUX
+#if CONFIG_TARGET_LINUX && !CONFIG_TARGET_WEB
 	// get the net dev baudrate. If dev was not available, baudrate will be 0.
 	sprintf(cmd, "ip -det link show %s 2> /dev/null | grep bitrate | awk '{print $2}'",
 			this->can_channel);
@@ -89,6 +92,16 @@ void task_step(void *ptr) {
 	uv_mutex_unlock(&task->mutex);
 	uv_rtos_task_delete(NULL);
 }
+
+
+#if CONFIG_TARGET_WEB
+/// @brief: FreeRTOS task function of a task on the web build: runs it, once
+static void web_task(void *ptr) {
+	task_st *task = (task_st*) ptr;
+	task->step(&dev);
+	uv_rtos_task_delete(NULL);
+}
+#endif
 
 
 void add_task(void (*step_callback)(void*)) {
@@ -210,6 +223,11 @@ int main(int argc, char *argv[]) {
 	// load the stored account credentials before parsing options, so --user / --pwd
 	// (and the UI's Account panel) start from the current values and override them
 	credentials_init();
+#if CONFIG_TARGET_WEB
+	// a page starts with nothing stored: the account is the one its login
+	// form was given
+	weblogin_apply();
+#endif
 
 	// one slot per command plus the zero terminator which getopt_long expects
 	struct option opts[commands_count() + 1];
@@ -265,6 +283,18 @@ int main(int argc, char *argv[]) {
 	}
 
 	if (!error) {
+#if CONFIG_TARGET_WEB
+		// A page runs for as long as it is open, and the only command it is
+		// given is --ui: its tasks just run, with no hand over between them and
+		// no end of the program to reach. step()'s hand over could not be used
+		// as such anyway: it relies on the task it wakes up running during its
+		// one tick delay, which with the browser's cooperative scheduling is not
+		// a given.
+		for (int i = 0; i < uv_vector_size(&this->tasks); i++) {
+			uv_rtos_task_create(&web_task, "task", UV_RTOS_MIN_STACK_SIZE * 5,
+				uv_vector_at(&this->tasks, i), UV_RTOS_IDLE_PRIORITY + 1, NULL);
+		}
+#else
 		// register an own FreeRTOS task for all application tasks
 		for (int i = 0; i < uv_vector_size(&this->tasks); i++) {
 			// each task gets a small portion of memory
@@ -274,6 +304,7 @@ int main(int argc, char *argv[]) {
 		// register main step task
 		uv_rtos_task_create(&step, "Step", UV_RTOS_MIN_STACK_SIZE, this,
 				UV_RTOS_IDLE_PRIORITY + 1, NULL);
+#endif
 
 		uv_init(&dev);
 

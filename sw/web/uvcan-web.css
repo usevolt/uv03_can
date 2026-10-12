@@ -1,0 +1,148 @@
+/* The page around uvcan's browser build. Colours are uvcan's own (see
+ * inc/uv_hal_config.h): the display, window, panel and accent colours. */
+
+@font-face {
+	font-family: 'UvSans';
+	src: url('LiberationSans-Regular.ttf') format('truetype');
+	font-display: block;
+}
+
+@font-face {
+	font-family: 'UvMono';
+	src: url('LiberationMono-Regular.ttf') format('truetype');
+	font-display: block;
+}
+
+:root {
+	--bg: #000000;
+	--panel: #151516;
+	--field: #373a44;
+	--accent: #945dd2;
+	--text: #ffffff;
+	--muted: #a7a9b2;
+	--error: #ff6a6a;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+html,
+body {
+	margin: 0;
+	height: 100%;
+	background: var(--bg);
+	color: var(--text);
+	font-family: 'UvSans', system-ui, sans-serif;
+}
+
+canvas#uvui {
+	display: block;
+	width: 100vw;
+	height: 100vh;
+	height: 100dvh;
+	outline: none;
+	touch-action: none;
+}
+
+canvas#uvui[hidden] {
+	display: none;
+}
+
+.login {
+	min-height: 100vh;
+	min-height: 100dvh;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 16px;
+}
+
+.login[hidden] {
+	display: none;
+}
+
+.card {
+	width: 100%;
+	max-width: 360px;
+	background: var(--panel);
+	border: 1px solid var(--field);
+	border-radius: 6px;
+	padding: 28px 24px 20px;
+	display: flex;
+	flex-direction: column;
+}
+
+.card h1 {
+	margin: 0 0 24px;
+	font-size: 26px;
+	font-weight: normal;
+}
+
+.card h1 span {
+	color: var(--accent);
+}
+
+.card label {
+	font-size: 14px;
+	color: var(--muted);
+	margin-bottom: 6px;
+}
+
+.card input {
+	font: inherit;
+	font-size: 17px;
+	color: var(--text);
+	background: var(--field);
+	border: 1px solid transparent;
+	border-radius: 4px;
+	padding: 10px 12px;
+	margin-bottom: 16px;
+}
+
+.card input:focus {
+	outline: none;
+	border-color: var(--accent);
+}
+
+.card button {
+	font: inherit;
+	font-size: 17px;
+	color: var(--text);
+	background: var(--accent);
+	border: none;
+	border-radius: 4px;
+	padding: 11px 12px;
+	margin-top: 4px;
+	cursor: pointer;
+}
+
+.card button:disabled {
+	opacity: 0.6;
+	cursor: default;
+}
+
+.msg {
+	min-height: 1.4em;
+	margin: 14px 0 0;
+	font-size: 14px;
+	color: var(--muted);
+}
+
+.msg.error {
+	color: var(--error);
+}
+
+.loading {
+	position: fixed;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	margin: 0;
+	color: var(--muted);
+}
+
+.loading[hidden] {
+	display: none;
+}

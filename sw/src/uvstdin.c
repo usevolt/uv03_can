@@ -20,6 +20,7 @@
 
 #include <unistd.h>
 #include <errno.h>
+#include <uv_rtos.h>
 #include <string.h>
 #include <stdbool.h>
 // Windows shim: provides pipe() (via mingw's _pipe); no-op on Linux.
@@ -68,6 +69,12 @@ static int read_byte(char *out) {
 		}
 		if ((r < 0) && (errno == EINTR)) {
 			// interrupted by a scheduler signal: retry
+			continue;
+		}
+		if ((r < 0) && (errno == EAGAIN)) {
+			// nothing there yet, on a stdin which does not block (the web
+			// build's): wait for it without holding the other tasks up
+			uv_rtos_task_delay(20);
 			continue;
 		}
 		input_waiting = false;

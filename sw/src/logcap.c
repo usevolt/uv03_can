@@ -173,10 +173,45 @@ static void *reader_thread(void *arg) {
 #endif
 
 
+#if CONFIG_TARGET_WEB
+// A page has no pipes worth the name and no threads to read one with. The
+// program's stdout and stderr reach the page a line at a time instead (as
+// Module.print / Module.printErr), and web/index.html queues the lines in
+// Module.uvLogQueue for the getters below to take in.
+#include <emscripten.h>
+
+EM_JS(int, js_logcap_take, (char *buf, int len), {
+	const q = Module.uvLogQueue;
+	let n = 0;
+	if (q && q.length > 0) {
+		const line = q.shift() + "\n";
+		n = stringToUTF8(line, buf, len);
+	}
+	return n;
+});
+
+/// @brief: Takes in what the page has queued since the last call
+static void web_drain(void) {
+	char buf[LOGCAP_LINE_LEN + 2];
+	int n;
+	while ((n = js_logcap_take(buf, sizeof(buf))) > 0) {
+		consume(buf, n);
+	}
+}
+#else
+static void web_drain(void) {
+}
+#endif
+
+
 void logcap_init(void) {
 	if (started) {
 		return;
 	}
+#if CONFIG_TARGET_WEB
+	started = true;
+	return;
+#endif
 
 #if CONFIG_TARGET_WIN
 	if (!mutex_ready) {
@@ -241,6 +276,7 @@ void logcap_init(void) {
 
 
 void logcap_get_last_line(char *out, size_t out_len) {
+	web_drain();
 	if ((out == NULL) || (out_len == 0)) {
 		return;
 	}
@@ -264,6 +300,7 @@ void logcap_get_last_line(char *out, size_t out_len) {
 
 
 int logcap_get_line_count(void) {
+	web_drain();
 	MUTEX_LOCK();
 	int ret = line_count;
 	MUTEX_UNLOCK();
@@ -272,6 +309,7 @@ int logcap_get_line_count(void) {
 
 
 unsigned long logcap_get_seq(void) {
+	web_drain();
 	MUTEX_LOCK();
 	unsigned long ret = line_seq;
 	MUTEX_UNLOCK();

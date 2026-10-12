@@ -1014,8 +1014,16 @@ static bool mqtt_connect_locked(const char *host, const char *username,
 				mosquitto_disconnect_callback_set(mosq, &on_disconnect);
 				mosquitto_message_callback_set(mosq, &on_message);
 
-				printf("MQTT: connecting to %s:%d as '%s'...\n", host_str, MQTT_PORT,
-						(conn_user[0] != '\0') ? conn_user : "(anonymous)");
+				// a URL (the web build's WebSocket broker) names its own port
+				if (strstr(host_str, "://") != NULL) {
+					printf("MQTT: connecting to %s as '%s'...\n", host_str,
+							(conn_user[0] != '\0') ? conn_user : "(anonymous)");
+				}
+				else {
+					printf("MQTT: connecting to %s:%d as '%s'...\n", host_str,
+							MQTT_PORT,
+							(conn_user[0] != '\0') ? conn_user : "(anonymous)");
+				}
 				fflush(stdout);
 
 				// Connect asynchronously and let mqtt_step()'s mosquitto_loop

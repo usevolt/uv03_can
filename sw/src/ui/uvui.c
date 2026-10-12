@@ -88,6 +88,20 @@ typedef enum {
 // Names of the top-level tabs (handed to the main tab window as a pointer array).
 static char *maintab_names[MAINTAB_COUNT] = { "System", "Fleet", "Settings" };
 
+// The main tabs shown, MAINTAB_FIRST up to but not including MAINTAB_END. A
+// web browser has no CAN bus, and with it no "System" tab, and the account
+// comes from the page's login form, which leaves the Settings tab nothing to
+// offer: there the Fleet tab is all there is. The tab window's indexes are
+// MAINTAB_FIRST behind the MAINTAB_* values. The Settings tab is still stepped
+// when it is not shown, which is what connects the account at start-up.
+#if CONFIG_TARGET_WEB
+#define MAINTAB_FIRST	MAINTAB_FLEET
+#define MAINTAB_END		MAINTAB_SETTINGS
+#else
+#define MAINTAB_FIRST	MAINTAB_SYSTEM
+#define MAINTAB_END		MAINTAB_COUNT
+#endif
+
 
 typedef struct {
 	bool terminate;
@@ -292,7 +306,9 @@ void uvui_exec(void) {
 	// which block cooperatively (no scheduler-halting interrupt mask), so the UI
 	// stays responsive while a prompt waits; uv_stdin_feed() then supplies the
 	// typed answer. See uvstdin.c.
+#if !CONFIG_TARGET_WEB
 	uv_stdin_use_pipe();
+#endif
 
 	// The broker client runs on a task of its own from here on, rather than
 	// being stepped by this loop: what it carries - the fleet view, and the CAN
@@ -305,9 +321,15 @@ void uvui_exec(void) {
 	// waits for it -- a failed check is silent, because a machine on a CAN bus
 	// in a field has no network and has not asked about this. Only when the
 	// Settings tab's "Check updates on start up" is ticked.
+#if CONFIG_TARGET_WEB
+	// the page is always the newest one the server has
+	if (false) {
+	}
+#else
 	if (credentials_get_check_updates()) {
 		selfupdate_check_async();
 	}
+#endif
 	else {
 		printf("Not checking for a newer uvcan: \"Check updates on start up\" is "
 				"off in the Settings tab.\n");
@@ -324,8 +346,8 @@ void uvui_exec(void) {
 	// display background colour shows through instead of the window's opaque
 	// (near-black) fill. Its tabs get the plain HAL header (no status dots); the
 	// nested device tab window built into the "System" tab draws its own.
-	uv_uitabwindow_init(&this->maintabs, MAINTAB_COUNT, &uv_uistyles[0],
-			this->maintabs_buf, maintab_names);
+	uv_uitabwindow_init(&this->maintabs, MAINTAB_END - MAINTAB_FIRST,
+			&uv_uistyles[0], this->maintabs_buf, &maintab_names[MAINTAB_FIRST]);
 	uv_uiwindow_set_transparent(&this->maintabs, true);
 	int16_t disp_w = uv_uibb(&this->display)->w;
 	int16_t disp_h = uv_uibb(&this->display)->h;
@@ -417,7 +439,7 @@ void uvui_exec(void) {
 
 	// populate the initially active "System" main tab, which in turn builds the
 	// device tab window and its initially active "Overview" tab
-	this->maintab = MAINTAB_SYSTEM;
+	this->maintab = MAINTAB_FIRST;
 	this->device_tab = 0;
 	show_active_maintab();
 
@@ -715,10 +737,10 @@ static uv_uiobject_ret_e maintab_step(void *me, const uint16_t step_ms) {
 			// so keep the user here for the duration. The same goes for the
 			// Settings tab's parameter file load, which owns the SDO client: every
 			// device operation of the other tabs would fight it.
-			uv_uitabwindow_set_tab(&this->maintabs, this->maintab);
+			uv_uitabwindow_set_tab(&this->maintabs, this->maintab - MAINTAB_FIRST);
 		}
 		else {
-			this->maintab = uv_uitabwindow_get_tab(&this->maintabs);
+			this->maintab = uv_uitabwindow_get_tab(&this->maintabs) + MAINTAB_FIRST;
 			show_active_maintab();
 		}
 	}

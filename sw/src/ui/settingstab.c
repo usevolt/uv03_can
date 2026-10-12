@@ -750,10 +750,17 @@ void settingstab_show(uv_uitabwindow_st *tabwin) {
 	uv_uiframewindow_addxy(&content.software_frame, &content.version_label,
 			MARGIN, 0, sw_left_w / 2 - MARGIN, sw_row_h);
 
+	// A web page is always the newest one the server has, and it reads no
+	// parameter files from this machine nor has a CAN bus to load them to, so
+	// on the web build the updates checkbox and the "Load parameters" panel
+	// are made but left out of the tab: never clicked, they leave the rest of
+	// the tab as it is.
 	uv_uicheckbox_init(&content.updates_check, credentials_get_check_updates(),
 			"Check updates on start up", style);
+#if !CONFIG_TARGET_WEB
 	uv_uiframewindow_addxy(&content.software_frame, &content.updates_check,
 			sw_left_w / 2, 0, sw_left_w - sw_left_w / 2, sw_row_h);
+#endif
 
 	uv_uibutton_init(&content.notes_btn, "Version notes", style);
 	uv_uiframewindow_addxy(&content.software_frame, &content.notes_btn,
@@ -764,8 +771,17 @@ void settingstab_show(uv_uitabwindow_st *tabwin) {
 	int16_t params_y = software_y + software_frame_h + MARGIN;
 	uv_uiframewindow_init(&content.params_frame, content.params_frame_buf, style);
 	uv_uiframewindow_set_title(&content.params_frame, "Load parameters");
+#if CONFIG_TARGET_WEB
+	// not added to the tab (see the updates checkbox above), but laid out as
+	// if it were, so the rest of this works on it unchanged
+	uv_uibb(&content.params_frame)->x = frame_x;
+	uv_uibb(&content.params_frame)->y = params_y;
+	uv_uibb(&content.params_frame)->width = frame_w;
+	uv_uibb(&content.params_frame)->height = cbb.h - params_y - MARGIN;
+#else
 	uv_uitabwindow_addxy(tabwin, &content.params_frame, frame_x, params_y,
 			frame_w, cbb.h - params_y - MARGIN);
+#endif
 	uv_bounding_box_st pc = uv_uiframewindow_get_content_bb(&content.params_frame);
 	int16_t params_btn_w = acc_conn_w;
 	int16_t params_list_w = pc.w - params_btn_w - MARGIN;

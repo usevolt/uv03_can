@@ -140,6 +140,8 @@ int uvhttp_cfg_common(char *dst, size_t dstlen, int timeout_s,
 }
 
 
+#if !CONFIG_TARGET_WEB
+
 // Runs `curl -K <cfg_path>` and returns the HTTP status code curl reports via
 // its write-out, or 0 when curl could not be run. The command line contains
 // only our fixed temp paths, so nothing user- or server-supplied reaches the
@@ -369,6 +371,220 @@ long uvhttp_curl_logged(const char *cfg, const char *dest_path,
 }
 
 #endif
+
+#else /* CONFIG_TARGET_WEB */
+
+// A page runs no programs, so the requests are made with the browser's fetch
+// instead: the curl config each caller writes is read here, and each "url" in
+// it is fetched in turn into the "output" that follows it, with the "user" and
+// "header" lines applying to all of them - which is what curl does with it too.
+// The output files are in the page's in-memory file system, where the callers
+// read them back from.
+//
+// A fetch completes on the page's event loop, so the calling task waits for it
+// in uv_rtos_task_delay() steps, which is what lets the browser run it.
+
+#include <emscripten/fetch.h>
+#include <uv_rtos.h>
+
+#define WEB_FETCH_POLL_MS		10
+#define WEB_MAX_URLS			32
+#define WEB_MAX_HEADERS			8
+
+
+typedef struct {
+	char *urls[WEB_MAX_URLS];
+	char *outputs[WEB_MAX_URLS];
+	uint8_t count;
+	char *user;
+	// name, value pairs, NULL terminated as emscripten_fetch wants them
+	const char *headers[WEB_MAX_HEADERS * 2 + 1];
+	uint8_t header_count;
+	char auth[1024];
+	int timeout_s;
+} web_cfg_st;
+
+
+static void web_base64(const char *src, char *dst, size_t dstlen) {
+	static const char tbl[] =
+			"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	size_t len = strlen(src);
+	size_t d = 0;
+	for (size_t i = 0; (i < len) && ((d + 4) < dstlen); i += 3) {
+		uint32_t v = ((uint32_t) (uint8_t) src[i]) << 16;
+		if ((i + 1) < len) {
+			v |= ((uint32_t) (uint8_t) src[i + 1]) << 8;
+		}
+		if ((i + 2) < len) {
+			v |= (uint32_t) (uint8_t) src[i + 2];
+		}
+		dst[d++] = tbl[(v >> 18) & 0x3F];
+		dst[d++] = tbl[(v >> 12) & 0x3F];
+		dst[d++] = ((i + 1) < len) ? tbl[(v >> 6) & 0x3F] : '=';
+		dst[d++] = ((i + 2) < len) ? tbl[v & 0x3F] : '=';
+	}
+	dst[d] = '\0';
+}
+
+
+/// @brief: The value of a `key = "value"` line, in place: the quotes are
+/// dropped. Returns NULL when *line* is not about *key*.
+static char *web_cfg_value(char *line, const char *key) {
+	char *ret = NULL;
+	size_t kl = strlen(key);
+	if ((strncmp(line, key, kl) == 0) &&
+			((line[kl] == ' ') || (line[kl] == '='))) {
+		char *v = strchr(line, '"');
+		if (v != NULL) {
+			v++;
+			char *e = strrchr(v, '"');
+			if (e != NULL) {
+				*e = '\0';
+			}
+			ret = v;
+		}
+	}
+	return ret;
+}
+
+
+/// @brief: Reads curl config *text* (modified in place) into *cfg*
+static void web_cfg_parse(char *text, web_cfg_st *cfg) {
+	memset(cfg, 0, sizeof(*cfg));
+	cfg->timeout_s = 30;
+	// every request of this program's is told apart from a browser's own, so
+	// that the server answers a wrong password with a plain 401 rather than
+	// the challenge that would make the browser ask for one itself
+	cfg->headers[cfg->header_count * 2] = "X-Uvcan-Web";
+	cfg->headers[cfg->header_count * 2 + 1] = "1";
+	cfg->header_count++;
+	char *save = NULL;
+	for (char *line = strtok_r(text, "\n", &save); line != NULL;
+			line = strtok_r(NULL, "\n", &save)) {
+		char *v;
+		if ((v = web_cfg_value(line, "url")) != NULL) {
+			if (cfg->count < WEB_MAX_URLS) {
+				cfg->urls[cfg->count] = v;
+				cfg->outputs[cfg->count] = NULL;
+				cfg->count++;
+			}
+		}
+		else if ((v = web_cfg_value(line, "output")) != NULL) {
+			if (cfg->count > 0) {
+				cfg->outputs[cfg->count - 1] = v;
+			}
+		}
+		else if ((v = web_cfg_value(line, "user")) != NULL) {
+			cfg->user = v;
+		}
+		else if ((v = web_cfg_value(line, "header")) != NULL) {
+			char *colon = strchr(v, ':');
+			if ((colon != NULL) && (cfg->header_count < WEB_MAX_HEADERS)) {
+				*colon = '\0';
+				colon++;
+				while (*colon == ' ') {
+					colon++;
+				}
+				cfg->headers[cfg->header_count * 2] = v;
+				cfg->headers[cfg->header_count * 2 + 1] = colon;
+				cfg->header_count++;
+			}
+		}
+		else if (strncmp(line, "max-time", 8) == 0) {
+			char *eq = strchr(line, '=');
+			if (eq != NULL) {
+				cfg->timeout_s = (int) strtol(eq + 1, NULL, 10);
+			}
+		}
+		else {
+			// silent, show-error, write-out, connect-timeout, proto: nothing
+			// a fetch needs
+		}
+	}
+	if ((cfg->user != NULL) && (cfg->header_count < WEB_MAX_HEADERS)) {
+		char b64[700];
+		web_base64(cfg->user, b64, sizeof(b64));
+		snprintf(cfg->auth, sizeof(cfg->auth), "Basic %s", b64);
+		cfg->headers[cfg->header_count * 2] = "Authorization";
+		cfg->headers[cfg->header_count * 2 + 1] = cfg->auth;
+		cfg->header_count++;
+	}
+	cfg->headers[cfg->header_count * 2] = NULL;
+}
+
+
+static void web_fetch_done(emscripten_fetch_t *fetch) {
+	*((volatile bool *) fetch->userData) = true;
+}
+
+
+/// @brief: Fetches *url* into *output* (when not NULL). Returns the HTTP status,
+/// 0 when the server could not be reached at all.
+static long web_fetch(const web_cfg_st *cfg, const char *url,
+		const char *output) {
+	long code = 0;
+	volatile bool done = false;
+	emscripten_fetch_attr_t attr;
+	emscripten_fetch_attr_init(&attr);
+	strcpy(attr.requestMethod, "GET");
+	attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY;
+	attr.requestHeaders = cfg->headers;
+	attr.timeoutMSecs = (unsigned long) cfg->timeout_s * 1000UL;
+	attr.userData = (void *) &done;
+	attr.onsuccess = &web_fetch_done;
+	attr.onerror = &web_fetch_done;
+	emscripten_fetch_t *fetch = emscripten_fetch(&attr, url);
+	if (fetch != NULL) {
+		while (!done) {
+			uv_rtos_task_delay(WEB_FETCH_POLL_MS);
+		}
+		code = (long) fetch->status;
+		if ((output != NULL) && (code != 0)) {
+			FILE *f = fopen(output, "wb");
+			if (f != NULL) {
+				if (fetch->numBytes > 0) {
+					(void) fwrite(fetch->data, 1, (size_t) fetch->numBytes, f);
+				}
+				fclose(f);
+			}
+		}
+		emscripten_fetch_close(fetch);
+	}
+	return code;
+}
+
+
+int uvhttp_curl_multi(const char *cfg, long *codes, int max_codes) {
+	int n = 0;
+	char *text = strdup(cfg);
+	if (text != NULL) {
+		web_cfg_st c;
+		web_cfg_parse(text, &c);
+		for (uint8_t i = 0; (i < c.count) && (n < max_codes); i++) {
+			codes[n++] = web_fetch(&c, c.urls[i], c.outputs[i]);
+		}
+		memset(c.auth, 0, sizeof(c.auth));
+		free(text);
+	}
+	return n;
+}
+
+
+long uvhttp_curl(const char *cfg) {
+	long code = 0;
+	(void) uvhttp_curl_multi(cfg, &code, 1);
+	return code;
+}
+
+
+long uvhttp_curl_logged(const char *cfg, const char *dest_path,
+		uint64_t expected) {
+	(void) dest_path;
+	(void) expected;
+	return uvhttp_curl(cfg);
+}
+
+#endif /* CONFIG_TARGET_WEB */
 
 
 void uvhttp_err(char *err, unsigned int err_len, const char *msg) {

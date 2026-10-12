@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>uvcan Fleet</title>
+<link rel="stylesheet" href="uvcan-web.css">
+</head>
+<body>
+
+<!--
+	The browser build of uvcan: its Fleet and Settings tabs, compiled to
+	WebAssembly (uvcan.js + uvcan.wasm, see the makefile's "web" target).
+
+	The login form checks the account the same way uvcan itself does: it asks
+	the file server which fleets the account holds (GET /fleets.json with Basic
+	credentials). Only when that succeeds is the program loaded and started,
+	with the same credentials, which it then uses for the fleet broker
+	(wss://<this host>/mqtt) and the fleet folders.
+
+	The password is kept in memory only, and only until the program has taken
+	it. The username is remembered in this browser.
+
+	For development, ?mqtt=<ws url> points the program at another broker
+	listener, e.g. ws://localhost:9001 for a local mosquitto.
+-->
+
+<main id="login" class="login">
+	<form id="login-form" class="card" autocomplete="on">
+		<h1>uvcan <span>Fleet</span></h1>
+		<label for="username">Username</label>
+		<input id="username" name="username" type="text" autocomplete="username"
+				autocapitalize="off" spellcheck="false" required>
+		<label for="password">Password</label>
+		<input id="password" name="password" type="password"
+				autocomplete="current-password" required>
+		<button id="login-btn" type="submit">Log in</button>
+		<p id="login-msg" class="msg" role="status" aria-live="polite"></p>
+	</form>
+</main>
+
+<canvas id="uvui" hidden></canvas>
+<p id="loading" class="loading" hidden>Loading…</p>
+
+<script>
+(function () {
+	'use strict';
+
+	const form = document.getElementById('login-form');
+	const userEl = document.getElementById('username');
+	const passEl = document.getElementById('password');
+	const btn = document.getElementById('login-btn');
+	const msg = document.getElementById('login-msg');
+	const params = new URLSearchParams(location.search);
+
+	try {
+		const u = localStorage.getItem('uvcan-web-user');
+		if (u) {
+			userEl.value = u;
+			passEl.focus();
+		}
+		else {
+			userEl.focus();
+		}
+	}
+	catch (e) {
+		userEl.focus();
+	}
+
+	// Basic credentials of any text: btoa() only takes Latin-1
+	function basic(user, pass) {
+		const bytes = new TextEncoder().encode(user + ':' + pass);
+		let bin = '';
+		bytes.forEach((b) => { bin += String.fromCharCode(b); });
+		return 'Basic ' + btoa(bin);
+	}
+
+	function say(text, error) {
+		msg.textContent = text;
+		msg.classList.toggle('error', !!error);
+	}
+
+	async function check(user, pass) {
+		let res;
+		try {
+			// the server's own fleet list, at the root of the host the page is
+			// served from
+			res = await fetch('/fleets.json', {
+				cache: 'no-store',
+				credentials: 'omit',
+				headers: {
+					'Authorization': basic(user, pass),
+					// tells the server not to answer with a challenge, which
+					// would make the browser ask for the password itself
+					'X-Uvcan-Web': '1'
+				}
+			});
+		}
+		catch (e) {
+			return 'The server could not be reached.';
+		}
+		if (res.status === 401 || res.status === 403) {
+			return 'Wrong username or password.';
+		}
+		if (!res.ok) {
+			return 'The server answered ' + res.status + '.';
+		}
+		return '';
+	}
+
+	function queueLog(t) {
+		const q = window.Module.uvLogQueue;
+		q.push(t);
+		if (q.length > 5000) {
+			q.splice(0, q.length - 5000);
+		}
+	}
+
+	function start(user, pass) {
+		const wsProto = (location.protocol === 'https:') ? 'wss://' : 'ws://';
+		document.getElementById('login').hidden = true;
+		const loading = document.getElementById('loading');
+		loading.hidden = false;
+		const canvas = document.getElementById('uvui');
+
+		window.Module = {
+			uvLogin: {
+				username: user,
+				password: pass,
+				url: location.origin,
+				fleetUrl: params.get('mqtt') || (wsProto + location.host + '/mqtt')
+			},
+			// the program's output, a line at a time: to the console, and to
+			// the log view at the bottom of the UI, which takes the lines from
+			// this queue (src/logcap.c)
+			uvLogQueue: [],
+			print: (t) => { console.log(t); queueLog(t); },
+			printErr: (t) => { console.log(t); queueLog(t); },
+			onRuntimeInitialized: function () {
+				loading.hidden = true;
+				canvas.hidden = false;
+				Module.callMain(['--ui']);
+			},
+			onAbort: function (what) {
+				loading.hidden = false;
+				loading.textContent = 'uvcan stopped: ' + what;
+			}
+		};
+
+		// the canvas backend reads the font metrics once, at start
+		Promise.all([
+			document.fonts.load('16px UvSans'),
+			document.fonts.load('16px UvMono')
+		]).catch(() => {}).then(() => {
+			const s = document.createElement('script');
+			s.src = 'uvcan.js';
+			s.onerror = () => { loading.textContent = 'uvcan could not be loaded.'; };
+			document.body.appendChild(s);
+		});
+	}
+
+	form.addEventListener('submit', async (e) => {
+		e.preventDefault();
+		const user = userEl.value.trim();
+		const pass = passEl.value;
+		btn.disabled = true;
+		say('Logging in…', false);
+		const err = await check(user, pass);
+		btn.disabled = false;
+		if (err) {
+			say(err, true);
+			passEl.select();
+			return;
+		}
+		try {
+			localStorage.setItem('uvcan-web-user', user);
+		}
+		catch (e2) {
+			// remembering the name is only a convenience
+		}
+		passEl.value = '';
+		start(user, pass);
+	});
+})();
+</script>
+</body>
+</html>
