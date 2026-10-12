@@ -1133,6 +1133,35 @@ static void publish_lock_give(void) {
 }
 
 
+/// How long a publish made from a signal handler keeps trying for the handle.
+/// Nothing there may wait on the scheduler, whose tick is stopped, so it only
+/// tries the lock and sleeps between the tries.
+#define MQTT_SIGNAL_LOCK_TRIES		20
+#define MQTT_SIGNAL_LOCK_SLEEP_NS	(10L * 1000L * 1000L)
+
+/// @brief: publish_lock_take() for a signal handler: never blocks on the lock,
+/// and gives up after about 200 ms. The holder may be the very thread the
+/// signal interrupted, in which case the handle is never had.
+static bool publish_lock_take_nowait(void) {
+	bool ret = false;
+	handle_lock_init();
+	for (uint8_t i = 0; (i < MQTT_SIGNAL_LOCK_TRIES) && !ret; i++) {
+		ret = uv_mutex_lock_ms(&handle_lock, 0);
+		if (!ret) {
+#if !CONFIG_TARGET_WIN
+			// only ever called from the signal handler, which Windows builds
+			// do not install
+			struct timespec ts = { 0, MQTT_SIGNAL_LOCK_SLEEP_NS };
+			(void) nanosleep(&ts, NULL);
+#endif
+		}
+		else {
+		}
+	}
+	return ret;
+}
+
+
 bool mqtt_connect(const char *host, const char *username,
 		const char *password) {
 	handle_lock_init();
@@ -1545,8 +1574,10 @@ bool mqtt_get_dev_ui_size(uint8_t fleet_index, uint8_t dev_index,
 }
 
 
-bool mqtt_dev_set_features(uint8_t fleet_index, uint8_t dev_index,
-		uint8_t features) {
+/// @brief: mqtt_dev_set_features(), from a signal handler when *from_signal*:
+/// then the handle is only tried for, and nothing is printed.
+static bool set_features(uint8_t fleet_index, uint8_t dev_index,
+		uint8_t features, bool from_signal) {
 	mqtt_dev_st *d = dev_at(fleet_index, dev_index);
 	bool ret = false;
 	if ((d != NULL) && (mosq != NULL) && (state == MQTT_STATE_CONNECTED)) {
@@ -1561,7 +1592,8 @@ bool mqtt_dev_set_features(uint8_t fleet_index, uint8_t dev_index,
 		// the handle is the pump task's while it loops, and a disconnect
 		// destroys it; publishing into either would be a use of a handle that
 		// is not ours (see handle_lock)
-		bool locked = publish_lock_take();
+		bool locked = from_signal ?
+				publish_lock_take_nowait() : publish_lock_take();
 		int rc = locked ?
 				mosquitto_publish(mosq, NULL, topic, (int) sizeof(frame),
 						frame, 0, false) : MOSQ_ERR_NO_CONN;
@@ -1573,11 +1605,34 @@ bool mqtt_dev_set_features(uint8_t fleet_index, uint8_t dev_index,
 		if (rc == MOSQ_ERR_SUCCESS) {
 			ret = true;
 		}
-		else {
+		else if (!from_signal) {
 			printf("MQTT: could not ask '%s' for features 0x%x: %s\n",
 					d->name, (unsigned int) features, mosquitto_strerror(rc));
 			fflush(stdout);
 		}
+		else {
+		}
+	}
+	return ret;
+}
+
+
+bool mqtt_dev_set_features(uint8_t fleet_index, uint8_t dev_index,
+		uint8_t features) {
+	return set_features(fleet_index, dev_index, features, false);
+}
+
+
+bool mqtt_dev_release_can_from_signal(uint8_t fleet_index,
+		uint8_t dev_index) {
+	mqtt_dev_st *d = dev_at(fleet_index, dev_index);
+	bool ret = false;
+	if (d != NULL) {
+		ret = set_features(fleet_index, dev_index,
+				(uint8_t) (d->features & (uint8_t) ~(REMOTE_IOT_FEATURE_CAN |
+						REMOTE_IOT_FEATURE_CAN_SDO)), true);
+	}
+	else {
 	}
 	return ret;
 }
@@ -1943,6 +1998,13 @@ bool mqtt_dev_set_features(uint8_t fleet_index, uint8_t dev_index,
 	(void) fleet_index;
 	(void) dev_index;
 	(void) features;
+	return false;
+}
+
+bool mqtt_dev_release_can_from_signal(uint8_t fleet_index,
+		uint8_t dev_index) {
+	(void) fleet_index;
+	(void) dev_index;
 	return false;
 }
 

@@ -277,7 +277,23 @@ static void can_task(void *ptr) {
 						(unsigned int) remotecan_get_error_count(),
 						mqtt_dev_get_can_active(f, d) ? "" :
 								" (device reports CAN off)");
-				fflush(stdout);
+				// and what the device says it did with them: a frame it threw
+				// away looks from here exactly like one that was never sent
+				remote_can_stats_st st;
+				if (mqtt_get_dev_can_stats(f, d, &st)) {
+					printf("remote CAN: device injected %u",
+							(unsigned int) st.injected);
+					for (uint8_t i = 0; i < REMOTE_CAN_CLASS_COUNT; i++) {
+						printf(", %s %u fwd %u drop",
+								remote_can_class_to_str((remote_can_class_e) i),
+								(unsigned int) st.forwarded[i],
+								(unsigned int) st.dropped[i]);
+					}
+					printf("\n");
+					fflush(stdout);
+				}
+				else {
+				}
 			}
 			else {
 			}

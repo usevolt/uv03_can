@@ -85,6 +85,12 @@ void remotecan_stop(void);
 /// The signal handler cannot publish: it is not the place to be waiting on a
 /// network client, and the device switches everything off by itself as soon as
 /// the broker session goes. What must not be left behind is the interface.
+/// @brief: From a SIGINT / SIGTERM handler, before remotecan_shutdown(): asks
+/// the bridged device to stop forwarding CAN. The device has no way of noticing
+/// that the bridge is gone, and without this it went on forwarding its bus,
+/// with the remote CAN notice on its screen, until someone closed it there.
+void remotecan_release_from_signal(void);
+
 void remotecan_shutdown(void);
 
 

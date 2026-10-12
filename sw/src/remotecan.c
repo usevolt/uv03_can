@@ -151,6 +151,11 @@ static void msg_to_frame(const uv_can_msg_st *msg, struct can_frame *frame);
 #define SDO_CCS_UPLOAD_INIT		0x40
 #define SDO_CCS_UPLOAD_SEG		0x60
 #define SDO_CS_ABORT			0x80
+// client command specifier 6 with cs 0: initiate block download
+#define SDO_CCS_BLOCK_DL_MASK	0xE1
+#define SDO_CCS_BLOCK_DL_INIT	0xC0
+// server command specifier 5 with ss 1: block download ended
+#define SDO_SCS_BLOCK_DL_END	0xA1
 // server -> client
 #define SDO_SCS_DOWNLOAD_SEG	0x20
 #define SDO_SCS_DOWNLOAD_INIT	0x60
@@ -181,6 +186,20 @@ static bool sdo_offload_on;
 
 static sdo_state_e sdo_state;
 static uint8_t sdo_node;
+
+// Node whose SDO block download is running, 0 for none. A block segment
+// carries its sequence number where the command byte would be, so segments
+// 32-95 look exactly like download and upload initiates: left to the
+// offload, they were answered here and never reached the device, and the
+// transfer stalled at the end of its first block. While one runs, every
+// request to that node is relayed as it is.
+static uint8_t sdo_block_node;
+// Set from the broker's task when the device ends or aborts the block
+// download; the bridge task then lets go of sdo_block_node.
+static volatile bool sdo_block_done;
+// Time since the client last sent anything for the block download, so a
+// transfer whose end never came back does not leave the node relayed for good
+static uint32_t sdo_block_idle_ms;
 static uint16_t sdo_mindex;
 static uint8_t sdo_sindex;
 static bool sdo_write;
@@ -341,6 +360,23 @@ static bool sdo_intercept(const uv_can_msg_st *msg) {
 			(msg->data_length < 8u) ||
 			(node == 0u)) {
 		// not an SDO request, or the device cannot run it for us
+	}
+	else if (node == sdo_block_node) {
+		// a block download to this node is running: its segments are not
+		// commands, whatever their first byte looks like
+		sdo_block_idle_ms = 0;
+		if (msg->data_8bit[0] == SDO_CS_ABORT) {
+			sdo_block_node = 0;
+		}
+		else {
+		}
+	}
+	else if ((sdo_state == SDO_IDLE) &&
+			((msg->data_8bit[0] & SDO_CCS_BLOCK_DL_MASK) == SDO_CCS_BLOCK_DL_INIT)) {
+		// a block download starts: relayed, and so is the rest of it
+		sdo_block_node = node;
+		sdo_block_idle_ms = 0;
+		sdo_block_done = false;
 	}
 	else if ((msg->data_8bit[1] == (UV_TERMINAL_CAN_INDEX & 0xFFu)) &&
 			(msg->data_8bit[2] == (UV_TERMINAL_CAN_INDEX >> 8))) {
@@ -604,6 +640,18 @@ static void can_from_dev(uint8_t fleet_index, uint8_t dev_index,
 			filtered_count++;
 		}
 		else {
+			// the device ending or aborting a block download ends the relaying
+			// of its segments (see sdo_block_node)
+			if ((sdo_block_node != 0u) &&
+					(msg->type == CAN_STD) &&
+					(msg->id == (uint32_t) (SDO_RESPONSE_ID + sdo_block_node)) &&
+					(msg->data_length >= 1u) &&
+					((msg->data_8bit[0] == SDO_SCS_BLOCK_DL_END) ||
+					(msg->data_8bit[0] == SDO_CS_ABORT))) {
+				sdo_block_done = true;
+			}
+			else {
+			}
 			struct can_frame frame;
 			msg_to_frame(msg, &frame);
 			if (write(sock, &frame, sizeof(frame)) == (ssize_t) sizeof(frame)) {
@@ -712,6 +760,18 @@ bool remotecan_start(uint8_t fleet_index, uint8_t dev_index) {
 		else {
 		}
 		mqtt_set_can_callb(&can_from_dev, NULL);
+		// A bridge being started is someone asking for CAN, so it lifts a
+		// refusal the device may still hold from a close nobody here heard:
+		// the device lets go of it only on a request without the feature,
+		// and every request the bridge makes from here on carries it. The
+		// re-assert in remotecan_step() must not do this, or the operator's
+		// close would last only until its next round.
+		if (!mqtt_dev_get_can_active(fleet_index, dev_index)) {
+			(void) mqtt_dev_set_can_active(fleet_index, dev_index, false,
+					sdo_only);
+		}
+		else {
+		}
 		(void) mqtt_dev_set_can_active(fleet_index, dev_index, true, sdo_only);
 		send_filters();
 		printf("remote CAN: bridging '%s' to netdev %s\n",
@@ -765,6 +825,16 @@ void remotecan_stop(void) {
 		printf("remote CAN: bridge closed, netdev %s removed\n",
 				REMOTECAN_IFNAME);
 		fflush(stdout);
+	}
+	else {
+	}
+}
+
+
+void remotecan_release_from_signal(void) {
+	if (active && (bridged_fleet >= 0) && (bridged_dev >= 0)) {
+		(void) mqtt_dev_release_can_from_signal((uint8_t) bridged_fleet,
+				(uint8_t) bridged_dev);
 	}
 	else {
 	}
@@ -836,6 +906,18 @@ void remotecan_step(void) {
 		// answers that arrived since the last step, and transfers the device
 		// never answered at all
 		sdo_result_step(REMOTECAN_STEP_MS);
+		if (sdo_block_node != 0u) {
+			sdo_block_idle_ms += REMOTECAN_STEP_MS;
+			if (sdo_block_done ||
+					(sdo_block_idle_ms >= SDO_OFFLOAD_TIMEOUT_MS)) {
+				sdo_block_node = 0;
+				sdo_block_done = false;
+			}
+			else {
+			}
+		}
+		else {
+		}
 	}
 	else {
 		sdo_offload_on = false;
@@ -1022,6 +1104,9 @@ bool remotecan_start(uint8_t fleet_index, uint8_t dev_index) {
 }
 
 void remotecan_stop(void) {
+}
+
+void remotecan_release_from_signal(void) {
 }
 
 void remotecan_shutdown(void) {

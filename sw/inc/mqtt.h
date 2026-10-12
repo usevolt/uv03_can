@@ -308,6 +308,12 @@ void mqtt_set_can_callb(mqtt_can_callb_t callb, void *user);
 bool mqtt_dev_set_can_active(uint8_t fleet_index, uint8_t dev_index,
 		bool active, bool sdo_only);
 
+/// @brief: Switches CAN forwarding off on a device from a SIGINT / SIGTERM
+/// handler, so a bridge ended that way does not leave the device forwarding
+/// its bus to nobody. Best effort: it only tries for the client handle, and
+/// does not print. Returns true if the request went out.
+bool mqtt_dev_release_can_from_signal(uint8_t fleet_index, uint8_t dev_index);
+
 /// @brief: True while the CAN feature is in effect on a device, as the device
 /// itself last reported it.
 bool mqtt_dev_get_can_active(uint8_t fleet_index, uint8_t dev_index);

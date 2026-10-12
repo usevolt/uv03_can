@@ -175,6 +175,9 @@ static void cleanup_signal_callb(int signum) {
 
 	simrun_kill_all();
 	system_remove_tmpdirs();
+	// the device at the far end of a remote CAN bridge is told first, while
+	// the bridge still knows which one it is
+	remotecan_release_from_signal();
 	// the remote CAN bridge's network interface is on this machine, not in a
 	// temporary directory, but it is ours to take away just the same
 	remotecan_shutdown();
