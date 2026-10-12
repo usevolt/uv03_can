@@ -43,8 +43,10 @@
 #define RX_TEXT_MAX			8192
 // How much of the oldest text is discarded once RX_TEXT_MAX is reached.
 #define RX_TEXT_DROP		(RX_TEXT_MAX / 4)
-// Per-chunk acknowledge timeout for the SDO reply protocol (ms).
-#define WAIT_FOR_RESPONSE_MS	500
+// How long a chunk waits for the previous one to be echoed back (ms) before it
+// is sent anyway. Long enough for a bus bridged over the broker, where the
+// echo is a round trip through it.
+#define WAIT_FOR_RESPONSE_MS	2000
 // Size of the command-line input buffer.
 #define INPUT_BUF_LEN		256
 
@@ -264,7 +266,6 @@ static bool wait_for_response(void) {
 	}
 	if (!ret) {
 		uv_mutex_lock(&mutex);
-		responded = true;
 		const char *no = "\n*** NO RESPONSE ***\n";
 		for (const char *p = no; *p != '\0'; p++) {
 			char c = *p;
@@ -306,9 +307,11 @@ static void tx_task(void *ptr) {
 				msg.data_8bit[4 + i] = chunk[i];
 			}
 			msg.data_length = 4 + n;
-			if (wait_for_response()) {
-				uv_can_send(dev.can_channel, &msg);
-			}
+			// sent whether or not the previous chunk was echoed: the wait only
+			// paces the transfer, and a chunk dropped here would lose the
+			// characters, the line's newline among them
+			(void) wait_for_response();
+			uv_can_send(dev.can_channel, &msg);
 			uv_rtos_task_delay(5);
 		}
 		else {

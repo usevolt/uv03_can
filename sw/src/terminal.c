@@ -36,7 +36,9 @@ static uv_mutex_st mutex;
 uv_delay_st end_delay;
 static uint32_t arg_count = 0;
 bool responded = true;
-#define WAIT_FOR_RESPONSE_MS	500
+// How long a chunk waits for the previous one to be echoed back (ms) before it
+// is sent anyway. Long enough for a bus bridged over the broker.
+#define WAIT_FOR_RESPONSE_MS	2000
 
 static void command_step(void *ptr);
 static void command_tx(void *ptr);
@@ -108,7 +110,6 @@ static bool wait_for_response(void) {
 	if (ret == false) {
 		uv_mutex_lock(&mutex);
 		PRINT("\n*** NO RESPONSE ***\n");
-		responded = true;
 		fflush(stdout);
 		uv_mutex_unlock(&mutex);
 	}
@@ -164,17 +165,16 @@ static void command_tx(void *ptr) {
 					msg.data_8bit[4 + len++] = str[i];
 					if (len == 4) {
 						msg.data_length = 8;
-						if (wait_for_response()) {
-							uv_can_send(this->can_channel, &msg);
-						}
+						// sent even without an echo: the wait only paces
+						(void) wait_for_response();
+						uv_can_send(this->can_channel, &msg);
 						len = 0;
 					}
 				}
 				if (len != 0) {
 					msg.data_length = 4 + len;
-					if (wait_for_response()) {
-						uv_can_send(this->can_channel, &msg);
-					}
+					(void) wait_for_response();
+					uv_can_send(this->can_channel, &msg);
 				}
 			}
 		}

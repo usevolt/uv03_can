@@ -22,6 +22,7 @@
 #include <string.h>
 #include <uv_rtos.h>
 #include <uv_remote_proto.h>
+#include <uv_terminal.h>
 #include "mqtt.h"
 
 #if CONFIG_TARGET_LINUX
@@ -340,6 +341,13 @@ static bool sdo_intercept(const uv_can_msg_st *msg) {
 			(msg->data_length < 8u) ||
 			(node == 0u)) {
 		// not an SDO request, or the device cannot run it for us
+	}
+	else if ((msg->data_8bit[1] == (UV_TERMINAL_CAN_INDEX & 0xFFu)) &&
+			(msg->data_8bit[2] == (UV_TERMINAL_CAN_INDEX >> 8))) {
+		// Terminal characters look like an expedited download to 0x5FFF, but
+		// no such object exists: the device's CAN driver takes them off the
+		// bus into its terminal. Run as an SDO they would only be aborted, so
+		// they are relayed as they are.
 	}
 	else if ((sdo_state != SDO_IDLE) && (node != sdo_node)) {
 		// one transfer at a time: another node's conversation is relayed the
