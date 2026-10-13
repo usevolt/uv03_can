@@ -47,7 +47,8 @@
 // and the fleet broker, so it is entered in one place.
 static uv_uitabwindow_st fleet_tabs;
 static uv_uiobject_st *fleet_tabs_buf[4];
-static char fleet_name_buf[MQTT_MAX_FLEETS][MQTT_NAME_MAX];
+// "<fleet> (<devices online>)"
+static char fleet_name_buf[MQTT_MAX_FLEETS][MQTT_NAME_MAX + 8];
 static char *fleet_names[MQTT_MAX_FLEETS];
 static uint8_t fleet_tab_count;
 // The fleet each tab shows: the fleet named MAIN_FLEET first, the others after
@@ -55,12 +56,17 @@ static uint8_t fleet_tab_count;
 // remote UI and CAN sessions hold them), only the tabs are reordered.
 #define MAIN_FLEET		"main"
 static uint8_t fleet_of_tab[MQTT_MAX_FLEETS];
+// True while the fleet tabs are what the tab shows, rather than a placeholder,
+// so that fleet_tabs and the fleet_* tables above are valid.
+static bool fleet_tabs_built;
 
 static uv_uitabwindow_st dev_tabs;
 // the device tab holds its information label and the row of buttons below it;
 // uv_uiwindow_add() does not bounds check, so this has to have room for all of
 // them
 static uv_uiobject_st *dev_tabs_buf[8];
+// the operator's name for the device, or its client id (the MAC) when it has
+// none or its firmware cannot tell it
 static char dev_name_buf[MQTT_MAX_DEVS][MQTT_NAME_MAX];
 static char *dev_names[MQTT_MAX_DEVS];
 static uint8_t dev_tab_count;
@@ -177,8 +183,18 @@ static void build_placeholder(uv_uitabwindow_st *tabwin, const char *text,
 }
 
 
+/// @brief: Writes the label of fleet tab *tab* into *dest*: the fleet's name
+/// and how many of its devices are online.
+static void fleet_tab_label(uint8_t tab, char *dest, size_t len) {
+	snprintf(dest, len, "%s (%u)", mqtt_get_fleet_name(fleet_of_tab[tab]),
+			(unsigned int) mqtt_get_online_count(fleet_of_tab[tab]));
+}
+
+
 void fleettab_show(uv_uitabwindow_st *tabwin) {
 	uv_bounding_box_st cbb = uv_uitabwindow_get_contentbb(tabwin);
+
+	fleet_tabs_built = false;
 
 	int16_t rest_y = MARGIN;
 	int16_t rest_h = cbb.h - rest_y - MARGIN;
@@ -226,11 +242,10 @@ static void build_fleet_tabs(uv_uitabwindow_st *tabwin, int16_t y, int16_t h) {
 		}
 	}
 	for (uint8_t i = 0; i < fleet_tab_count; i++) {
-		strncpy(fleet_name_buf[i], mqtt_get_fleet_name(fleet_of_tab[i]),
-				sizeof(fleet_name_buf[i]) - 1);
-		fleet_name_buf[i][sizeof(fleet_name_buf[i]) - 1] = '\0';
+		fleet_tab_label(i, fleet_name_buf[i], sizeof(fleet_name_buf[i]));
 		fleet_names[i] = fleet_name_buf[i];
 	}
+	fleet_tabs_built = true;
 
 	uv_uitabwindow_init(&fleet_tabs, fleet_tab_count, &uv_uistyles[0],
 			fleet_tabs_buf, fleet_names);
@@ -278,9 +293,13 @@ static void show_active_dev_tab(void) {
 	}
 	else {
 		for (uint8_t i = 0; i < dev_tab_count; i++) {
-			strncpy(dev_name_buf[i],
-					mqtt_get_dev_name((uint8_t) selected_fleet, i),
-					sizeof(dev_name_buf[i]) - 1);
+			const char *name = mqtt_get_dev_ident((uint8_t) selected_fleet, i);
+			if (name[0] == '\0') {
+				name = mqtt_get_dev_name((uint8_t) selected_fleet, i);
+			}
+			else {
+			}
+			strncpy(dev_name_buf[i], name, sizeof(dev_name_buf[i]) - 1);
 			dev_name_buf[i][sizeof(dev_name_buf[i]) - 1] = '\0';
 			dev_names[i] = dev_name_buf[i];
 		}
@@ -537,6 +556,30 @@ bool fleettab_step(void) {
 				uv_ui_refresh(&dev_info);
 			}
 		}
+	}
+
+	// The online counts in the fleet tab names change as devices come and go,
+	// which the client does not report as a change of its tree. The names are
+	// rewritten in place, which needs a redraw but no rebuild.
+	if (shown && fleet_tabs_built) {
+		bool relabel = false;
+		for (uint8_t i = 0; i < fleet_tab_count; i++) {
+			char label[sizeof(fleet_name_buf[i])];
+			fleet_tab_label(i, label, sizeof(label));
+			if (strcmp(label, fleet_name_buf[i]) != 0) {
+				strcpy(fleet_name_buf[i], label);
+				relabel = true;
+			}
+			else {
+			}
+		}
+		if (relabel) {
+			uv_ui_refresh(&fleet_tabs);
+		}
+		else {
+		}
+	}
+	else {
 	}
 
 	// a state change or a newly discovered fleet / device means the tabs no

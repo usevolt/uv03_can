@@ -64,6 +64,10 @@
 /// terminating null.
 #define MQTT_NAME_MAX			64
 
+/// @brief: A device heard from within this many seconds counts as online. Its
+/// heartbeat comes every 5 s, so this lets two of them go missing.
+#define MQTT_DEV_ONLINE_S		15
+
 
 /// @brief: Connection state of the client.
 typedef enum {
@@ -171,6 +175,13 @@ const char *mqtt_get_dev_name(uint8_t fleet_index, uint8_t dev_index);
 uint32_t mqtt_get_dev_msg_count(uint8_t fleet_index, uint8_t dev_index);
 uint32_t mqtt_get_dev_age_s(uint8_t fleet_index, uint8_t dev_index);
 
+/// @brief: True when device *dev_index* of fleet *fleet_index* has been heard
+/// from within the last MQTT_DEV_ONLINE_S seconds.
+bool mqtt_get_dev_online(uint8_t fleet_index, uint8_t dev_index);
+
+/// @brief: Number of devices of the fleet at *fleet_index* which are online.
+uint8_t mqtt_get_online_count(uint8_t fleet_index);
+
 
 /// @brief: Returns true once when the connection state or the discovered fleet /
 /// device tree changed since the last call (the flag is cleared by the read), so
@@ -201,6 +212,16 @@ bool mqtt_remove_dev(uint8_t fleet_index, uint8_t dev_index);
 /// has been heard from. Distinct from mqtt_get_dev_name(), which is the MQTT
 /// client id the broker knows it by.
 const char *mqtt_get_dev_devname(uint8_t fleet_index, uint8_t dev_index);
+
+/// @brief: The identification name the machine operator gave the device
+/// (REMOTE_MSG_TYPE_NAME), or "" when it has none or has not told it. The
+/// client is the one that asks: a device that has not said its name is asked
+/// for it a few times while it is online.
+const char *mqtt_get_dev_ident(uint8_t fleet_index, uint8_t dev_index);
+
+/// @brief: True once the device has answered for its name, even if only to say
+/// it has none yet. Firmware from before the name existed never does.
+bool mqtt_get_dev_ident_known(uint8_t fleet_index, uint8_t dev_index);
 
 /// @brief: Seconds since the device booted, as of its last heartbeat.
 uint32_t mqtt_get_dev_uptime_s(uint8_t fleet_index, uint8_t dev_index);

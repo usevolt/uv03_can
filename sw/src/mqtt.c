@@ -79,6 +79,16 @@ typedef struct {
 	uint8_t features;
 	uint8_t dev_state;
 
+	// The identification name the machine operator gave the device
+	// (REMOTE_MSG_TYPE_NAME). *ident_known* stays false for a device whose
+	// firmware does not answer NAME_REQ, which is what tells "not named yet"
+	// (known, empty) from "cannot be named" apart. Asked for from the UI thread,
+	// a few times at most, see ident_step().
+	char ident[REMOTE_DEV_NAME_MAX_LEN];
+	bool ident_known;
+	uint8_t ident_reqs;
+	time_t ident_req_at;
+
 	// REMOTE messages arrive on this device's own to_admin topic, so each
 	// device needs its own framer: the streams are independent.
 	remote_stream_st rx;
@@ -607,6 +617,13 @@ static void announce_parse(const char *fleet, const char *payload,
 			}
 			uint32_t v;
 			if (json_get_uint(buf, "up", &v)) {
+				if (v < d->uptime_s) {
+					// rebooted, perhaps into new firmware: one that could not
+					// answer for its name before may be able to now
+					d->ident_reqs = 0;
+				}
+				else {
+				}
 				d->uptime_s = v;
 			}
 			if (json_get_uint(buf, "en", &v)) {
@@ -830,6 +847,25 @@ static void dev_frame_callb(void *user, remote_msg_types_e type,
 		else {
 		}
 		break;
+
+	case REMOTE_MSG_TYPE_NAME:
+	{
+		// fixed length and null padded, but never trust the padding
+		char ident[REMOTE_DEV_NAME_MAX_LEN];
+		memcpy(ident, &data[2], sizeof(ident));
+		ident[sizeof(ident) - 1] = '\0';
+		if (!d->ident_known || (strcmp(ident, d->ident) != 0)) {
+			strcpy(d->ident, ident);
+			d->ident_known = true;
+			changed = true;
+			printf("MQTT: device '%s' is named '%s'\n", d->name,
+					(ident[0] != '\0') ? ident : "(not named yet)");
+			fflush(stdout);
+		}
+		else {
+		}
+		break;
+	}
 
 	case REMOTE_MSG_TYPE_CLOSE:
 		// The device has switched everything off at its end already, so the
@@ -1275,6 +1311,10 @@ void mqtt_start_pump(void) {
 }
 
 
+// defined with the other publishing further down
+static void ident_step(void);
+
+
 void mqtt_ui_step(void) {
 	// Taken one at a time, with the lock released around the callback: the
 	// callbacks draw, open windows and stop the CAN bridge, and holding the
@@ -1328,6 +1368,8 @@ void mqtt_ui_step(void) {
 		}
 		free(e.data);
 	}
+
+	ident_step();
 }
 
 
@@ -1394,6 +1436,25 @@ uint32_t mqtt_get_dev_age_s(uint8_t fleet_index, uint8_t dev_index) {
 		if (seen != 0) {
 			double d = difftime(time(NULL), seen);
 			ret = (d > 0.0) ? (uint32_t) d : 0;
+		}
+	}
+	return ret;
+}
+
+
+bool mqtt_get_dev_online(uint8_t fleet_index, uint8_t dev_index) {
+	return (mqtt_get_dev_msg_count(fleet_index, dev_index) > 0) &&
+			(mqtt_get_dev_age_s(fleet_index, dev_index) < MQTT_DEV_ONLINE_S);
+}
+
+
+uint8_t mqtt_get_online_count(uint8_t fleet_index) {
+	uint8_t ret = 0;
+	for (uint8_t i = 0; i < mqtt_get_dev_count(fleet_index); i++) {
+		if (mqtt_get_dev_online(fleet_index, i)) {
+			ret++;
+		}
+		else {
 		}
 	}
 	return ret;
@@ -1484,6 +1545,19 @@ uint32_t mqtt_get_dev_msg_count(uint8_t fleet_index, uint8_t dev_index) {
 	return 0;
 }
 
+bool mqtt_get_dev_online(uint8_t fleet_index, uint8_t dev_index) {
+	(void) fleet_index;
+	(void) dev_index;
+	return false;
+}
+
+
+uint8_t mqtt_get_online_count(uint8_t fleet_index) {
+	(void) fleet_index;
+	return 0;
+}
+
+
 uint32_t mqtt_get_dev_age_s(uint8_t fleet_index, uint8_t dev_index) {
 	(void) fleet_index;
 	(void) dev_index;
@@ -1568,6 +1642,18 @@ bool mqtt_remove_dev(uint8_t fleet_index, uint8_t dev_index) {
 const char *mqtt_get_dev_devname(uint8_t fleet_index, uint8_t dev_index) {
 	mqtt_dev_st *d = dev_at(fleet_index, dev_index);
 	return (d != NULL) ? d->devname : "";
+}
+
+
+const char *mqtt_get_dev_ident(uint8_t fleet_index, uint8_t dev_index) {
+	mqtt_dev_st *d = dev_at(fleet_index, dev_index);
+	return ((d != NULL) && d->ident_known) ? d->ident : "";
+}
+
+
+bool mqtt_get_dev_ident_known(uint8_t fleet_index, uint8_t dev_index) {
+	mqtt_dev_st *d = dev_at(fleet_index, dev_index);
+	return (d != NULL) && d->ident_known;
 }
 
 
@@ -1754,6 +1840,53 @@ static bool dev_publish(uint8_t fleet_index, uint8_t dev_index,
 	else {
 	}
 	return ret;
+}
+
+
+/// @brief: How often, and how many times over, a device that has not said its
+/// name is asked for it. A device that knows the message answers the first
+/// request and also says its name unprompted whenever its broker session opens,
+/// so the repeats are only for a request or an answer lost on the way. Firmware
+/// from before the message never answers, and is asked again only after it
+/// reboots - possibly into firmware that does.
+#define IDENT_REQ_INTERVAL_S	10
+#define IDENT_REQ_MAX			3
+
+
+/// @brief: Asks the devices which are online but have not told their name for
+/// it. Called on the UI thread: a publish cannot be made from inside
+/// on_message(), which runs with the handle the publish needs already taken.
+static void ident_step(void) {
+	if (state == MQTT_STATE_CONNECTED) {
+		time_t now = time(NULL);
+		for (uint8_t f = 0; f < fleet_count; f++) {
+			for (uint8_t i = 0; i < fleets[f].dev_count; i++) {
+				mqtt_dev_st *d = &fleets[f].devs[i];
+				if (!d->ident_known &&
+						(d->ident_reqs < IDENT_REQ_MAX) &&
+						mqtt_get_dev_online(f, i) &&
+						((d->ident_reqs == 0) ||
+						(difftime(now, d->ident_req_at) >=
+								IDENT_REQ_INTERVAL_S))) {
+					const uint8_t frame[REMOTE_MSG_TYPE_NAME_REQ_LEN] = {
+							REMOTE_MSG_START_BYTE,
+							REMOTE_MSG_TYPE_NAME_REQ
+					};
+					if (dev_publish(f, i, frame, sizeof(frame))) {
+						d->ident_reqs++;
+						d->ident_req_at = now;
+					}
+					else {
+						// tried again on the next step
+					}
+				}
+				else {
+				}
+			}
+		}
+	}
+	else {
+	}
 }
 
 
@@ -1996,6 +2129,20 @@ const char *mqtt_get_dev_devname(uint8_t fleet_index, uint8_t dev_index) {
 	(void) fleet_index;
 	(void) dev_index;
 	return "";
+}
+
+
+const char *mqtt_get_dev_ident(uint8_t fleet_index, uint8_t dev_index) {
+	(void) fleet_index;
+	(void) dev_index;
+	return "";
+}
+
+
+bool mqtt_get_dev_ident_known(uint8_t fleet_index, uint8_t dev_index) {
+	(void) fleet_index;
+	(void) dev_index;
+	return false;
 }
 
 uint32_t mqtt_get_dev_uptime_s(uint8_t fleet_index, uint8_t dev_index) {

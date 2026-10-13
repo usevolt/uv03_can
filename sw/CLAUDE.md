@@ -295,11 +295,29 @@ use it: the UI's Account panel and Fleet tab, and the command line options.
   blocks until Ctrl-C or the device ends the session. A second uvcan reaches the
   remote bus with `-c uvremote0` (e.g. `--terminal`, `--loadparam`).
 
-A device is named as `--remotelist` shows it: `<fleet>/<client id>`, a client id
-or the device's own name (the latter two case-insensitive). The UI's Fleet tab
+A device is named as `--remotelist` shows it: `<fleet>/<client id>`, a client id,
+the device's own name or its identification name (the latter three
+case-insensitive). The UI's Fleet tab
 calls the same `fleet_ui_start()` / `fleet_ui_stop()` / `fleet_remove_dev()` /
 `fleet_dev_info()` and pumps the sessions with `fleet_step()`; the Account panel
 logs in with `fleet_login()` on a task of its own.
+
+**Identification names.** The client id is the device's MAC, and the name in its
+heartbeat is the same for every device of a kind ("UV0D Display"), so the
+machine operator can give a device a name of its own -- the uvcan conf's
+`dev_name`, which the device asks for when it joins WiFi with the default
+still in place. The device tells it in a REMOTE `NAME` message
+(`REMOTE_MSG_TYPE_NAME`, fixed `REMOTE_DEV_NAME_MAX_LEN` bytes, empty while it is
+the default) when its broker session opens and whenever it changes, and in
+answer to `NAME_REQ`. `mqtt.c` sends `NAME_REQ` from `mqtt_ui_step()` to an
+online device that has not said its name, three times at most 10 s apart, and
+again after the device reboots (its heartbeat uptime goes back). Firmware from
+before the message drops the request as an unknown type and never answers, so
+`mqtt_get_dev_ident_known()` stays false for it. The Fleet tab titles a device
+tab with the name, or the client id when there is none, and shows both in the
+tab; each fleet tab reads `<fleet> (<devices online>)`, online meaning heard from
+within `MQTT_DEV_ONLINE_S` (15 s, three heartbeats). The counts are relabelled
+in place every UI step rather than rebuilding the tabs.
 
 ### File formats: JSON and YAML
 

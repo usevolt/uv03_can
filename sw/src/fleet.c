@@ -151,7 +151,9 @@ bool fleet_find_dev(const char *spec, uint8_t *fleet_index,
 			}
 			else {
 				match = str_ieq(client, spec) ||
-						str_ieq(mqtt_get_dev_devname(f, d), spec);
+						str_ieq(mqtt_get_dev_devname(f, d), spec) ||
+						((mqtt_get_dev_ident(f, d)[0] != '\0') &&
+						str_ieq(mqtt_get_dev_ident(f, d), spec));
 			}
 			if (match) {
 				if (matches == 0) {
@@ -188,6 +190,17 @@ void fleet_dev_info(uint8_t fleet_index, uint8_t dev_index,
 	uint8_t f = fleet_index;
 	uint8_t d = dev_index;
 	const char *devname = mqtt_get_dev_devname(f, d);
+	const char *ident;
+	if (mqtt_get_dev_ident(f, d)[0] != '\0') {
+		ident = mqtt_get_dev_ident(f, d);
+	}
+	else if (mqtt_get_dev_ident_known(f, d)) {
+		ident = "(not named yet)";
+	}
+	else {
+		// firmware from before the name, or one that has not answered yet
+		ident = "-";
+	}
 	uint8_t feat = mqtt_get_dev_features(f, d);
 	uint16_t w = 0;
 	uint16_t h = 0;
@@ -269,6 +282,7 @@ void fleet_dev_info(uint8_t fleet_index, uint8_t dev_index,
 
 	snprintf(buf, len,
 			"Name:       %s\n"
+			"Device:     %s\n"
 			"Fleet:      %s\n"
 			"Client id:  %s\n"
 			"State:      %u\n"
@@ -278,6 +292,7 @@ void fleet_dev_info(uint8_t fleet_index, uint8_t dev_index,
 			"Messages:   %u\n"
 			"Last seen:  %u s ago\n"
 			"%s",
+			ident,
 			(devname[0] != '\0') ? devname : "(not heard from yet)",
 			mqtt_get_fleet_name(f),
 			mqtt_get_dev_name(f, d),
@@ -297,8 +312,8 @@ void fleet_dev_info(uint8_t fleet_index, uint8_t dev_index,
 
 
 const char *fleet_dev_summary_header(void) {
-	return "FLEET/CLIENT ID                      NAME                  "
-			"UPTIME    UI  CAN  SEEN";
+	return "FLEET/CLIENT ID                      NAME             "
+			"DEVICE                UPTIME    UI  CAN  SEEN";
 }
 
 
@@ -315,8 +330,10 @@ void fleet_dev_summary(uint8_t fleet_index, uint8_t dev_index,
 	char uptime[16];
 	snprintf(uptime, sizeof(uptime), "%uh%02um",
 			(unsigned int) (up / 3600u), (unsigned int) ((up / 60u) % 60u));
-	snprintf(buf, len, "%-36s %-21s %-9s %-3s %-4s %us ago",
+	const char *ident = mqtt_get_dev_ident(f, d);
+	snprintf(buf, len, "%-36s %-16s %-21s %-9s %-3s %-4s %us ago",
 			id,
+			(ident[0] != '\0') ? ident : "-",
 			(devname[0] != '\0') ? devname : "-",
 			uptime,
 			((feat & REMOTE_IOT_FEATURE_UI) != 0) ? "on" : "off",
@@ -358,8 +375,16 @@ bool fleet_remove_dev(uint8_t fleet_index, uint8_t dev_index) {
 static void ui_open_window(uint16_t w, uint16_t h) {
 	if (!remoteui_win_is_open() && (ui_fleet >= 0) && (ui_dev >= 0)) {
 		char title[160];
-		const char *devname = mqtt_get_dev_devname((uint8_t) ui_fleet,
+		// the operator's name for the device tells it apart from the others
+		// of its kind, which all have the same device name
+		const char *devname = mqtt_get_dev_ident((uint8_t) ui_fleet,
 				(uint8_t) ui_dev);
+		if (devname[0] == '\0') {
+			devname = mqtt_get_dev_devname((uint8_t) ui_fleet,
+					(uint8_t) ui_dev);
+		}
+		else {
+		}
 		snprintf(title, sizeof(title), "%s - %s",
 				(devname[0] != '\0') ? devname : "remote device",
 				mqtt_get_dev_name((uint8_t) ui_fleet, (uint8_t) ui_dev));

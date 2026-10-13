@@ -81,9 +81,10 @@ bool fleet_wait_connected(uint32_t timeout_ms, char *err, size_t err_len);
 
 /// @brief: Finds a device of the fleet view by *spec*, which may be
 ///  - "<fleet>/<client id>", exact,
-///  - a client id, or
-///  - the device's own name for itself (as in its heartbeat),
-/// the latter two matched case-insensitively across every fleet.
+///  - a client id,
+///  - the device's own name for itself (as in its heartbeat), or
+///  - the identification name its operator gave it,
+/// the latter three matched case-insensitively across every fleet.
 ///
 /// @return: true when exactly one device matches. Otherwise *err* (size
 /// *err_len*) says that none or several did.
