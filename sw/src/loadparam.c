@@ -875,10 +875,89 @@ static bool loadparam_ask_sdo_continue(const char *info) {
 }
 
 
+// How an integer value from a parameter file meets the one the device holds,
+// chosen with the parameter's "WRITE" key and inherited by the objects nested
+// in it (see the CLAUDE.md's "Parameter file write modes").
+typedef enum {
+	// the value replaces what the device holds; the default
+	LOADPARAM_WRITE_SET = 0,
+	// the value's bits are added to what the device holds: it is read first,
+	// ORed with the value and written back. Lets several files each add their
+	// own bits to the same bit mask without knowing what the others added.
+	LOADPARAM_WRITE_OR
+} loadparam_write_e;
+
+
+/// @brief: Reads the write mode named by *node* (a "WRITE" value) into *mode*.
+/// Returns false, leaving *mode* as it was, for a name which is not one.
+static bool write_mode_parse(parser_node_st node, loadparam_write_e *mode) {
+	char str[16] = {};
+	bool ret = true;
+	query_get(node, str, sizeof(str), NULL);
+	if (strcmp(str, "SET") == 0) {
+		*mode = LOADPARAM_WRITE_SET;
+	}
+	else if (strcmp(str, "OR") == 0) {
+		*mode = LOADPARAM_WRITE_OR;
+	}
+	else {
+		ret = false;
+	}
+	return ret;
+}
+
+
+/// @brief: Applies *mode* to the integer *data* about to be written to
+/// *mindex*[*sindex*] of the device being loaded: for LOADPARAM_WRITE_OR the
+/// device's current value is read and ORed in. *old* receives the value read.
+static uv_errors_e write_mode_apply(loadparam_write_e mode, uint16_t mindex,
+		uint8_t sindex, canopen_object_type_e objtype, uint32_t *data,
+		uint32_t *old) {
+	uv_errors_e ret = ERR_NONE;
+	*old = 0;
+	if (mode == LOADPARAM_WRITE_OR) {
+		ret = loadparam_sdo_read(db_get_nodeid(&dev.db), mindex, sindex,
+				CANOPEN_SIZEOF(objtype), old);
+		if (ret == ERR_NONE) {
+			*data |= *old;
+		}
+	}
+	return ret;
+}
+
+
+/// @brief: Writes the integer *d* to *mindex*[*sindex*] of the device being
+/// loaded the *mode* way, logging it as *label* ("Writing 'X' (0x2100) [3]").
+static uv_errors_e write_int(const char *label, loadparam_write_e mode,
+		uint16_t mindex, uint8_t sindex, canopen_object_type_e objtype,
+		uint32_t d) {
+	uint32_t old = 0;
+	uint32_t add = d;
+	uv_errors_e ret = write_mode_apply(mode, mindex, sindex, objtype, &d, &old);
+	if (mode == LOADPARAM_WRITE_OR) {
+		LOG("%s |= 0x%x (0x%x -> 0x%x)", label, add, old, d);
+	}
+	else {
+		LOG("%s = 0x%x", label, d);
+	}
+	if (ret == ERR_NONE) {
+		ret = loadparam_sdo_write(db_get_nodeid(&dev.db), mindex, sindex,
+				CANOPEN_SIZEOF(objtype), &d);
+	}
+	else {
+		LOG_END();
+		ERROR("Reading the current value to OR into failed (0x%x [%u])\n",
+				mindex, sindex);
+	}
+	return ret;
+}
+
+
 static uv_errors_e load_param(parser_node_st param_obj,
 							  uint16_t mindex,
 							  canopen_object_type_e objtype,
-							  const char *parent_info) {
+							  const char *parent_info,
+							  loadparam_write_e write_mode) {
 	uv_errors_e ret = ERR_NONE;
 	uint8_t sindex = 0;
 	uint8_t sindex_offset = 0;
@@ -916,6 +995,17 @@ static uv_errors_e load_param(parser_node_st param_obj,
 	val = parser_find_child(param_obj, "SUBINDEX_OFFSET");
 	if (parser_node_is_valid(val)) {
 		sindex_offset = query_get(val, NULL, 0, NULL);
+	}
+
+	// WRITE: OR adds the value's bits to what the device holds instead of
+	// replacing it. Applies to this object and everything nested in it.
+	val = parser_find_child(param_obj, "WRITE");
+	if (parser_node_is_valid(val) && !write_mode_parse(val, &write_mode)) {
+		char str[16] = {};
+		query_get(val, str, sizeof(str), NULL);
+		LOG_END();
+		ERROR("unknown WRITE mode '%s' in '%s' (SET or OR)\n", str, info);
+		ret = ERR_ABORTED;
 	}
 
 	parser_node_st data = parser_find_child(param_obj, "DATA");
@@ -997,12 +1087,11 @@ static uv_errors_e load_param(parser_node_st param_obj,
 				switch (parser_array_get_type(array, i)) {
 					case PARSER_INT: {
 						uint32_t d = parser_array_get_int(array, i);
-						LOG("Writing '%s' (0x%x) [%u] = 0x%x",
-								info, mindex, i + 1 + sindex_offset, d);
-						uv_errors_e e = loadparam_sdo_write(db_get_nodeid(&dev.db),
-													mindex,
-													i + 1 + sindex_offset,
-													CANOPEN_SIZEOF(objtype), &d);
+						char label[192];
+						snprintf(label, sizeof(label), "Writing '%s' (0x%x) [%u]",
+								info, mindex, i + 1 + sindex_offset);
+						uv_errors_e e = write_int(label, write_mode, mindex,
+								(uint8_t) (i + 1 + sindex_offset), objtype, d);
 						if (e == ERR_NONE) {
 							// mark the successful CAN-bus write on the same line
 							LOG_OK();
@@ -1026,7 +1115,8 @@ static uv_errors_e load_param(parser_node_st param_obj,
 									obj,
 									mindex,
 									objtype,
-									info);
+									info,
+									write_mode);
 						break;
 						}
 					default:
@@ -1047,7 +1137,7 @@ static uv_errors_e load_param(parser_node_st param_obj,
 		else if (type == PARSER_OBJECT) {
 			// DATA was OBJECT type, which means it need to be parsed
 			// recursively
-			ret |= load_param(data, mindex, objtype, info);
+			ret |= load_param(data, mindex, objtype, info, write_mode);
 		}
 		else if (type == PARSER_STRING) {
 			char str[1024] = {};
@@ -1065,7 +1155,14 @@ static uv_errors_e load_param(parser_node_st param_obj,
 			}
 			LOG("Writing '%s' (0x%x) = \"%s\"",
 					info, mindex, str);
-			uv_errors_e e = loadparam_sdo_write(db_get_nodeid(&dev.db),
+			uv_errors_e e = ERR_NONE;
+			if (write_mode != LOADPARAM_WRITE_SET) {
+				// there are no bits in a string to OR
+				LOG_END();
+				ERROR("WRITE: OR does not apply to the string '%s'; it is "
+						"written as is\n", info);
+			}
+			e = loadparam_sdo_write(db_get_nodeid(&dev.db),
 					mindex, sindex + sindex_offset, strlen(str) + 1, str);
 			if (e != ERR_NONE) {
 				LOG_END();
@@ -1082,7 +1179,7 @@ static uv_errors_e load_param(parser_node_st param_obj,
 		}
 		else {
 			// data is integer data
-			uint32_t d;
+			uint32_t d = 0;
 			if (parser_node_is_valid(data)) {
 				d = query_get(data, NULL, 0, NULL);
 			}
@@ -1092,10 +1189,10 @@ static uv_errors_e load_param(parser_node_st param_obj,
 			else {
 
 			}
-			LOG("Writing '%s' (0x%x) = 0x%x",
-					info, mindex, d);
-			uv_errors_e e = loadparam_sdo_write(db_get_nodeid(&dev.db),
-					mindex, sindex + sindex_offset, CANOPEN_SIZEOF(objtype), &d);
+			char label[192];
+			snprintf(label, sizeof(label), "Writing '%s' (0x%x)", info, mindex);
+			uv_errors_e e = write_int(label, write_mode, mindex,
+					(uint8_t) (sindex + sindex_offset), objtype, d);
 			if (e != ERR_NONE) {
 				LOG_END();
 				ERROR("Parameter loading failed for subindex %u\n", sindex);
@@ -1565,7 +1662,8 @@ static uv_errors_e parse_dev(parser_node_st devnode) {
 					obj = parser_array_at(arr, 0);
 					for (int32_t i = 0; i < (int32_t) parser_array_get_size(arr); i++) {
 						if (parser_get_type(obj) == PARSER_OBJECT) {
-							ret |= load_param(obj, 0, CANOPEN_UNDEFINED, NULL);
+							ret |= load_param(obj, 0, CANOPEN_UNDEFINED, NULL,
+								LOADPARAM_WRITE_SET);
 						}
 						else {
 							LOG_END();
@@ -1647,7 +1745,8 @@ static uv_errors_e parse_dev(parser_node_st devnode) {
 					for (uint32_t j = 0; (j < parser_array_get_size(op)) &&
 							(ret == ERR_NONE); j++) {
 						if (parser_get_type(obj) == PARSER_OBJECT) {
-							ret |= load_param(obj, 0, CANOPEN_UNDEFINED, NULL);
+							ret |= load_param(obj, 0, CANOPEN_UNDEFINED, NULL,
+								LOADPARAM_WRITE_SET);
 						}
 						else {
 							LOG_END();

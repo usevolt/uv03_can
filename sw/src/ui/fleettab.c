@@ -50,6 +50,11 @@ static uv_uiobject_st *fleet_tabs_buf[4];
 static char fleet_name_buf[MQTT_MAX_FLEETS][MQTT_NAME_MAX];
 static char *fleet_names[MQTT_MAX_FLEETS];
 static uint8_t fleet_tab_count;
+// The fleet each tab shows: the fleet named MAIN_FLEET first, the others after
+// it in the order they were discovered. The fleets keep their own indices (the
+// remote UI and CAN sessions hold them), only the tabs are reordered.
+#define MAIN_FLEET		"main"
+static uint8_t fleet_of_tab[MQTT_MAX_FLEETS];
 
 static uv_uitabwindow_st dev_tabs;
 // the device tab holds its information label and the row of buttons below it;
@@ -60,9 +65,9 @@ static char dev_name_buf[MQTT_MAX_DEVS][MQTT_NAME_MAX];
 static char *dev_names[MQTT_MAX_DEVS];
 static uint8_t dev_tab_count;
 
-// Selected fleet / device tab. Kept across the rebuilds a new device triggers, so
+// Selected fleet (its index, not its tab's) / device tab. Kept across the rebuilds a new device triggers, so
 // the view does not jump around while the fleet fills in.
-static int16_t selected_fleet;
+static int16_t selected_fleet = -1;
 static int16_t selected_dev;
 
 // Content of a device tab, and the placeholder shown when there is nothing to
@@ -209,8 +214,19 @@ static void build_fleet_tabs(uv_uitabwindow_st *tabwin, int16_t y, int16_t h) {
 	if (fleet_tab_count > MQTT_MAX_FLEETS) {
 		fleet_tab_count = MQTT_MAX_FLEETS;
 	}
+	uint8_t tab = 0;
 	for (uint8_t i = 0; i < fleet_tab_count; i++) {
-		strncpy(fleet_name_buf[i], mqtt_get_fleet_name(i),
+		if (strcmp(mqtt_get_fleet_name(i), MAIN_FLEET) == 0) {
+			fleet_of_tab[tab++] = i;
+		}
+	}
+	for (uint8_t i = 0; i < fleet_tab_count; i++) {
+		if (strcmp(mqtt_get_fleet_name(i), MAIN_FLEET) != 0) {
+			fleet_of_tab[tab++] = i;
+		}
+	}
+	for (uint8_t i = 0; i < fleet_tab_count; i++) {
+		strncpy(fleet_name_buf[i], mqtt_get_fleet_name(fleet_of_tab[i]),
 				sizeof(fleet_name_buf[i]) - 1);
 		fleet_name_buf[i][sizeof(fleet_name_buf[i]) - 1] = '\0';
 		fleet_names[i] = fleet_name_buf[i];
@@ -222,14 +238,19 @@ static void build_fleet_tabs(uv_uitabwindow_st *tabwin, int16_t y, int16_t h) {
 	uv_uitabwindow_addxy(tabwin, &fleet_tabs, MARGIN, y,
 			cbb.w - 2 * MARGIN, h);
 
-	// a fleet can have disappeared with a reconnect; keep the selection in range
+	// nothing selected yet opens the first tab, the main fleet. A fleet can have
+	// disappeared with a reconnect; keep the selection in range
 	if (selected_fleet >= fleet_tab_count) {
 		selected_fleet = fleet_tab_count - 1;
 	}
 	if (selected_fleet < 0) {
-		selected_fleet = 0;
+		selected_fleet = fleet_of_tab[0];
 	}
-	uv_uitabwindow_set_tab(&fleet_tabs, selected_fleet);
+	for (uint8_t i = 0; i < fleet_tab_count; i++) {
+		if (fleet_of_tab[i] == selected_fleet) {
+			uv_uitabwindow_set_tab(&fleet_tabs, i);
+		}
+	}
 
 	show_active_dev_tab();
 }
@@ -370,7 +391,7 @@ static uv_uiobject_ret_e fleet_tabs_step(void *me, const uint16_t step_ms) {
 	(void) me;
 	(void) step_ms;
 	if (uv_uitabwindow_tab_changed(&fleet_tabs)) {
-		selected_fleet = uv_uitabwindow_get_tab(&fleet_tabs);
+		selected_fleet = fleet_of_tab[uv_uitabwindow_get_tab(&fleet_tabs)];
 		// a different fleet has its own device list; start at its first device
 		selected_dev = 0;
 		show_active_dev_tab();

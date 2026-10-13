@@ -355,6 +355,32 @@ keyed object, that value is skipped with a warning. Both forms work anywhere a
 query is referenced (`DATA`, `MAININDEX`, `TYPE`, `SUBINDEX`, `NODEID`, and
 device-selecting queries).
 
+### Parameter file write modes
+
+An integer parameter normally replaces what the device holds. `WRITE: OR`
+(`"WRITE": "OR"`) instead reads the device's current value over SDO, ORs the
+file's value into it and writes the result back, so several files can each add
+their own bits to one bit mask without knowing what the others added -- e.g.
+every valve file adding the outputs it names to a uv07 NOUT's `OUT_MAPPING`:
+
+```yaml
+- INFO: NOUT6_MODECONF
+  MAININDEX: "0x22b5"
+  TYPE: CANOPEN_ARRAY16
+  WRITE: OR
+  DATA:
+    - INFO: OUT_MAPPING
+      SUBINDEX: 4
+      DATA: "0x8"  # AOUT
+```
+
+`WRITE` is inherited by the objects nested in the one it is on, and a nested
+`WRITE: SET` (the default) turns it off again. The log shows both values:
+`Writing 'NOUT6_MODECONF: OUT_MAPPING' (0x22b5) |= 0x10 (0x7 -> 0x17)`. A
+string is written as is, with an error. Whichever file sets the mask's base
+value has to be loaded before the ones ORing into it, and loading an ORing
+file never takes bits away.
+
 ### Creating .uvdev packages
 
 `--makeuvdev <file.uvdev>` writes a device package out of a project's build
