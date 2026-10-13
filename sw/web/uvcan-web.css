@@ -42,7 +42,8 @@ canvas#uvui {
 	height: 100vh;
 	height: 100dvh;
 	outline: none;
-	touch-action: none;
+	/* one finger is the UI's, two zoom the page */
+	touch-action: pinch-zoom;
 }
 
 canvas#uvui[hidden] {

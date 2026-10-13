@@ -213,9 +213,11 @@ static mqtt_ui_event_st ui_events[MQTT_UI_EVENT_MAX];
 static uint8_t ui_event_count;
 static uint32_t ui_event_dropped;
 
-// Devices the user has removed from the view. A removed device is still out
-// there publishing, so without this it would be back in the tree on its next
-// heartbeat. Session scoped: cleared on every connect (see mqtt_remove_dev()).
+// Devices the user has removed from the view, until they next announce. Their
+// other traffic - REMOTE frames still in flight, replies to an admin which was
+// talking to them - is not taken as a sign of life, or a device removed while
+// streaming its UI would be back before the click had been drawn. Cleared on
+// every connect as well (see mqtt_remove_dev()).
 typedef struct {
 	char fleet[MQTT_NAME_MAX];
 	char dev[MQTT_NAME_MAX];
@@ -557,6 +559,25 @@ static mqtt_dev_st *dev_find(const char *fleet, const char *dev) {
 }
 
 
+/// @brief: Forgets that (*fleet*, *dev*) was removed, so that it is listed
+/// again. The last entry moves into the freed slot.
+static void dev_unignore(const char *fleet, const char *dev) {
+	for (uint8_t i = 0; i < ignored_count; i++) {
+		if ((strcmp(ignored[i].fleet, fleet) == 0) &&
+				(strcmp(ignored[i].dev, dev) == 0)) {
+			ignored_count--;
+			ignored[i] = ignored[ignored_count];
+			printf("MQTT: removed device '%s' of fleet '%s' announced itself, "
+					"listing it again\n", dev, fleet);
+			fflush(stdout);
+			break;
+		}
+		else {
+		}
+	}
+}
+
+
 /// @brief: Handles a heartbeat published on a fleet's announce topic. The
 /// announce *topic* does not say who published, so the client id in the payload
 /// is what puts the device on the list - without this an idle device, which
@@ -570,6 +591,9 @@ static void announce_parse(const char *fleet, const char *payload,
 
 	char id[MQTT_NAME_MAX];
 	if (json_get_str(buf, "id", id, sizeof(id))) {
+		// an announce is the device saying it is there, which brings back one
+		// the user removed: removing only tidies the view, it is not a ban
+		dev_unignore(fleet, id);
 		dev_seen(fleet, id);
 		mqtt_dev_st *d = dev_find(fleet, id);
 		if (d != NULL) {

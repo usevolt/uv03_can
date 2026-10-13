@@ -18,9 +18,12 @@
 # The dependency step installs the runtime libraries always, and the -dev
 # packages needed to compile uvcan whenever this run builds it from source,
 # and esptool (v5 or newer, from PyPI with pipx) for flashing ESP32 modules.
+# A source build also gets the Emscripten SDK, which `make web` (the browser
+# build) and `make package` compile with: it goes to ~/emsdk, or to $EMSDK
+# when that is set. --web installs it on its own too, without a build.
 #
 # Usage:
-#   ./install.sh [--system] [--no-deps] [--build] [--uninstall] [-h|--help]
+#   ./install.sh [--system] [--no-deps] [--build] [--web] [--uninstall] [-h|--help]
 #
 set -euo pipefail
 
@@ -30,6 +33,7 @@ PKG_DIR="$SCRIPT_DIR/packaging"
 MODE="user"          # user | system
 DO_DEPS=1            # install apt dependencies
 DO_BUILD="auto"      # auto | yes — build uvcan if no prebuilt binary
+DO_WEB=0             # install the Emscripten SDK even without a build
 ACTION="install"     # install | uninstall
 
 ICON_SIZES=(16 24 32 48 64 128 256 512)
@@ -49,9 +53,10 @@ while [ $# -gt 0 ]; do
 		--user)      MODE="user" ;;
 		--no-deps)   DO_DEPS=0 ;;
 		--build)     DO_BUILD="yes" ;;
+		--web)       DO_WEB=1 ;;
 		--uninstall) ACTION="uninstall" ;;
 		-h|--help)
-			sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+			sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'
 			exit 0 ;;
 		*)
 			echo "Unknown option: $1" >&2
@@ -265,10 +270,22 @@ RUNTIME_DEPS="zenity zip unzip shared-mime-info desktop-file-utils pipx
 # its runtime counterpart in, so the two lists together stay consistent.
 BUILD_DEPS="pkg-config libncurses-dev libglfw3-dev libglew-dev libgl-dev
 	libfreetype-dev libreadline-dev libmosquitto-dev"
+# The Emscripten SDK is fetched with git and installed by a Python script, which
+# unpacks .tar.xz archives. It brings its own clang and Node.js, and the browser
+# build needs no libraries beyond what Emscripten itself provides.
+WEB_DEPS="git python3 xz-utils"
+# The SDK release the browser build is made and tested with. A newer one is
+# likely to work, but the fiber port (hal's FreeRTOS Emscripten port) leans on
+# Asyncify, which is where releases tend to differ.
+EMSDK_VERSION="6.0.12"
+EMSDK_DIR="${EMSDK:-$HOME/emsdk}"
+WILL_WEB=0
+if [ "$WILL_BUILD" -eq 1 ] || [ "$DO_WEB" -eq 1 ]; then WILL_WEB=1; fi
 
 if [ "$DO_DEPS" -eq 1 ]; then
 	DEPS="$RUNTIME_DEPS"
 	if [ "$WILL_BUILD" -eq 1 ]; then DEPS="$DEPS $BUILD_DEPS"; fi
+	if [ "$WILL_WEB" -eq 1 ]; then DEPS="$DEPS $WEB_DEPS"; fi
 	if command -v apt-get >/dev/null; then
 		say "Installing system dependencies (sudo apt-get)"
 		# word splitting is what turns the lists above into an argument list
@@ -312,6 +329,35 @@ if [ "$DO_DEPS" -eq 1 ]; then
 	else
 		warn "pipx not found; skipping esptool. Install esptool v$ESPTOOL_MIN_MAJOR or newer"
 		warn "(e.g. 'pipx install esptool') to flash ESP32 modules."
+	fi
+fi
+
+# ---- Emscripten SDK ---------------------------------------------------------
+# For `make web`. Installed per user, as the makefile looks for it in ~/emsdk
+# (EMSDK=) when emcc is not on the PATH. An SDK already there is moved to the
+# release above rather than reinstalled.
+if [ "$DO_DEPS" -eq 1 ] && [ "$WILL_WEB" -eq 1 ]; then
+	if ! command -v git >/dev/null || ! command -v python3 >/dev/null; then
+		warn "git or python3 not found; skipping the Emscripten SDK (make web)."
+	else
+		if [ ! -d "$EMSDK_DIR/.git" ]; then
+			say "Fetching the Emscripten SDK into $EMSDK_DIR"
+			git clone -q https://github.com/emscripten-core/emsdk.git "$EMSDK_DIR" ||
+				warn "fetching the Emscripten SDK failed; 'make web' will not build."
+		else
+			git -C "$EMSDK_DIR" pull -q --ff-only ||
+				warn "updating $EMSDK_DIR failed; installing from what is there."
+		fi
+		if [ -x "$EMSDK_DIR/emsdk" ]; then
+			say "Installing Emscripten $EMSDK_VERSION (make web)"
+			if "$EMSDK_DIR/emsdk" install "$EMSDK_VERSION" &&
+					"$EMSDK_DIR/emsdk" activate "$EMSDK_VERSION" >/dev/null; then
+				say "Emscripten $EMSDK_VERSION is in $EMSDK_DIR; the makefile finds it there."
+				say "For emcc in a shell: source \"$EMSDK_DIR/emsdk_env.sh\""
+			else
+				warn "installing Emscripten failed; 'make web' will not build."
+			fi
+		fi
 	fi
 fi
 

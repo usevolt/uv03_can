@@ -12,7 +12,8 @@
 #   make win        # Windows cross-compile (x86_64 mingw-w64), produces ./uvcan.exe
 #   make windows    # alias for 'make win'
 #   make win-package # build win + zip a double-clickable package under release/
-#   make publish    # build linux tarball + windows zip into ../prod
+#   make package    # linux tarball + windows zip + web build into ../prod
+#   make publish    # upload what 'package' made, the web build included
 #   make web        # the Fleet tab for a web browser, into release/web (emcc)
 #   make clean      # remove build artifacts of both targets
 #
@@ -262,10 +263,26 @@ linux:
 
 # The browser build, into release/web/. It shares release/ with the other
 # targets' objects, so build it from a clean tree (see 'package').
+#
+# emcc comes from the Emscripten SDK in $(EMSDK) when it is not on PATH already
+# (install.sh puts it there).
+EMSDK ?= $(HOME)/emsdk
 web:
-	@$(MAKE) --no-print-directory OS=web image
-	@cp web/index.html web/uvcan-web.css "$(BUILDDIR)/web/"
+	@if ! command -v emcc >/dev/null 2>&1; then \
+		if [ -f "$(EMSDK)/emsdk_env.sh" ]; then \
+			. "$(EMSDK)/emsdk_env.sh" >/dev/null 2>&1; \
+		else \
+			echo "web: emcc is not on PATH and there is no $(EMSDK)/emsdk_env.sh."; \
+			echo "     Install the Emscripten SDK (./install.sh --web), or point EMSDK= at it."; \
+			exit 1; \
+		fi; \
+	fi; \
+	$(MAKE) --no-print-directory OS=web image
+	@cp web/index.html web/app.html web/uvcan-web.css web/manifest.webmanifest "$(BUILDDIR)/web/"
 	@cp fonts/LiberationSans-Regular.ttf fonts/LiberationMono-Regular.ttf "$(BUILDDIR)/web/"
+	@# the home screen icon, for a phone which adds the page there
+	@cp packaging/icons/256/application-x-uvdev.png "$(BUILDDIR)/web/icon-256.png"
+	@cp packaging/icons/512/application-x-uvdev.png "$(BUILDDIR)/web/icon-512.png"
 	@echo "Created $(BUILDDIR)/web/"
 
 # Per-user desktop install: builds (if needed) and registers the binary, the
@@ -324,16 +341,24 @@ win-package-stage:
 	cd "$(BUILDDIR)" && zip -r -q "$(PKGNAME).zip" "$(PKGNAME)"
 	@echo "Created $(PKGDIR).zip"
 
-# Builds both shippable artifacts and drops them in $(PRODDIR):
+# Builds the shippable artifacts and drops them in $(PRODDIR):
+#   * Web build: the page and the program served at
+#     https://files.usevolt.fi/uvcan/, in $(PUBLISH_WEBDIR)
 #   * Windows package: the double-clickable .zip produced by win-package
 #   * Linux install tarball: uvcan + install.sh + packaging/ (unpack on the
 #     target Ubuntu box and run ./install.sh — see install.sh --help)
-# The linux and win builds share $(BUILDDIR) for their object files, so the two
-# OS targets cannot coexist there — we 'clean' between them (and stash the win
-# zip in prod before the second clean removes it). PKGNAME/PKGDIR/PKG_FULL_NAME are
-# OS-independent, so the paths resolve the same in either sub-make.
+# The builds share $(BUILDDIR) for their object files, so they cannot coexist
+# there — we 'clean' between them (and stash each one's result in prod before
+# the next clean removes it). The Linux build goes last, so that a plain 'make'
+# afterwards finds its own objects. PKGNAME/PKGDIR/PKG_FULL_NAME are
+# OS-independent, so the paths resolve the same in every sub-make.
+PUBLISH_WEBDIR := $(PRODDIR)/web
 package:
 	@mkdir -p "$(PRODDIR)"
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory web
+	@rm -rf "$(PUBLISH_WEBDIR)"
+	@cp -r "$(BUILDDIR)/web" "$(PUBLISH_WEBDIR)"
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory OS=win win-package
 	@cp "$(PKGDIR).zip" "$(PRODDIR)/"
@@ -347,6 +372,7 @@ package:
 	@echo "    $(PUBLISH_MANIFEST)"
 	@echo "    $(PUBLISH_TAR)"
 	@echo "    $(PRODDIR)/$(PKGNAME).zip"
+	@echo "    $(PUBLISH_WEBDIR)/"
 
 # ---- publish: push the packaged files to the public shelf on the file server --
 #
@@ -373,8 +399,13 @@ package:
 #                         how a Windows install moves forward
 #   uninstall-uvcan.sh    removal, for a machine that no longer has the
 #   uninstall-uvcan.ps1   package it was installed from
+#
+# The web build goes to pub/web, which the Caddyfile serves at /uvcan/. It
+# replaces the build there: the files keep their names from one build to the
+# next, and a browser that loads the page loads the program beside it.
 UPLOAD_FLEET := pub
 UPLOAD_SUBDIR := uvcan
+UPLOAD_WEB_SUBDIR := web
 UVUPLOAD := uvupload
 # The binary under the name it is published as. The build number is what the
 # updater compares, and the hash is what pins it to one commit; both come from
@@ -459,6 +490,15 @@ publish:
 	echo ""; \
 	echo "=== published to https://files.usevolt.fi/$(UPLOAD_FLEET)/$(UPLOAD_SUBDIR)/ ==="; \
 	echo ""
+	@if [ -f "$(PUBLISH_WEBDIR)/uvcan.wasm" ]; then \
+		echo "=== publish: the web build, $(UPLOAD_FLEET)/$(UPLOAD_WEB_SUBDIR) ==="; \
+		$(UVUPLOAD) $(UPLOAD_YES) -d $(UPLOAD_WEB_SUBDIR) $(UPLOAD_FLEET) "$(PUBLISH_WEBDIR)"/*; \
+		echo ""; \
+		echo "=== published to https://files.usevolt.fi/uvcan/ ==="; \
+		echo ""; \
+	else \
+		echo "publish: no web build in $(PUBLISH_WEBDIR) — skipped. 'make package' builds it."; \
+	fi
 
 # Internal target that performs the actual build for the selected OS.
 image: $(BINARY)

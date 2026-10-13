@@ -2,27 +2,37 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- resizes-content: an on-screen keyboard shrinks the page rather than
+	covering its bottom, where the log view's command line is -->
+<meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
 <title>uvcan Fleet</title>
 <link rel="stylesheet" href="uvcan-web.css">
+<!-- added to a phone's home screen, the page opens without the browser's
+	address bar -->
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<link rel="apple-touch-icon" href="icon-256.png">
 </head>
 <body>
 
 <!--
-	The browser build of uvcan: its Fleet and Settings tabs, compiled to
-	WebAssembly (uvcan.js + uvcan.wasm, see the makefile's "web" target).
+	The login page of the browser build of uvcan. The program itself runs on
+	app.html, which this page moves on to once the account checks out: a page
+	of its own, so that the browser's Back button leaves uvcan, ending it, and
+	lands here rather than leaving it running out of sight.
 
-	The login form checks the account the same way uvcan itself does: it asks
-	the file server which fleets the account holds (GET /fleets.json with Basic
-	credentials). Only when that succeeds is the program loaded and started,
-	with the same credentials, which it then uses for the fleet broker
-	(wss://<this host>/mqtt) and the fleet folders.
-
-	The password is kept in memory only, and only until the program has taken
-	it. The username is remembered in this browser.
+	The form checks the account the same way uvcan itself does: it asks the
+	file server which fleets the account holds (GET /fleets.json with Basic
+	credentials). The account is then handed to app.html in this tab's
+	sessionStorage, which app.html empties as it reads it. The username is
+	remembered in this browser.
 
 	For development, ?mqtt=<ws url> points the program at another broker
-	listener, e.g. ws://localhost:9001 for a local mosquitto.
+	listener, e.g. ws://localhost:9001 for a local mosquitto. It is passed on
+	to app.html.
 -->
 
 <main id="login" class="login">
@@ -39,9 +49,6 @@
 	</form>
 </main>
 
-<canvas id="uvui" hidden></canvas>
-<p id="loading" class="loading" hidden>Loading…</p>
-
 <script>
 (function () {
 	'use strict';
@@ -51,7 +58,6 @@
 	const passEl = document.getElementById('password');
 	const btn = document.getElementById('login-btn');
 	const msg = document.getElementById('login-msg');
-	const params = new URLSearchParams(location.search);
 
 	try {
 		const u = localStorage.getItem('uvcan-web-user');
@@ -66,6 +72,13 @@
 	catch (e) {
 		userEl.focus();
 	}
+
+	// Back from app.html: the form is as it was left, but not the button,
+	// which was left disabled while the login was on its way
+	window.addEventListener('pageshow', () => {
+		btn.disabled = false;
+		say('', false);
+	});
 
 	// Basic credentials of any text: btoa() only takes Latin-1
 	function basic(user, pass) {
@@ -108,57 +121,6 @@
 		return '';
 	}
 
-	function queueLog(t) {
-		const q = window.Module.uvLogQueue;
-		q.push(t);
-		if (q.length > 5000) {
-			q.splice(0, q.length - 5000);
-		}
-	}
-
-	function start(user, pass) {
-		const wsProto = (location.protocol === 'https:') ? 'wss://' : 'ws://';
-		document.getElementById('login').hidden = true;
-		const loading = document.getElementById('loading');
-		loading.hidden = false;
-		const canvas = document.getElementById('uvui');
-
-		window.Module = {
-			uvLogin: {
-				username: user,
-				password: pass,
-				url: location.origin,
-				fleetUrl: params.get('mqtt') || (wsProto + location.host + '/mqtt')
-			},
-			// the program's output, a line at a time: to the console, and to
-			// the log view at the bottom of the UI, which takes the lines from
-			// this queue (src/logcap.c)
-			uvLogQueue: [],
-			print: (t) => { console.log(t); queueLog(t); },
-			printErr: (t) => { console.log(t); queueLog(t); },
-			onRuntimeInitialized: function () {
-				loading.hidden = true;
-				canvas.hidden = false;
-				Module.callMain(['--ui']);
-			},
-			onAbort: function (what) {
-				loading.hidden = false;
-				loading.textContent = 'uvcan stopped: ' + what;
-			}
-		};
-
-		// the canvas backend reads the font metrics once, at start
-		Promise.all([
-			document.fonts.load('16px UvSans'),
-			document.fonts.load('16px UvMono')
-		]).catch(() => {}).then(() => {
-			const s = document.createElement('script');
-			s.src = 'uvcan.js';
-			s.onerror = () => { loading.textContent = 'uvcan could not be loaded.'; };
-			document.body.appendChild(s);
-		});
-	}
-
 	form.addEventListener('submit', async (e) => {
 		e.preventDefault();
 		const user = userEl.value.trim();
@@ -166,8 +128,8 @@
 		btn.disabled = true;
 		say('Logging in…', false);
 		const err = await check(user, pass);
-		btn.disabled = false;
 		if (err) {
+			btn.disabled = false;
 			say(err, true);
 			passEl.select();
 			return;
@@ -178,8 +140,19 @@
 		catch (e2) {
 			// remembering the name is only a convenience
 		}
+		try {
+			sessionStorage.setItem('uvcan-web-login',
+					JSON.stringify({ username: user, password: pass }));
+		}
+		catch (e3) {
+			btn.disabled = false;
+			say('This browser does not let the page keep the login ' +
+					'(private mode?).', true);
+			return;
+		}
 		passEl.value = '';
-		start(user, pass);
+		// a new history entry, which is what Back returns from
+		location.assign('app.html' + location.search);
 	});
 })();
 </script>

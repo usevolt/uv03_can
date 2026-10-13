@@ -181,11 +181,10 @@ bool mqtt_poll_changed(void);
 /// @brief: Drops device *dev_index* of fleet *fleet_index* from the view.
 ///
 /// The devices after it move down a slot, so whatever indexes them has to be
-/// rebuilt. The device is also ignored for the rest of this broker session:
-/// nothing here can stop it publishing, so without that it would be back on its
-/// next heartbeat and the removal would look like it had not worked. Connecting
-/// again starts from a clean slate, which is this view's equivalent of the
-/// System tab's manual re-search.
+/// rebuilt. The device comes back when it next announces itself on the fleet's
+/// announce topic (every few seconds while it is online), so removing is for
+/// clearing out devices which have gone away, not a ban. Until then its other
+/// traffic is ignored, so that frames still in flight do not bring it back.
 ///
 /// @return: false when the indices name no device.
 bool mqtt_remove_dev(uint8_t fleet_index, uint8_t dev_index);

@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- resizes-content: an on-screen keyboard shrinks the page rather than
+	covering its bottom, where the log view's command line is -->
+<meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
+<title>uvcan Fleet</title>
+<link rel="stylesheet" href="uvcan-web.css">
+<!-- added to a phone's home screen, the page opens without the browser's
+	address bar -->
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<link rel="apple-touch-icon" href="icon-256.png">
+</head>
+<body>
+
+<!--
+	The browser build of uvcan: its Fleet tab, compiled to WebAssembly
+	(uvcan.js + uvcan.wasm, see the makefile's "web" target), run with the
+	account index.html, the login page, checked and handed over in this tab's
+	sessionStorage. The handover is emptied as it is read: the password is
+	kept in memory only, and only until the program has taken it. Without one
+	- the page reloaded, or opened by itself - it goes back to the login page.
+
+	Leaving the page, with Back or otherwise, ends uvcan.
+
+	?mqtt=<ws url> points the program at another broker listener, for
+	development.
+-->
+
+<canvas id="uvui" hidden></canvas>
+<p id="loading" class="loading">Loading…</p>
+
+<script>
+(function () {
+	'use strict';
+
+	const params = new URLSearchParams(location.search);
+	const login = './' + location.search;
+
+	let account = null;
+	try {
+		account = JSON.parse(sessionStorage.getItem('uvcan-web-login'));
+		sessionStorage.removeItem('uvcan-web-login');
+	}
+	catch (e) {
+		account = null;
+	}
+	if (!account || !account.username) {
+		location.replace(login);
+		return;
+	}
+
+	// A page kept in the browser's back-forward cache would come back with
+	// uvcan frozen mid-run and its connection long gone: log in again instead.
+	window.addEventListener('pageshow', (e) => {
+		if (e.persisted) {
+			location.replace(login);
+		}
+	});
+
+	// On a phone the page takes the whole screen, browser address bar and
+	// all. Only a tap may ask for that, so the first one does, and so does
+	// the first one after the user has left fullscreen. iPhones do not do it
+	// for a page; added to the home screen it opens that way anyway
+	// (manifest.webmanifest).
+	document.addEventListener('pointerdown', () => {
+		const el = document.documentElement;
+		if (window.matchMedia('(pointer: coarse)').matches &&
+				!document.fullscreenElement && el.requestFullscreen) {
+			el.requestFullscreen({ navigationUI: 'hide' }).catch(() => {});
+		}
+	}, true);
+
+	const wsProto = (location.protocol === 'https:') ? 'wss://' : 'ws://';
+	const loading = document.getElementById('loading');
+	const canvas = document.getElementById('uvui');
+
+	function queueLog(t) {
+		const q = window.Module.uvLogQueue;
+		q.push(t);
+		if (q.length > 5000) {
+			q.splice(0, q.length - 5000);
+		}
+	}
+
+	window.Module = {
+		uvLogin: {
+			username: account.username,
+			password: account.password,
+			url: location.origin,
+			fleetUrl: params.get('mqtt') || (wsProto + location.host + '/mqtt')
+		},
+		// the program's output, a line at a time: to the console, and to the
+		// log view at the bottom of the UI, which takes the lines from this
+		// queue (src/logcap.c)
+		uvLogQueue: [],
+		print: (t) => { console.log(t); queueLog(t); },
+		printErr: (t) => { console.log(t); queueLog(t); },
+		onRuntimeInitialized: function () {
+			loading.hidden = true;
+			canvas.hidden = false;
+			Module.callMain(['--ui']);
+		},
+		onAbort: function (what) {
+			loading.hidden = false;
+			loading.textContent = 'uvcan stopped: ' + what;
+		}
+	};
+	account = null;
+
+	// the canvas backend reads the font metrics once, at start
+	Promise.all([
+		document.fonts.load('16px UvSans'),
+		document.fonts.load('16px UvMono')
+	]).catch(() => {}).then(() => {
+		const s = document.createElement('script');
+		s.src = 'uvcan.js';
+		s.onerror = () => { loading.textContent = 'uvcan could not be loaded.'; };
+		document.body.appendChild(s);
+	});
+})();
+</script>
+</body>
+</html>

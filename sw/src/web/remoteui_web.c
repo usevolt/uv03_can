@@ -153,7 +153,7 @@ EM_JS(void, js_rui_open, (const char *title, int w, int h), {
 	c.width = w;
 	c.height = h;
 	c.style.cssText = 'display:block;width:100%;height:auto;' +
-		'touch-action:none;background:#000;';
+		'touch-action:pinch-zoom;background:#000;';
 	const stale = document.createElement('div');
 	stale.style.cssText = 'position:absolute;inset:0;display:none;' +
 		'flex-direction:column;align-items:center;justify-content:center;' +
@@ -192,6 +192,11 @@ EM_JS(void, js_rui_open, (const char *title, int w, int h), {
 	}
 	// [action, x, y, scroll]: action 1 is a press (or a drag), 0 a release
 	c.addEventListener('pointerdown', (e) => {
+		if (r.down) {
+			// a second finger: a pinch is starting
+			cancel(e);
+			return;
+		}
 		c.setPointerCapture(e.pointerId);
 		r.down = true;
 		const p = pos(e);
@@ -215,8 +220,22 @@ EM_JS(void, js_rui_open, (const char *title, int w, int h), {
 			r.events.push([0, p[0], p[1], 0]);
 		}
 	};
+	// The press turned out to be the start of a pinch, which the browser took
+	// over. The device clicks where a press started, whatever happens after,
+	// so it is dragged far off before it is let go: a drag, not a click.
+	const cancel = (e) => {
+		if (r.down) {
+			r.down = false;
+			const p = pos(e);
+			// half the screen over, and so still on it
+			const x = p[0] + ((p[0] < w / 2) ? (w >> 1) : -(w >> 1));
+			r.events.push([1, x, p[1], 0]);
+			r.events.push([1, x, p[1], 0]);
+			r.events.push([0, x, p[1], 0]);
+		}
+	};
 	c.addEventListener('pointerup', up);
-	c.addEventListener('pointercancel', up);
+	c.addEventListener('pointercancel', cancel);
 	c.addEventListener('wheel', (e) => {
 		const s = (e.deltaY < 0) ? 1 : ((e.deltaY > 0) ? -1 : 0);
 		if (s !== 0) {

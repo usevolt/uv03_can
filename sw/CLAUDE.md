@@ -132,20 +132,34 @@ credentials appear in the process arguments. Redirects are never followed.
 ## Web browser build
 
 `make web` builds the Fleet tab for a web browser, into
-`release/web/`: `uvcan.js` + `uvcan.wasm` (Emscripten, `emcc` on the PATH --
-`source ~/emsdk/emsdk_env.sh`), the page `web/index.html` with its stylesheet,
-and the two Liberation fonts. It shares `release/` with the other targets, so
-build it from a clean tree. The files are public like the rest of uvcan and go
-to the public shelf, `uvupload -d web pub release/web/*`, which the file server
-answers at `https://files.usevolt.fi/uvcan/` (see the uv3b_iotbrkr Caddyfile).
+`release/web/`: `uvcan.js` + `uvcan.wasm` (Emscripten 6.0.12; `emcc` from the
+PATH, else from `~/emsdk` or `EMSDK=` -- `./install.sh --web` installs it, and
+a source build's `./install.sh` does too), the pages `web/index.html` and
+`web/app.html` with their stylesheet, the web app manifest and its icons, and
+the two Liberation fonts. It shares `release/` with the other targets, so build
+it from a clean tree. `make package` builds it as well, into `../prod/web/`,
+and `make publish` uploads that to the public shelf (`uvupload -d web pub`),
+which the file server answers at `https://files.usevolt.fi/uvcan/` (see the
+uv3b_iotbrkr Caddyfile).
 
-The page is a login form first. It checks the account the way uvcan itself
+`index.html` is the login page. It checks the account the way uvcan itself
 does -- `GET /fleets.json` with Basic credentials and an `X-Uvcan-Web: 1`
 header, which makes the server answer a wrong password without the challenge
-that would open the browser's own login dialog -- and only then loads the
-program and starts it with `--ui`. `src/web/weblogin.c` takes the account into
-the credentials, and the Settings tab's usual start-up connect logs in with it.
-The password stays in memory only.
+that would open the browser's own login dialog -- and then moves on to
+`app.html`, handing the account over in the tab's sessionStorage. `app.html`
+empties that as it reads it (without one it goes back to the login page),
+loads the program and starts it with `--ui`. Being a page of its own, Back
+leaves it and ends uvcan rather than leaving it running out of sight.
+`src/web/weblogin.c` takes the account into the credentials, and the Settings
+tab's usual start-up connect logs in with it.
+
+On a phone: one finger is the UI's and two pinch-zoom the page (a press which
+becomes a pinch is dragged off before it is let go, so it does not click). A
+touch on a text field focuses a hidden `<input>` placed over it, which is what
+brings up the on-screen keyboard; the text fields report where they are as they
+draw (`uv_ui_web_text_field()`). The first touch asks for fullscreen, which
+hides the address bar on Android; an iPhone hides it only for the page added to
+the home screen (`manifest.webmanifest`).
 
 It is the Linux build as far as the sources go (`CONFIG_TARGET_LINUX`), with
 `CONFIG_TARGET_WEB` for what a page does differently:
@@ -176,6 +190,8 @@ It is the Linux build as far as the sources go (`CONFIG_TARGET_LINUX`), with
   It decodes the stream like `src/ui/remoteui_win.c` and asks for fonts and
   images the same way; the canvas keeps its pixels, which is what
   FRAME_BEGIN_KEEP needs. Presses, drags and the wheel go to the device.
+- **Remove Device** in the Fleet tab hides a device only until it next
+  announces itself (every 5 s while it is online), in every build.
 
 ## Architecture
 
