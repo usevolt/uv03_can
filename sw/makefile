@@ -268,11 +268,13 @@ linux:
 # (install.sh puts it there).
 EMSDK ?= $(HOME)/emsdk
 web:
+	@# emcc finds the rest of the SDK, node included, from its own config; the
+	@# SDK's emsdk_env.sh would need bash
 	@if ! command -v emcc >/dev/null 2>&1; then \
-		if [ -f "$(EMSDK)/emsdk_env.sh" ]; then \
-			. "$(EMSDK)/emsdk_env.sh" >/dev/null 2>&1; \
+		if [ -x "$(EMSDK)/upstream/emscripten/emcc" ]; then \
+			PATH="$(EMSDK)/upstream/emscripten:$$PATH"; export PATH; \
 		else \
-			echo "web: emcc is not on PATH and there is no $(EMSDK)/emsdk_env.sh."; \
+			echo "web: emcc is not on PATH and not in $(EMSDK)/upstream/emscripten."; \
 			echo "     Install the Emscripten SDK (./install.sh --web), or point EMSDK= at it."; \
 			exit 1; \
 		fi; \
