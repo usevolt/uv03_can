@@ -173,6 +173,30 @@ static uv_errors_e loadparam_sdo_store_params(uint8_t node_id,
 }
 
 
+/// @brief: Forgets the answered queries when a new load starts, unless the load
+/// is part of a sequence which keeps them (see loadparam_st's keep_queries).
+static void loadparam_queries_reset(void) {
+	if (!this->keep_queries) {
+		uv_vector_init(&this->queries, this->queries_buffer,
+				QUERY_COUNT, sizeof(this->queries_buffer[0]));
+	}
+}
+
+
+/// @brief: Starts a load sequence: the queries answered from here on are asked
+/// once for all of its files, until loadparam_sequence_end().
+static void loadparam_sequence_begin(void) {
+	uv_vector_init(&this->queries, this->queries_buffer,
+			QUERY_COUNT, sizeof(this->queries_buffer[0]));
+	this->keep_queries = true;
+}
+
+
+static void loadparam_sequence_end(void) {
+	this->keep_queries = false;
+}
+
+
 bool loadparam_load(const char *path) {
 	bool ret = false;
 
@@ -439,6 +463,7 @@ bool loadparam_load_params_is_finished(void) {
 /// @brief: Task body loading saved parameters onto each target device in turn.
 static void loadparam_params_task(void *ptr) {
 	bool aborted = false;
+	loadparam_sequence_begin();
 	for (uint8_t i = 0; (i < async_params_count) && !aborted; i++) {
 		device_st *d = async_params_devs[i];
 		if ((d != NULL) && (strlen(d->param_file) != 0)) {
@@ -459,6 +484,7 @@ static void loadparam_params_task(void *ptr) {
 			}
 		}
 	}
+	loadparam_sequence_end();
 	if (aborted) {
 		ERRORSTR("Parameter loading stopped.\n");
 		fflush(stdout);
@@ -560,6 +586,7 @@ static void loadparam_files_task(void *ptr) {
 	uint8_t reset_nodes[sizeof(this->modified_dev_nodeids)];
 	uint8_t reset_count = 0;
 	bool aborted = false;
+	loadparam_sequence_begin();
 	for (uint8_t i = 0; (i < async_file_count) && !aborted; i++) {
 		const char *file = async_files[i];
 
@@ -613,8 +640,7 @@ static void loadparam_files_task(void *ptr) {
 			this->dev_count = 0;
 			this->sys_load_mode = false;
 			memset(this->files, 0, sizeof(this->files));
-			uv_vector_init(&this->queries, this->queries_buffer,
-					QUERY_COUNT, sizeof(this->queries_buffer[0]));
+			loadparam_queries_reset();
 			strncpy(this->files[0], file, sizeof(this->files[0]) - 1);
 			uv_can_set_up(false);
 			loadparam_step(NULL);
@@ -634,6 +660,7 @@ static void loadparam_files_task(void *ptr) {
 			}
 		}
 	}
+	loadparam_sequence_end();
 	if (aborted) {
 		ERRORSTR("Parameter loading stopped.\n");
 	}
@@ -681,8 +708,7 @@ static bool loadparam_load_device_ex(device_st *device, const char *file,
 		this->dev_count = 0;
 		this->sys_load_mode = sys_mode;
 		memset(this->files, 0, sizeof(this->files));
-		uv_vector_init(&this->queries, this->queries_buffer,
-				QUERY_COUNT, sizeof(this->queries_buffer[0]));
+		loadparam_queries_reset();
 		strcpy(this->files[0], file);
 
 		bool db_loaded = load_device_db(device);
@@ -2248,6 +2274,7 @@ void loadparam_system(device_st **devices, uint8_t count) {
 	// either way only the devices written so far are stored/reset below.
 	bool aborted = false;
 	uint8_t ok = 0;
+	loadparam_sequence_begin();
 	for (uint8_t i = 0; (i < n) && !aborted; i++) {
 		device_st *d = devices[i];
 		if (load[i]) {
@@ -2276,6 +2303,7 @@ void loadparam_system(device_st **devices, uint8_t count) {
 			}
 		}
 	}
+	loadparam_sequence_end();
 	if (aborted) {
 		ERRORSTR("System load stopped. The devices which were already written "
 				"are stored and reset below.\n");

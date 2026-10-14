@@ -66,6 +66,11 @@ typedef struct {
 
 	query_st queries_buffer[QUERY_COUNT];
 	uv_vector_st queries;
+	// Set for the length of a load sequence which loads several files in turn
+	// (the Settings tab's parameter files, a system's devices): the queries
+	// answered for one file are kept for the next ones, so a query of the same
+	// NAME is asked once per sequence rather than once per file.
+	bool keep_queries;
 
 	uint8_t modified_dev_nodeids[64];
 	uint8_t dev_count;

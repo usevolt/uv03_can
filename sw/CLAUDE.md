@@ -368,6 +368,11 @@ a value by its `NAME`, in one of two interchangeable forms (detected by value ty
 - **Answer-keyed object** (readable), keyed by the answer text — self-documenting and order-independent:
   `"DATA": { "valve": { "Danfoss": 2000, "Sauer": 3500 } }`
 
+A query is asked once per load: a query whose `NAME` was already answered
+earlier in the same load is not asked again, and its answer applies to every
+file of the load -- the files given to one `--loadparam`, the Settings tab's
+parameter file list, or the devices of a system load.
+
 Prefer the keyed form for new files. If the chosen answer's key is missing from a
 keyed object, that value is skipped with a warning. Both forms work anywhere a
 query is referenced (`DATA`, `MAININDEX`, `TYPE`, `SUBINDEX`, `NODEID`, and
