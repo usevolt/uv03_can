@@ -91,12 +91,13 @@ static struct {
 	uv_uicheckbox_st updates_check;
 	uv_uibutton_st notes_btn;
 
-	// The "CAN-bus" panel: the CAN interfaces this computer has, and the button
-	// moving uvcan onto the one picked. Picking one in the list changes nothing
-	// by itself; only "Apply" does.
+	// The "CAN-bus" panel: the CAN interfaces this computer has, the baudrate,
+	// and the button moving uvcan onto the interface and baudrate picked.
+	// Picking either in its list changes nothing by itself; only "Apply" does.
 	uv_uiframewindow_st canbus_frame;
-	uv_uiobject_st *canbus_frame_buf[3];
+	uv_uiobject_st *canbus_frame_buf[4];
 	uv_uilistbutton_st canbus_list;
+	uv_uilistbutton_st canbus_baud_list;
 	uv_uibutton_st canbus_apply_btn;
 
 	// The "Load parameters" panel: the file list on the left, the buttons on the
@@ -139,6 +140,16 @@ static char canbus_names[CANBUS_DEV_MAX][CANBUS_IFNAME_LEN];
 static char *canbus_content[CANBUS_DEV_MAX];
 static uint8_t canbus_count;
 static uint32_t canbus_rescan_tick;
+
+// The baudrates the "CAN-bus" panel offers. The list button reads the entry
+// past the last one when it is initialized, hence the NULL at the end.
+#define CANBUS_BAUD_COUNT		4
+static const unsigned int canbus_bauds[CANBUS_BAUD_COUNT] = {
+		125000, 250000, 500000, 1000000
+};
+static char *canbus_baud_content[CANBUS_BAUD_COUNT + 1] = {
+		"125k", "250k", "500k", "1M", NULL
+};
 
 #if CONFIG_TARGET_WEB
 // How long the web build waits before opening a dropped session again
@@ -726,12 +737,36 @@ static const char *canbus_shown(void) {
 }
 
 
-/// @brief: "Apply" is for moving onto another interface: disabled while the
-/// list shows the one in use, and while a load or a save is talking over it.
+/// @brief: Index of *baudrate* in the baudrate list, or the 250k one if it is
+/// not one of those offered
+static uint8_t canbus_baud_index_of(unsigned int baudrate) {
+	uint8_t ret = 1;
+	for (uint8_t i = 0; i < CANBUS_BAUD_COUNT; i++) {
+		if (canbus_bauds[i] == baudrate) {
+			ret = i;
+		}
+		else {
+		}
+	}
+	return ret;
+}
+
+
+/// @brief: The baudrate the baudrate list shows
+static unsigned int canbus_baud_shown(void) {
+	uint8_t i = uv_uilistbutton_get_current_index(&content.canbus_baud_list);
+	return canbus_bauds[(i < CANBUS_BAUD_COUNT) ? i : 1];
+}
+
+
+/// @brief: "Apply" is for moving onto another interface or baudrate: disabled
+/// while the lists show the ones in use, and while a load or a save is
+/// talking over it.
 static void canbus_refresh_button(void) {
 	const char *name = canbus_shown();
 	bool enabled = (name[0] != '\0') &&
-			(strcmp(name, uv_can_get_dev()) != 0) &&
+			((strcmp(name, uv_can_get_dev()) != 0) ||
+			(canbus_baud_shown() != uv_can_get_baudrate(uv_can_get_dev()))) &&
 			!devicetab_is_busy() && !settingstab_is_busy();
 	if (enabled != uv_ui_get_enabled(&content.canbus_apply_btn)) {
 		uv_ui_set_enabled(&content.canbus_apply_btn, enabled);
@@ -742,25 +777,30 @@ static void canbus_refresh_button(void) {
 }
 
 
-/// @brief: Moves uvcan onto the CAN interface *name*, at the baudrate in use.
-static void canbus_apply(const char *name) {
-	unsigned int baudrate = uv_can_get_baudrate(uv_can_get_dev());
-	printf("Changing the CAN interface from %s to %s...\n",
-			uv_can_get_dev(), name);
+/// @brief: Moves uvcan onto the CAN interface *name* at *baudrate*.
+static void canbus_apply(const char *name, unsigned int baudrate) {
+	printf("Changing the CAN interface from %s (%u) to %s (%u)...\n",
+			uv_can_get_dev(), uv_can_get_baudrate(uv_can_get_dev()),
+			name, baudrate);
 	fflush(stdout);
 	uv_can_close();
 	strncpy(dev.can_channel, name, sizeof(dev.can_channel) - 1);
 	dev.can_channel[sizeof(dev.can_channel) - 1] = '\0';
+	dev.baudrate = baudrate;
 	uv_can_set_dev(dev.can_channel);
 	uv_can_set_baudrate(dev.can_channel, baudrate);
 	// what was received from the previous bus is no news from this one
 	uv_can_clear_rx_buffer(dev.can_channel);
-	char *err = uv_can_set_up(false);
+	// uv_can_set_up() leaves an interface which is up as it is, so one running
+	// at another baudrate is set up again by force. A virtual interface reports
+	// no baudrate at all and has none to set.
+	unsigned int netdev_baud = uv_can_get_netdev_baudrate(dev.can_channel);
+	char *err = uv_can_set_up((netdev_baud != 0) && (netdev_baud != baudrate));
 	if (err != NULL) {
 		printf(PRINT_BOLDRED "%s: %s\n" PRINT_RESET, name, err);
 	}
 	else {
-		printf("Using the CAN interface %s.\n", name);
+		printf("Using the CAN interface %s at %u baud.\n", name, baudrate);
 	}
 	fflush(stdout);
 }
@@ -938,12 +978,16 @@ void settingstab_show(uv_uitabwindow_st *tabwin) {
 	uv_uiframewindow_addxy(&content.software_frame, &content.notes_btn,
 			sw_left_w + MARGIN, 0, sw_btn_w, sw_row_h);
 
-	// --- the "CAN-bus" panel: the interfaces in a list button and "Apply" on
-	// the right, a row as tall as the Software panel's. A page in a web browser
-	// has no CAN bus, so there it is made but left out of the tab, like the
+	// --- the "CAN-bus" panel: the interface and the baudrate in list buttons
+	// side by side and "Apply" on the right. A list button draws its title and
+	// its content as two lines centered on the button and the bar under them
+	// along its bottom edge, which sizes the row. A page in a web browser has
+	// no CAN bus, so there it is made but left out of the tab, like the
 	// "Load parameters" panel below.
+	int16_t canbus_row_h = 2 * uv_ui_get_font_height(style->font) +
+			2 * (4 + CONFIG_UI_LISTBUTTON_BAR_HEIGHT) + MARGIN / 2;
 	int16_t canbus_y = software_y + software_frame_h + MARGIN;
-	int16_t canbus_frame_h = software_frame_h;
+	int16_t canbus_frame_h = canbus_row_h + MARGIN + TITLE_H;
 	uv_uiframewindow_init(&content.canbus_frame, content.canbus_frame_buf,
 			style);
 	uv_uiframewindow_set_title(&content.canbus_frame, "CAN-bus");
@@ -964,12 +1008,22 @@ void settingstab_show(uv_uitabwindow_st *tabwin) {
 			(canbus_count != 0) ? canbus_count : 1,
 			(uint8_t) ((canbus_index < 0) ? 0 : canbus_index), style);
 	uv_uilistbutton_set_title(&content.canbus_list, "CAN interface");
+	int16_t canbus_lists_w = cc.w - sw_btn_w - MARGIN;
+	int16_t canbus_list_w = (canbus_lists_w - MARGIN) / 2;
 	uv_uiframewindow_addxy(&content.canbus_frame, &content.canbus_list,
-			0, 0, cc.w - sw_btn_w - MARGIN, sw_row_h);
+			0, 0, canbus_list_w, canbus_row_h);
+
+	uv_uilistbutton_init(&content.canbus_baud_list, canbus_baud_content,
+			CANBUS_BAUD_COUNT,
+			canbus_baud_index_of(uv_can_get_baudrate(uv_can_get_dev())), style);
+	uv_uilistbutton_set_title(&content.canbus_baud_list, "Baudrate");
+	uv_uiframewindow_addxy(&content.canbus_frame, &content.canbus_baud_list,
+			canbus_list_w + MARGIN, 0, canbus_lists_w - canbus_list_w - MARGIN,
+			canbus_row_h);
 
 	uv_uibutton_init(&content.canbus_apply_btn, "Apply", style);
 	uv_uiframewindow_addxy(&content.canbus_frame, &content.canbus_apply_btn,
-			cc.w - sw_btn_w, 0, sw_btn_w, sw_row_h);
+			cc.w - sw_btn_w, 0, sw_btn_w, canbus_row_h);
 	canbus_refresh_button();
 
 	// The "Load parameters" panel fills the rest of the tab: the file list on the
@@ -1113,7 +1167,7 @@ void settingstab_step(void) {
 		}
 		if (uv_uibutton_clicked(&content.canbus_apply_btn) &&
 				uv_ui_get_enabled(&content.canbus_apply_btn)) {
-			canbus_apply(canbus_shown());
+			canbus_apply(canbus_shown(), canbus_baud_shown());
 		}
 		else {
 		}
