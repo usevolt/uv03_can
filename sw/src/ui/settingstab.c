@@ -35,6 +35,9 @@
 #include "ui/uv_uifileedit.h"
 #include "ui/uv_uitextedit.h"
 #include "ui/uv_uicheckbox.h"
+#include "ui/uv_uilistbutton.h"
+#include "ui/devicetab.h"
+#include "main.h"
 
 
 // Colour of a status line whose server reported a failure
@@ -88,6 +91,14 @@ static struct {
 	uv_uicheckbox_st updates_check;
 	uv_uibutton_st notes_btn;
 
+	// The "CAN-bus" panel: the CAN interfaces this computer has, and the button
+	// moving uvcan onto the one picked. Picking one in the list changes nothing
+	// by itself; only "Apply" does.
+	uv_uiframewindow_st canbus_frame;
+	uv_uiobject_st *canbus_frame_buf[3];
+	uv_uilistbutton_st canbus_list;
+	uv_uibutton_st canbus_apply_btn;
+
 	// The "Load parameters" panel: the file list on the left, the buttons on the
 	// right
 	uv_uiframewindow_st params_frame;
@@ -116,6 +127,18 @@ static bool params_loading;
 // Whether the widgets above are part of the display right now. The main tab
 // window clears them whenever another main tab is picked.
 static bool shown;
+
+// The CAN interfaces the "CAN-bus" panel lists: the hardware ones first, then
+// the virtual ones, the same order as the start-up window's
+#define CANBUS_DEV_MAX			16
+#define CANBUS_IFNAME_LEN		32
+// How often the list is read again while the tab is shown, so an interface
+// appearing meanwhile (a remote CAN bridge being opened) is offered
+#define CANBUS_RESCAN_MS		2000U
+static char canbus_names[CANBUS_DEV_MAX][CANBUS_IFNAME_LEN];
+static char *canbus_content[CANBUS_DEV_MAX];
+static uint8_t canbus_count;
+static uint32_t canbus_rescan_tick;
 
 #if CONFIG_TARGET_WEB
 // How long the web build waits before opening a dropped session again
@@ -599,6 +622,150 @@ static void params_step(void) {
 }
 
 
+/// @brief: Reads the CAN interfaces into canbus_names. The one in use is always
+/// listed, even when the system no longer has it, so the list can show it.
+/// @return: true when the list differs from what it was
+static bool canbus_scan(void) {
+	char names[CANBUS_DEV_MAX][CANBUS_IFNAME_LEN];
+	uint8_t count = 0;
+	const char *active = uv_can_get_dev();
+	// setting the baudrate re-reads the interface list as a side effect
+	uv_can_set_baudrate(uv_can_get_dev(), uv_can_get_baudrate(uv_can_get_dev()));
+	bool active_listed = false;
+	for (uint8_t pass = 0; pass < 2; pass++) {
+		for (int32_t i = 0; (i < uv_can_get_device_count()) &&
+				(count < CANBUS_DEV_MAX); i++) {
+			const char *name = uv_can_get_device_name(i);
+			if ((name != NULL) && uv_can_device_is_can(name) &&
+					(uv_can_device_is_virtual(name) == (pass == 1))) {
+				strncpy(names[count], name, CANBUS_IFNAME_LEN - 1);
+				names[count][CANBUS_IFNAME_LEN - 1] = '\0';
+				if (strcmp(name, active) == 0) {
+					active_listed = true;
+				}
+				else {
+				}
+				count++;
+			}
+			else {
+			}
+		}
+	}
+	if (!active_listed && (active[0] != '\0') && (count < CANBUS_DEV_MAX)) {
+		strncpy(names[count], active, CANBUS_IFNAME_LEN - 1);
+		names[count][CANBUS_IFNAME_LEN - 1] = '\0';
+		count++;
+	}
+	else {
+	}
+
+	bool changed = (count != canbus_count);
+	for (uint8_t i = 0; (i < count) && !changed; i++) {
+		changed = (strcmp(names[i], canbus_names[i]) != 0);
+	}
+	if (changed) {
+		memcpy(canbus_names, names, sizeof(names));
+		canbus_count = count;
+		for (uint8_t i = 0; i < count; i++) {
+			canbus_content[i] = canbus_names[i];
+		}
+		if (count == 0) {
+			// nothing at all to choose from; canbus_shown() reads it as none
+			canbus_content[0] = "None";
+		}
+		else {
+		}
+	}
+	else {
+	}
+	return changed;
+}
+
+
+/// @brief: Index of *name* in the list, or -1
+static int16_t canbus_index_of(const char *name) {
+	int16_t ret = -1;
+	for (uint8_t i = 0; (i < canbus_count) && (ret < 0); i++) {
+		if (strcmp(canbus_names[i], name) == 0) {
+			ret = (int16_t) i;
+		}
+		else {
+		}
+	}
+	return ret;
+}
+
+
+/// @brief: Points the list at its content again after canbus_scan() changed it,
+/// keeping the interface it showed shown if it is still there.
+static void canbus_refresh_list(const char *shown_name) {
+	int16_t index = canbus_index_of(shown_name);
+	if (index < 0) {
+		index = canbus_index_of(uv_can_get_dev());
+	}
+	else {
+	}
+	uv_uilistbutton_set_content(&content.canbus_list, canbus_content,
+			(canbus_count != 0) ? canbus_count : 1);
+	uv_uilistbutton_set_current_index(&content.canbus_list,
+			(uint8_t) ((index < 0) ? 0 : index));
+	uv_ui_refresh(&content.canbus_list);
+}
+
+
+/// @brief: The interface the list shows, "" when it lists none
+static const char *canbus_shown(void) {
+	const char *ret = "";
+	uint8_t i = uv_uilistbutton_get_current_index(&content.canbus_list);
+	if (i < canbus_count) {
+		ret = canbus_names[i];
+	}
+	else {
+	}
+	return ret;
+}
+
+
+/// @brief: "Apply" is for moving onto another interface: disabled while the
+/// list shows the one in use, and while a load or a save is talking over it.
+static void canbus_refresh_button(void) {
+	const char *name = canbus_shown();
+	bool enabled = (name[0] != '\0') &&
+			(strcmp(name, uv_can_get_dev()) != 0) &&
+			!devicetab_is_busy() && !settingstab_is_busy();
+	if (enabled != uv_ui_get_enabled(&content.canbus_apply_btn)) {
+		uv_ui_set_enabled(&content.canbus_apply_btn, enabled);
+		uv_ui_refresh(&content.canbus_apply_btn);
+	}
+	else {
+	}
+}
+
+
+/// @brief: Moves uvcan onto the CAN interface *name*, at the baudrate in use.
+static void canbus_apply(const char *name) {
+	unsigned int baudrate = uv_can_get_baudrate(uv_can_get_dev());
+	printf("Changing the CAN interface from %s to %s...\n",
+			uv_can_get_dev(), name);
+	fflush(stdout);
+	uv_can_close();
+	strncpy(dev.can_channel, name, sizeof(dev.can_channel) - 1);
+	dev.can_channel[sizeof(dev.can_channel) - 1] = '\0';
+	uv_can_set_dev(dev.can_channel);
+	uv_can_set_baudrate(dev.can_channel, baudrate);
+	// what was received from the previous bus is no news from this one
+	uv_can_clear_rx_buffer(dev.can_channel);
+	char *err = uv_can_set_up(false);
+	if (err != NULL) {
+		printf(PRINT_BOLDRED "%s: %s\n" PRINT_RESET, name, err);
+	}
+	else {
+		printf("Using the CAN interface %s.\n", name);
+	}
+	fflush(stdout);
+}
+
+
 bool settingstab_is_busy(void) {
 	return params_loading;
 }
@@ -771,9 +938,43 @@ void settingstab_show(uv_uitabwindow_st *tabwin) {
 	uv_uiframewindow_addxy(&content.software_frame, &content.notes_btn,
 			sw_left_w + MARGIN, 0, sw_btn_w, sw_row_h);
 
+	// --- the "CAN-bus" panel: the interfaces in a list button and "Apply" on
+	// the right, a row as tall as the Software panel's. A page in a web browser
+	// has no CAN bus, so there it is made but left out of the tab, like the
+	// "Load parameters" panel below.
+	int16_t canbus_y = software_y + software_frame_h + MARGIN;
+	int16_t canbus_frame_h = software_frame_h;
+	uv_uiframewindow_init(&content.canbus_frame, content.canbus_frame_buf,
+			style);
+	uv_uiframewindow_set_title(&content.canbus_frame, "CAN-bus");
+#if !CONFIG_TARGET_WEB
+	uv_uitabwindow_addxy(tabwin, &content.canbus_frame, frame_x, canbus_y,
+			frame_w, canbus_frame_h);
+#else
+	canbus_frame_h = -MARGIN;
+#endif
+	uv_bounding_box_st cc =
+			uv_uiframewindow_get_content_bb(&content.canbus_frame);
+	canbus_count = 0;
+	canbus_content[0] = "None";
+	(void) canbus_scan();
+	canbus_rescan_tick = uv_rtos_get_tick_count();
+	int16_t canbus_index = canbus_index_of(uv_can_get_dev());
+	uv_uilistbutton_init(&content.canbus_list, canbus_content,
+			(canbus_count != 0) ? canbus_count : 1,
+			(uint8_t) ((canbus_index < 0) ? 0 : canbus_index), style);
+	uv_uilistbutton_set_title(&content.canbus_list, "CAN interface");
+	uv_uiframewindow_addxy(&content.canbus_frame, &content.canbus_list,
+			0, 0, cc.w - sw_btn_w - MARGIN, sw_row_h);
+
+	uv_uibutton_init(&content.canbus_apply_btn, "Apply", style);
+	uv_uiframewindow_addxy(&content.canbus_frame, &content.canbus_apply_btn,
+			cc.w - sw_btn_w, 0, sw_btn_w, sw_row_h);
+	canbus_refresh_button();
+
 	// The "Load parameters" panel fills the rest of the tab: the file list on the
 	// left, and on the right the buttons, as wide as the "Connect" button above
-	int16_t params_y = software_y + software_frame_h + MARGIN;
+	int16_t params_y = canbus_y + canbus_frame_h + MARGIN;
 	uv_uiframewindow_init(&content.params_frame, content.params_frame_buf, style);
 	uv_uiframewindow_set_title(&content.params_frame, "Load parameters");
 #if CONFIG_TARGET_WEB
@@ -892,6 +1093,32 @@ void settingstab_step(void) {
 	if (shown) {
 		params_list_wheel_step();
 		params_step();
+#if !CONFIG_TARGET_WEB
+		// the interfaces come and go (a remote CAN bridge, a USB adapter), so
+		// the list is read again every now and then
+		uint32_t now = uv_rtos_get_tick_count();
+		if (((now - canbus_rescan_tick) * UV_RTOS_TICK_PERIOD_MS) >=
+				CANBUS_RESCAN_MS) {
+			char shown_name[CANBUS_IFNAME_LEN];
+			strncpy(shown_name, canbus_shown(), sizeof(shown_name) - 1);
+			shown_name[sizeof(shown_name) - 1] = '\0';
+			canbus_rescan_tick = now;
+			if (canbus_scan()) {
+				canbus_refresh_list(shown_name);
+			}
+			else {
+			}
+		}
+		else {
+		}
+		if (uv_uibutton_clicked(&content.canbus_apply_btn) &&
+				uv_ui_get_enabled(&content.canbus_apply_btn)) {
+			canbus_apply(canbus_shown());
+		}
+		else {
+		}
+		canbus_refresh_button();
+#endif
 		// "Version notes": what this build added to the one published before it,
 		// in a window of its own (the notes are compiled in, see versionnotes.h)
 		if (uv_uibutton_clicked(&content.notes_btn)) {
