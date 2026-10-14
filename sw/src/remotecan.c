@@ -217,6 +217,26 @@ static bool sdo_reply_toggle;
 static uint32_t sdo_wait_ms;
 static uint32_t sdo_count;
 
+// How long a node stays relayed after the last SDO request this end relayed to
+// it as it was (see sdo_relay_ms)
+#define SDO_RELAY_HOLD_MS		SDO_OFFLOAD_TIMEOUT_MS
+#define SDO_NODE_COUNT			128u
+
+// Time since an SDO request to each node was last relayed frame by frame rather
+// than offloaded, SDO_RELAY_HOLD_MS and over for a node with none.
+//
+// The device forwards what happens on its bus, and that includes the frames of
+// every transfer it runs for the offload: its own client's requests and the
+// node's answers, arriving here a link's delay after the result itself, in a
+// burst, while the client on the netdev has already moved on to its next
+// transfer. They carry the very COB-ids the client is talking on, so it takes
+// them for answers to what it is asking now. A segment has no index to tell
+// it by, so a stale one can even be taken for the data of another object. So
+// while the offload is on, the SDO frames the device forwards are dropped,
+// except for the nodes whose conversation this end is relaying: those answers
+// are the only way the client gets one.
+static uint16_t sdo_relay_ms[SDO_NODE_COUNT];
+
 // The result, written by the broker's pump task and read by the bridge task.
 static volatile bool sdo_res_ready;
 static uint32_t sdo_res_abort;
@@ -331,6 +351,66 @@ static void sdo_upload_segment_reply(bool toggle) {
 }
 
 
+/// @brief: True for a frame of the uv_terminal: SDO-shaped, on 0x5FFF, but no
+/// transfer. The device's CAN driver takes them off the bus into its terminal.
+static bool sdo_is_terminal(const uv_can_msg_st *msg) {
+	return ((msg->data_length >= 3u) &&
+			(msg->data_8bit[1] == (UV_TERMINAL_CAN_INDEX & 0xFFu)) &&
+			(msg->data_8bit[2] == (UV_TERMINAL_CAN_INDEX >> 8)));
+}
+
+
+/// @brief: The node of an SDO request or response, or 0 for any other frame.
+static uint8_t sdo_frame_node(const uv_can_msg_st *msg) {
+	uint8_t ret = 0;
+	if ((msg->type == CAN_STD) &&
+			(((msg->id & ~0x7Fu) == SDO_REQUEST_ID) ||
+			((msg->id & ~0x7Fu) == SDO_RESPONSE_ID))) {
+		ret = (uint8_t) (msg->id & 0x7Fu);
+	}
+	else {
+	}
+	return ret;
+}
+
+
+/// @brief: Whether a frame the device forwarded is one of the SDO frames
+/// dropped while the offload is on (see sdo_relay_ms).
+static bool sdo_from_dev_is_echo(const uv_can_msg_st *msg) {
+	uint8_t node = sdo_frame_node(msg);
+	return (sdo_offload_on &&
+			(node != 0u) &&
+			!sdo_is_terminal(msg) &&
+			(node != sdo_block_node) &&
+			(sdo_relay_ms[node] >= SDO_RELAY_HOLD_MS));
+}
+
+
+/// @brief: Marks *msg*'s node relayed, when it is an SDO request going to the
+/// device as it is.
+static void sdo_mark_relayed(const uv_can_msg_st *msg) {
+	uint8_t node = sdo_frame_node(msg);
+	if ((node != 0u) && ((msg->id & ~0x7Fu) == SDO_REQUEST_ID) &&
+			!sdo_is_terminal(msg)) {
+		sdo_relay_ms[node] = 0;
+	}
+	else {
+	}
+}
+
+
+/// @brief: Ages the relayed nodes by *step_ms*.
+static void sdo_relay_step(uint16_t step_ms) {
+	for (uint8_t i = 0; i < SDO_NODE_COUNT; i++) {
+		if (sdo_relay_ms[i] < SDO_RELAY_HOLD_MS) {
+			sdo_relay_ms[i] = (uint16_t) (sdo_relay_ms[i] + step_ms);
+		}
+		else {
+		}
+	}
+}
+
+
 /// @brief: Hands the collected transfer to the device.
 static void sdo_offload(void) {
 	sdo_wait_ms = 0;
@@ -378,8 +458,7 @@ static bool sdo_intercept(const uv_can_msg_st *msg) {
 		sdo_block_idle_ms = 0;
 		sdo_block_done = false;
 	}
-	else if ((msg->data_8bit[1] == (UV_TERMINAL_CAN_INDEX & 0xFFu)) &&
-			(msg->data_8bit[2] == (UV_TERMINAL_CAN_INDEX >> 8))) {
+	else if (sdo_is_terminal(msg)) {
 		// Terminal characters look like an expedited download to 0x5FFF, but
 		// no such object exists: the device's CAN driver takes them off the
 		// bus into its terminal. Run as an SDO they would only be aborted, so
@@ -639,6 +718,10 @@ static void can_from_dev(uint8_t fleet_index, uint8_t dev_index,
 			// re-negotiation or one arrived from before the filter changed
 			filtered_count++;
 		}
+		else if (sdo_from_dev_is_echo(msg)) {
+			// the device's own run of a transfer offloaded to it
+			filtered_count++;
+		}
 		else {
 			// the device ending or aborting a block download ends the relaying
 			// of its segments (see sdo_block_node)
@@ -745,6 +828,9 @@ bool remotecan_start(uint8_t fleet_index, uint8_t dev_index) {
 		sdo_state = SDO_IDLE;
 		sdo_res_ready = false;
 		sdo_offload_on = false;
+		for (uint8_t i = 0; i < SDO_NODE_COUNT; i++) {
+			sdo_relay_ms[i] = SDO_RELAY_HOLD_MS;
+		}
 		mqtt_set_sdo_callb(&sdo_from_dev, NULL);
 		active = true;
 		bridged_fleet = (int16_t) fleet_index;
@@ -906,6 +992,7 @@ void remotecan_step(void) {
 		// answers that arrived since the last step, and transfers the device
 		// never answered at all
 		sdo_result_step(REMOTECAN_STEP_MS);
+		sdo_relay_step(REMOTECAN_STEP_MS);
 		if (sdo_block_node != 0u) {
 			sdo_block_idle_ms += REMOTECAN_STEP_MS;
 			if (sdo_block_done ||
@@ -951,6 +1038,9 @@ void remotecan_step(void) {
 				}
 				else if (mqtt_dev_send_can((uint8_t) bridged_fleet,
 						(uint8_t) bridged_dev, &msg)) {
+					// relayed as it is, so the node's answers have to come
+					// back the same way
+					sdo_mark_relayed(&msg);
 					tx_count++;
 				}
 				else {
