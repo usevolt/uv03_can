@@ -23,6 +23,7 @@
 #include "ui/uv_uiacceptdialog.h"
 #include "ui/uv_uitextedit.h"
 #include "remotefiles.h"
+#include "fleet.h"
 #include "credentials.h"
 #include "system.h"
 #include <ctype.h>
@@ -100,6 +101,10 @@ static uv_uitabwindow_st fleet_tabs;
 static uv_uiobject_st *fleet_tabs_buf[2];
 static char *fleet_names[REMOTEFILES_MAX_FLEETS];
 static uint8_t fleet_count;
+// The fleet each tab shows: the fleet named FLEET_MAIN_NAME first, the others
+// after it in the order the file server listed them. The nodes keep the fleets'
+// own indices, only the tabs are reordered.
+static uint8_t fleet_of_tab[REMOTEFILES_MAX_FLEETS];
 static uv_uilabel_st fleet_empty_label;
 
 // The tree of the fleet currently on show. One tree serves every tab: switching
@@ -842,7 +847,7 @@ static uv_uiobject_ret_e sfw_step(void *user_ptr, uint16_t step_ms) {
 	}
 	else if ((fleet_count > 0) && uv_uitabwindow_tab_changed(&fleet_tabs)) {
 		// a new tab opens at its top level, with the filter applied there
-		sfw_show_fleet((uint8_t) uv_uitabwindow_get_tab(&fleet_tabs), -1);
+		sfw_show_fleet(fleet_of_tab[uv_uitabwindow_get_tab(&fleet_tabs)], -1);
 	}
 	else {
 		// poll every version's Download button (products not on the active tab,
@@ -925,14 +930,25 @@ bool serverfiles_win_exec(const uv_uistyle_st *style) {
 		return false;
 	}
 
-	// 3. one tab per fleet. The tab names point straight at the fleet names
-	// remotefiles keeps, which outlive this window.
+	// 3. one tab per fleet, the main fleet first. The tab names point straight
+	// at the fleet names remotefiles keeps, which outlive this window.
 	fleet_count = remotefiles_get_fleet_count();
 	if (fleet_count > REMOTEFILES_MAX_FLEETS) {
 		fleet_count = REMOTEFILES_MAX_FLEETS;
 	}
+	uint8_t tab = 0;
 	for (uint8_t f = 0; f < fleet_count; f++) {
-		fleet_names[f] = (char*) remotefiles_get_fleet(f);
+		if (strcmp(remotefiles_get_fleet(f), FLEET_MAIN_NAME) == 0) {
+			fleet_of_tab[tab++] = f;
+		}
+	}
+	for (uint8_t f = 0; f < fleet_count; f++) {
+		if (strcmp(remotefiles_get_fleet(f), FLEET_MAIN_NAME) != 0) {
+			fleet_of_tab[tab++] = f;
+		}
+	}
+	for (uint8_t t = 0; t < fleet_count; t++) {
+		fleet_names[t] = (char*) remotefiles_get_fleet(fleet_of_tab[t]);
 	}
 	if (fleet_count == 0) {
 		uv_uilabel_init(&empty_label, style->font, ALIGN_CENTER,
@@ -945,7 +961,7 @@ bool serverfiles_win_exec(const uv_uistyle_st *style) {
 				fleet_tabs_buf, fleet_names);
 		uv_uidialog_addxy(&dialog, &fleet_tabs,
 				SFW_MARGIN, tabs_y, w - 2 * SFW_MARGIN, tabs_h);
-		sfw_show_fleet(0, -1);
+		sfw_show_fleet(fleet_of_tab[0], -1);
 	}
 
 	int16_t bottom_y = h - SFW_BTN_H - SFW_MARGIN;

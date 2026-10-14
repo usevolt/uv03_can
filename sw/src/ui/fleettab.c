@@ -51,10 +51,9 @@ static uv_uiobject_st *fleet_tabs_buf[4];
 static char fleet_name_buf[MQTT_MAX_FLEETS][MQTT_NAME_MAX + 8];
 static char *fleet_names[MQTT_MAX_FLEETS];
 static uint8_t fleet_tab_count;
-// The fleet each tab shows: the fleet named MAIN_FLEET first, the others after
+// The fleet each tab shows: the fleet named FLEET_MAIN_NAME first, the others after
 // it in the order they were discovered. The fleets keep their own indices (the
 // remote UI and CAN sessions hold them), only the tabs are reordered.
-#define MAIN_FLEET		"main"
 static uint8_t fleet_of_tab[MQTT_MAX_FLEETS];
 // True while the fleet tabs are what the tab shows, rather than a placeholder,
 // so that fleet_tabs and the fleet_* tables above are valid.
@@ -232,12 +231,12 @@ static void build_fleet_tabs(uv_uitabwindow_st *tabwin, int16_t y, int16_t h) {
 	}
 	uint8_t tab = 0;
 	for (uint8_t i = 0; i < fleet_tab_count; i++) {
-		if (strcmp(mqtt_get_fleet_name(i), MAIN_FLEET) == 0) {
+		if (strcmp(mqtt_get_fleet_name(i), FLEET_MAIN_NAME) == 0) {
 			fleet_of_tab[tab++] = i;
 		}
 	}
 	for (uint8_t i = 0; i < fleet_tab_count; i++) {
-		if (strcmp(mqtt_get_fleet_name(i), MAIN_FLEET) != 0) {
+		if (strcmp(mqtt_get_fleet_name(i), FLEET_MAIN_NAME) != 0) {
 			fleet_of_tab[tab++] = i;
 		}
 	}

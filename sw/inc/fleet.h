@@ -40,6 +40,11 @@
 /// removed from the view, which is why removal goes through fleet_remove_dev().
 
 
+/// @brief: The name of an account's main fleet. The UI lists it before the
+/// others: it is the first tab of both the Fleet tab and the server files window.
+#define FLEET_MAIN_NAME		"main"
+
+
 /// @brief: Outcome of fleet_login().
 typedef struct {
 	// the file server accepted the account and said which fleets it holds
