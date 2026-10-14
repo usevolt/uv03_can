@@ -26,6 +26,7 @@
 #include "load.h"
 #include "listen.h"
 #include "find.h"
+#include "savesys.h"
 #include "terminal.h"
 #include "db.h"
 #include "loadmedia.h"
@@ -165,6 +166,20 @@ commands_st commands[] = {
 						"case the devices are added on top of the system file's ones.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_device
+		},
+		{
+				.cmd_long = "savesys",
+				.str = "Saves the system to a system configuration (.uvsys) file, the same "
+						"file the UI's \"Save system configuration\" button writes. The "
+						"system is made of the devices given before this with *dev* and "
+						"*sys*. uvcan first listens for a moment for the devices' heartbeats "
+						"on the bus: the file bundles the .uvdev package of every device "
+						"which is online, together with the parameters read from it, and a "
+						"device which is not heard from is left out with a warning. "
+						"E.g. 'uvcan --dev a.uvdev:0x10 --dev b.uvdev:0x20 --savesys "
+						"machine.uvsys'. Not supported on Windows.",
+				.args = ARG_REQUIRE,
+				.callback = &cmd_savesys
 		},
 		{
 				.cmd_long = "can",

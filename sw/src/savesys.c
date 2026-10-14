@@ -26,6 +26,7 @@
 #include "main.h"
 #include "system.h"
 #include "saveparam.h"
+#include "find.h"
 #include "uvstdin.h"
 #include "ui/uvui.h"
 
@@ -41,6 +42,14 @@
 static volatile bool finished = true;
 // Destination .uvsys path for the asynchronous save.
 static char out_file[1024];
+// Destination .uvsys path for the --savesys command.
+static char cmd_file[1024];
+
+// How long --savesys listens for the devices' heartbeats before saving. Only
+// the devices heard from are saved, as in the UI, and the command line has had
+// no monitor running before this to know which those are.
+#define SAVESYS_HEARTBEAT_WAIT_MS	3000
+#define SAVESYS_HEARTBEAT_POLL_MS	100
 
 
 bool savesys_is_finished(void) {
@@ -435,4 +444,56 @@ void savesys_save_async(const char *file) {
 	finished = false;
 	uv_rtos_task_create(&savesys_task, "savesys_task",
 			UV_RTOS_MIN_STACK_SIZE * 5, NULL, UV_RTOS_IDLE_PRIORITY + 1, NULL);
+}
+
+
+/// @brief: True when every device savesys_save() could save has been heard from.
+static bool all_devs_online(system_st *sys) {
+	bool ret = true;
+	for (uint8_t i = 0; i < system_get_dev_count(sys); i++) {
+		device_st *d = system_get_dev(sys, i);
+		if ((d->nodeid != 0) && !d->thirdparty && (strlen(d->filepath) != 0) &&
+				(d->state == DEV_STATE_OFFLINE)) {
+			ret = false;
+		}
+	}
+	return ret;
+}
+
+
+/// @brief: Task body for the --savesys command.
+static void savesys_cmd_step(void *ptr) {
+	(void) ptr;
+	system_st *sys = &dev.system;
+	printf("Listening for the devices on the bus...\n");
+	fflush(stdout);
+	find_start_monitor();
+	uint32_t waited = 0;
+	find_update_device_states(sys);
+	while (!all_devs_online(sys) && (waited < SAVESYS_HEARTBEAT_WAIT_MS)) {
+		uv_rtos_task_delay(SAVESYS_HEARTBEAT_POLL_MS);
+		waited += SAVESYS_HEARTBEAT_POLL_MS;
+		find_update_device_states(sys);
+	}
+	savesys_save(cmd_file);
+}
+
+
+bool cmd_savesys(const char *arg) {
+	bool ret = false;
+	if ((arg == NULL) || (strlen(arg) == 0)) {
+		ERRORSTR("ERROR: give the .uvsys file to save the system to.\n");
+	}
+	else if (system_get_dev_count(&dev.system) == 0) {
+		ERRORSTR("ERROR: no devices to save. Give them with --dev or --sys "
+				"before --savesys.\n");
+	}
+	else {
+		strncpy(cmd_file, arg, sizeof(cmd_file) - 1);
+		cmd_file[sizeof(cmd_file) - 1] = '\0';
+		add_task(&savesys_cmd_step);
+		uv_can_set_up(false);
+		ret = true;
+	}
+	return ret;
 }

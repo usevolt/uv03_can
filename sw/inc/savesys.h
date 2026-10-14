@@ -40,6 +40,13 @@
 bool savesys_save(const char *file);
 
 
+/// @brief: --savesys: Writes the devices given with --dev / --sys to the .uvsys
+/// package *arg* with savesys_save(), the function behind the UI's "Save system
+/// configuration" button. Only registers a task: the devices' states come from
+/// their heartbeats, which are listened to for a moment first.
+bool cmd_savesys(const char *arg);
+
+
 /// @brief: Starts savesys_save() on its own task so the caller (the UI) is not
 /// blocked while parameters are read over SDO. Poll savesys_is_finished() for
 /// completion. The log view's frame title is updated with the save progress

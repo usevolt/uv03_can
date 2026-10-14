@@ -263,6 +263,7 @@ the `.uvsys` system file).
 | db | `src/db.c` (largest, ~1700 LOC) | CANopen device database parsing, object dictionary management, up to 512 objects |
 | loadparam | `src/loadparam.c` | Write parameters to devices via SDO, multi-device support with query/answer flow |
 | saveparam | `src/saveparam.c` | Read parameters from devices and save to files |
+| savesys | `src/savesys.c` | Writes the system to a .uvsys package: `--savesys` and the device tab's "Save system configuration" both call `savesys_save()` |
 | export | `src/export.c` | Generate C header/source files from device database |
 | load | `src/load.c` | Firmware flashing via multiple bootloader protocols (standard, segmented, legacy UV) |
 | listen | `src/listen.c` | CAN bus message monitoring |
