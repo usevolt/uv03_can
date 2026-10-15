@@ -69,20 +69,36 @@ static char title_str[160];
 static uv_uilabel_st empty_label;
 static uv_uibutton_st close_btn;
 
-// The filter field, next to the Close button. It narrows what the current
-// directory shows -- the deepest one open, or the fleet's top level when none
-// is -- to the files and subdirectories whose names match. '*' stands for any
-// run of characters; a filter without one matches anywhere in the name.
+// The filter field, next to the Close button. Its text is a path down the
+// active tab's tree, '/' separating the levels: the first segment narrows the
+// directories at the top of the fleet, each '/' opens the topmost directory
+// left standing at that level, and the segment after it narrows what that
+// directory holds -- its files and its subdirectories -- and so on down. In a
+// segment '*' stands for any run of characters; a segment without one matches
+// anywhere in the name.
+//
+// While there is any text in it, the filter is what decides which directories
+// are open: whatever the user had opened is closed again when the text changes.
 #define SFW_FILTER_LABEL_W	70
 #define SFW_FILTER_W		360
 static uv_uilabel_st filter_label;
 static uv_uitextedit_st filter_edit;
 static char filter_buf[128];
-// What the tree was last built with: the filter text, and the directory it was
-// applied to (-1 for the fleet's top level). The field writes its buffer as it
-// is typed in, so comparing against these is what notices a keystroke.
+// The filter text the tree was last built with. The field writes its buffer as
+// it is typed in, so comparing against this is what notices a keystroke.
 static char filter_applied[sizeof(filter_buf)];
-static int filter_dir;
+// filter_applied cut at its '/'s: one pattern per level of the tree, the first
+// one for the fleet's top level. Points into filter_segbuf.
+#define SFW_FILTER_SEGS_MAX	16
+static char filter_segbuf[sizeof(filter_buf)];
+static const char *filter_segs[SFW_FILTER_SEGS_MAX];
+static uint8_t filter_seg_n;
+// The directories the filter opened, from the top of the fleet down: entry *k*
+// is the topmost directory standing at level *k*, and what it holds is narrowed
+// by filter_segs[k + 1]. One fewer than there are segments, or fewer still
+// where a level had no directory left to open.
+static int filter_open[SFW_FILTER_SEGS_MAX];
+static uint8_t filter_open_n;
 // the fleet whose tab is on show
 static uint8_t cur_fleet;
 
@@ -161,9 +177,6 @@ typedef struct {
 	uint16_t children;
 	// which fleet's tab this node belongs on
 	uint8_t fleet;
-	// whether the tree on show holds this node. One that is not keeps whatever
-	// open state it had the last time it was, which says nothing any more.
-	bool shown;
 } sfw_node_st;
 
 static sfw_node_st *nodes;
@@ -523,20 +536,21 @@ static bool sfw_glob(const char *pat, const char *str) {
 }
 
 
-// Whether *name* passes the filter as it was last applied. A filter with no
-// '*' in it matches anywhere in the name, which is what typing a part of a name
-// into a filter field is expected to do; one with a '*' is a pattern for the
-// whole name, so that "*.uvdev" does not also match "x.uvdev.old".
-static bool sfw_filter_match(const char *name) {
+// Whether *name* passes the filter segment *seg*; NULL or "" passes everything.
+// A segment with no '*' in it matches anywhere in the name, which is what typing
+// a part of a name into a filter field is expected to do; one with a '*' is a
+// pattern for the whole name, so that "*.uvdev" does not also match
+// "x.uvdev.old".
+static bool sfw_filter_match(const char *seg, const char *name) {
 	bool ret = true;
-	if (filter_applied[0] == '\0') {
+	if ((seg == NULL) || (seg[0] == '\0')) {
 	}
-	else if (strchr(filter_applied, '*') != NULL) {
-		ret = sfw_glob(filter_applied, name);
+	else if (strchr(seg, '*') != NULL) {
+		ret = sfw_glob(seg, name);
 	}
 	else {
-		char pat[sizeof(filter_applied) + 2];
-		snprintf(pat, sizeof(pat), "*%s*", filter_applied);
+		char pat[sizeof(filter_segbuf) + 2];
+		snprintf(pat, sizeof(pat), "*%s*", seg);
 		ret = sfw_glob(pat, name);
 	}
 	return ret;
@@ -571,42 +585,49 @@ static const char *sfw_row_name(const sfw_node_st *n, uint16_t j) {
 }
 
 
-// Whether node *i* sits on the path from the top of the fleet down to *dir*,
-// i.e. is *dir* or one of the directories holding it.
-static bool sfw_on_path(int i, int dir) {
-	bool ret = false;
-	for (int c = dir; (c >= 0) && !ret; c = nodes[c].parent) {
-		ret = (c == i);
+// Takes the filter field's text into filter_applied, cuts it into its segments
+// and works out which directories of fleet *f* it opens: at every level the
+// first directory (in the order the tree shows them) whose name passes that
+// level's segment, for every level that has a '/' after its segment. A level
+// with no directory standing ends the path there; the segments below it have
+// nothing to narrow.
+static void sfw_filter_apply(uint8_t f) {
+	snprintf(filter_applied, sizeof(filter_applied), "%s", filter_buf);
+	snprintf(filter_segbuf, sizeof(filter_segbuf), "%s", filter_applied);
+	filter_seg_n = 0;
+	filter_segs[filter_seg_n++] = filter_segbuf;
+	for (char *c = filter_segbuf; *c != '\0'; c++) {
+		if ((*c == '/') && (filter_seg_n < SFW_FILTER_SEGS_MAX)) {
+			*c = '\0';
+			filter_segs[filter_seg_n++] = c + 1;
+		}
+		else {
+		}
 	}
-	return ret;
-}
 
-
-// The directory the user is in on fleet *f*'s tab: the deepest open node, or
-// -1 at the fleet's top level. Every level keeps one node open at a time, so
-// the open nodes form a single path down from the top and this follows it.
-static int sfw_current_dir(uint8_t f) {
-	int ret = -1;
+	filter_open_n = 0;
+	int parent = -1;
 	bool found = true;
-	while (found) {
+	while (found && ((filter_open_n + 1) < filter_seg_n)) {
 		found = false;
 		for (uint16_t i = 0; (i < node_n) && !found; i++) {
-			const sfw_node_st *n = &nodes[i];
-			if ((n->fleet == f) && (n->parent == ret) && n->shown &&
-					n->obj.open) {
-				ret = (int) i;
+			if ((nodes[i].fleet == f) && (nodes[i].parent == parent) &&
+					sfw_filter_match(filter_segs[filter_open_n],
+							sfw_own_name(&nodes[i]))) {
+				filter_open[filter_open_n++] = (int) i;
+				parent = (int) i;
 				found = true;
 			}
 			else {
 			}
 		}
 	}
-	return ret;
 }
 
 
 // Fills a node's content with one row per file it holds (a metadata label plus
-// a Download button), leaving out the rows *filtered* rejects.
+// a Download button), leaving out the rows the filter segment *seg* rejects
+// (NULL for none).
 //
 // Called while the tree is built, rather than from a show callback when the
 // node is opened. A node holds its subdirectories as well as its rows, and
@@ -615,7 +636,7 @@ static int sfw_current_dir(uint8_t f) {
 //
 // Every row's widgets are initialised, shown or not: the Download buttons are
 // all polled, and one left over from an earlier build must not report a click.
-static void sfw_node_add_rows(uint16_t i, bool filtered) {
+static void sfw_node_add_rows(uint16_t i, const char *seg) {
 	sfw_node_st *n = &nodes[i];
 	if (n->product < 0) {
 		return;
@@ -665,7 +686,7 @@ static void sfw_node_add_rows(uint16_t i, bool filtered) {
 				ALIGN_CENTER_LEFT, win_style->text_color, str);
 		uv_uibutton_init(&n->dl_btns[j], "Download", win_style);
 
-		if (!filtered || sfw_filter_match(v->version)) {
+		if (sfw_filter_match(seg, v->version)) {
 			int16_t y = (int16_t) row * SFW_VROW_H;
 			uv_uitreeobject_addxy(obj, &n->ver_labels[j],
 					0, y, label_w, SFW_VROW_H);
@@ -680,24 +701,27 @@ static void sfw_node_add_rows(uint16_t i, bool filtered) {
 }
 
 
-// Adds node *i* to *container* -- the tree view for a directory at the top of
-// the fleet, the parent node for one nested inside another -- then its own
-// file rows and then, recursively, the directories inside it.
+// Adds node *i*, at level *depth* of the tree, to *container* -- the tree view
+// for a directory at the top of the fleet, the parent node for one nested
+// inside another -- then its own file rows and then, recursively, the
+// directories inside it.
 //
-// *dir* is the current directory: the nodes on the path down to it are added
-// open, and its own files and subdirectories are the ones the filter narrows.
+// A node the filter opened (filter_open) is added open, and what it holds is
+// narrowed by the filter's next segment. Every other node is added closed with
+// nothing left out of it, so a directory the user opens by hand shows all of it.
 //
 // The rows go in before the subdirectories: the layout stacks a container's
 // child nodes below whatever plain widgets it holds, so this is what puts a
 // directory's own files above the directories inside it. The recursion runs in
 // node order, which is the order the listing was walked in, so each level keeps
 // the alphabetical order the listing arrived in.
-static void sfw_build_node(void *container, uint16_t i, int dir) {
+static void sfw_build_node(void *container, uint16_t i, uint8_t depth) {
 	sfw_node_st *n = &nodes[i];
-	bool filtered = (dir == (int) i);
+	bool open = (depth < filter_open_n) && (filter_open[depth] == (int) i);
+	const char *seg = open ? filter_segs[depth + 1] : NULL;
 	uint16_t rows = 0;
 	for (uint16_t j = 0; j < n->versions; j++) {
-		if (!filtered || sfw_filter_match(sfw_row_name(n, j))) {
+		if (sfw_filter_match(seg, sfw_row_name(n, j))) {
 			rows++;
 		}
 		else {
@@ -705,19 +729,18 @@ static void sfw_build_node(void *container, uint16_t i, int dir) {
 	}
 	uv_uitreeobject_init(&n->obj, n->child_buf, n->name, NULL, win_style);
 	uv_uitreeobject_set_font(&n->obj, SFW_FONT);
-	n->shown = true;
-	// A node starts closed unless the user is inside it: a tab opens on the
+	// A node starts closed unless the filter opened it: a tab opens on the
 	// list of what the fleet holds, which is what the user picks from, rather
 	// than on one directory's files with the rest of the list pushed down the
 	// screen. Opened on the way down, so the last one opened -- which is the
-	// one the tree scrolls to -- is the current directory itself.
+	// one the tree scrolls to -- is the deepest one the filter reached.
 	uv_uitreeview_add(container, &n->obj,
-			(int16_t) rows * SFW_VROW_H, sfw_on_path((int) i, dir));
-	sfw_node_add_rows(i, filtered);
+			(int16_t) rows * SFW_VROW_H, open);
+	sfw_node_add_rows(i, seg);
 	for (uint16_t c = 0; c < node_n; c++) {
 		if ((nodes[c].parent == (int) i) &&
-				(!filtered || sfw_filter_match(sfw_own_name(&nodes[c])))) {
-			sfw_build_node(&n->obj, c, dir);
+				sfw_filter_match(seg, sfw_own_name(&nodes[c]))) {
+			sfw_build_node(&n->obj, c, depth + 1);
 		}
 		else {
 		}
@@ -726,25 +749,24 @@ static void sfw_build_node(void *container, uint16_t i, int dir) {
 
 
 // Fills the fleet tab window with the products of fleet *f*: a tree with one row
-// per product, or a label when that fleet holds no files at all. *dir* is the
-// directory to have open, -1 for none, and the filter field's text is applied
-// to what that directory holds.
+// per product, or a label when that fleet holds no files at all. The filter
+// field's text is applied from the fleet's top level down (sfw_filter_apply),
+// and decides alone which directories are open: whatever was open before is
+// closed.
 //
-// Called every time a tab is picked, and whenever the filter or the directory
-// it applies to changes. The tree objects are re-initialised rather than kept,
+// Called every time a tab is picked, and whenever the filter changes. The tree
+// objects are re-initialised rather than kept,
 // because a tree object belongs to the tree it was added to - the previous
 // fleet's tree is exactly what this replaces.
-static void sfw_show_fleet(uint8_t f, int dir) {
+static void sfw_show_fleet(uint8_t f) {
 	uv_uitabwindow_clear(&fleet_tabs);
 	uv_bounding_box_st cbb = uv_uitabwindow_get_contentbb(&fleet_tabs);
 
 	cur_fleet = f;
-	snprintf(filter_applied, sizeof(filter_applied), "%s", filter_buf);
-	filter_dir = dir;
+	sfw_filter_apply(f);
 
 	uint16_t count = 0;
 	for (uint16_t i = 0; i < node_n; i++) {
-		nodes[i].shown = false;
 		if (nodes[i].fleet == f) {
 			count++;
 		}
@@ -764,12 +786,12 @@ static void sfw_show_fleet(uint8_t f, int dir) {
 		uv_uitreeview_init(&tree, tree_buf, win_style);
 		uv_uitabwindow_addxy(&fleet_tabs, &tree, 0, 0, cbb.width, cbb.height);
 		// the directories at the top of this fleet; each of them brings the
-		// whole branch below it. At the top level they are what the filter
+		// whole branch below it. They are what the filter's first segment
 		// narrows.
 		for (uint16_t i = 0; i < node_n; i++) {
 			if ((nodes[i].fleet == f) && (nodes[i].parent < 0) &&
-					((dir >= 0) || sfw_filter_match(sfw_own_name(&nodes[i])))) {
-				sfw_build_node(&tree, i, dir);
+					sfw_filter_match(filter_segs[0], sfw_own_name(&nodes[i]))) {
+				sfw_build_node(&tree, i, 0);
 			}
 			else {
 			}
@@ -815,19 +837,15 @@ static void sfw_wheel_step(void) {
 }
 
 
-// Rebuilds the tree when the filter has been typed in, or when the user has
-// moved into another directory while a filter is set: the filter narrows the
-// current directory only, so the one the user left shows everything again and
-// the one they are in now is narrowed instead.
+// Rebuilds the tree when the filter has been typed in. Only then: between
+// keystrokes the user may open and close directories by hand, and the filter
+// leaves them as they are until its text changes again.
 static void sfw_filter_step(void) {
 	if (fleet_count > 0) {
-		int dir = sfw_current_dir(cur_fleet);
-		if ((strcmp(filter_buf, filter_applied) != 0) ||
-				((dir != filter_dir) && (filter_buf[0] != '\0'))) {
-			sfw_show_fleet(cur_fleet, dir);
+		if (strcmp(filter_buf, filter_applied) != 0) {
+			sfw_show_fleet(cur_fleet);
 		}
 		else {
-			filter_dir = dir;
 		}
 	}
 	else {
@@ -846,8 +864,9 @@ static uv_uiobject_ret_e sfw_step(void *user_ptr, uint16_t step_ms) {
 		ret = UIOBJECT_RETURN_KILLED;
 	}
 	else if ((fleet_count > 0) && uv_uitabwindow_tab_changed(&fleet_tabs)) {
-		// a new tab opens at its top level, with the filter applied there
-		sfw_show_fleet(fleet_of_tab[uv_uitabwindow_get_tab(&fleet_tabs)], -1);
+		// the filter is a path from the tab's own top level, so a new tab
+		// takes it from the start
+		sfw_show_fleet(fleet_of_tab[uv_uitabwindow_get_tab(&fleet_tabs)]);
 	}
 	else {
 		// poll every version's Download button (products not on the active tab,
@@ -888,7 +907,8 @@ bool serverfiles_win_exec(const uv_uistyle_st *style) {
 	cur_fleet = 0;
 	filter_buf[0] = '\0';
 	filter_applied[0] = '\0';
-	filter_dir = -1;
+	filter_seg_n = 0;
+	filter_open_n = 0;
 
 	// The Settings tab's connect logs in on a task of its own. Logging in here
 	// while it runs would have the two overwrite the one session they share.
@@ -961,7 +981,7 @@ bool serverfiles_win_exec(const uv_uistyle_st *style) {
 				fleet_tabs_buf, fleet_names);
 		uv_uidialog_addxy(&dialog, &fleet_tabs,
 				SFW_MARGIN, tabs_y, w - 2 * SFW_MARGIN, tabs_h);
-		sfw_show_fleet(fleet_of_tab[0], -1);
+		sfw_show_fleet(fleet_of_tab[0]);
 	}
 
 	int16_t bottom_y = h - SFW_BTN_H - SFW_MARGIN;
