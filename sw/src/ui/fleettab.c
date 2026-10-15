@@ -51,8 +51,9 @@ static uv_uiobject_st *fleet_tabs_buf[4];
 static char fleet_name_buf[MQTT_MAX_FLEETS][MQTT_NAME_MAX + 8];
 static char *fleet_names[MQTT_MAX_FLEETS];
 static uint8_t fleet_tab_count;
-// The fleet each tab shows: the fleet named FLEET_MAIN_NAME first, the others after
-// it in the order they were discovered. The fleets keep their own indices (the
+// The fleet each tab shows: only the fleets with at least one device online, the
+// fleet named FLEET_MAIN_NAME first, the others after it in the order they were
+// discovered. The fleets keep their own indices (the
 // remote UI and CAN sessions hold them), only the tabs are reordered.
 static uint8_t fleet_of_tab[MQTT_MAX_FLEETS];
 // True while the fleet tabs are what the tab shows, rather than a placeholder,
@@ -98,6 +99,7 @@ static bool shown;
 
 static void build_dev_info_str(void);
 static void refresh_can_btn(void);
+static uint8_t collect_fleet_tabs(uint8_t *dest);
 static void build_fleet_tabs(uv_uitabwindow_st *tabwin, int16_t y, int16_t h);
 static void show_active_dev_tab(void);
 static uv_uiobject_ret_e fleet_tabs_step(void *me, const uint16_t step_ms);
@@ -212,6 +214,11 @@ void fleettab_show(uv_uitabwindow_st *tabwin) {
 				"appears once one of its devices publishes something.",
 				rest_y, rest_h, cbb);
 	}
+	else if (collect_fleet_tabs(fleet_of_tab) == 0) {
+		build_placeholder(tabwin, "Connected to broker. None of the fleets has a "
+				"device online - a fleet is shown while at least one of its "
+				"devices is online.", rest_y, rest_h, cbb);
+	}
 	else {
 		build_fleet_tabs(tabwin, rest_y, rest_h);
 	}
@@ -220,26 +227,40 @@ void fleettab_show(uv_uitabwindow_st *tabwin) {
 }
 
 
-/// @brief: Builds the fleet tab window (one tab per discovered fleet) into the
-/// tab's content area, and fills it with the active fleet's devices.
+/// @brief: Writes into *dest* the fleet each tab shows, in tab order: the fleets
+/// with at least one device online, the main fleet first. Returns their count.
+static uint8_t collect_fleet_tabs(uint8_t *dest) {
+	uint8_t fleet_count = mqtt_get_fleet_count();
+	if (fleet_count > MQTT_MAX_FLEETS) {
+		fleet_count = MQTT_MAX_FLEETS;
+	}
+	uint8_t tab = 0;
+	for (uint8_t i = 0; i < fleet_count; i++) {
+		if ((strcmp(mqtt_get_fleet_name(i), FLEET_MAIN_NAME) == 0) &&
+				(mqtt_get_online_count(i) > 0)) {
+			dest[tab++] = i;
+		}
+		else {
+		}
+	}
+	for (uint8_t i = 0; i < fleet_count; i++) {
+		if ((strcmp(mqtt_get_fleet_name(i), FLEET_MAIN_NAME) != 0) &&
+				(mqtt_get_online_count(i) > 0)) {
+			dest[tab++] = i;
+		}
+		else {
+		}
+	}
+	return tab;
+}
+
+
+/// @brief: Builds the fleet tab window (one tab per fleet with a device online)
+/// into the tab's content area, and fills it with the active fleet's devices.
 static void build_fleet_tabs(uv_uitabwindow_st *tabwin, int16_t y, int16_t h) {
 	uv_bounding_box_st cbb = uv_uitabwindow_get_contentbb(tabwin);
 
-	fleet_tab_count = mqtt_get_fleet_count();
-	if (fleet_tab_count > MQTT_MAX_FLEETS) {
-		fleet_tab_count = MQTT_MAX_FLEETS;
-	}
-	uint8_t tab = 0;
-	for (uint8_t i = 0; i < fleet_tab_count; i++) {
-		if (strcmp(mqtt_get_fleet_name(i), FLEET_MAIN_NAME) == 0) {
-			fleet_of_tab[tab++] = i;
-		}
-	}
-	for (uint8_t i = 0; i < fleet_tab_count; i++) {
-		if (strcmp(mqtt_get_fleet_name(i), FLEET_MAIN_NAME) != 0) {
-			fleet_of_tab[tab++] = i;
-		}
-	}
+	fleet_tab_count = collect_fleet_tabs(fleet_of_tab);
 	for (uint8_t i = 0; i < fleet_tab_count; i++) {
 		fleet_tab_label(i, fleet_name_buf[i], sizeof(fleet_name_buf[i]));
 		fleet_names[i] = fleet_name_buf[i];
@@ -252,19 +273,25 @@ static void build_fleet_tabs(uv_uitabwindow_st *tabwin, int16_t y, int16_t h) {
 	uv_uitabwindow_addxy(tabwin, &fleet_tabs, MARGIN, y,
 			cbb.w - 2 * MARGIN, h);
 
-	// nothing selected yet opens the first tab, the main fleet. A fleet can have
-	// disappeared with a reconnect; keep the selection in range
-	if (selected_fleet >= fleet_tab_count) {
-		selected_fleet = fleet_tab_count - 1;
-	}
-	if (selected_fleet < 0) {
-		selected_fleet = fleet_of_tab[0];
-	}
+	// nothing selected yet opens the first tab, the main fleet. The selected
+	// fleet can have lost its tab (its last device went offline, or the fleet
+	// disappeared with a reconnect); it then falls back to the first tab too
+	int16_t selected_tab = -1;
 	for (uint8_t i = 0; i < fleet_tab_count; i++) {
 		if (fleet_of_tab[i] == selected_fleet) {
-			uv_uitabwindow_set_tab(&fleet_tabs, i);
+			selected_tab = i;
+		}
+		else {
 		}
 	}
+	if (selected_tab < 0) {
+		selected_tab = 0;
+		selected_fleet = fleet_of_tab[0];
+		selected_dev = 0;
+	}
+	else {
+	}
+	uv_uitabwindow_set_tab(&fleet_tabs, selected_tab);
 
 	show_active_dev_tab();
 }
@@ -557,10 +584,32 @@ bool fleettab_step(void) {
 		}
 	}
 
-	// The online counts in the fleet tab names change as devices come and go,
-	// which the client does not report as a change of its tree. The names are
-	// rewritten in place, which needs a redraw but no rebuild.
-	if (shown && fleet_tabs_built) {
+	// Only the fleets with a device online have a tab, and devices come and go
+	// without the client reporting a change of its tree. A fleet gaining its
+	// first online device or losing its last one rebuilds the tabs; the online
+	// counts in the names are otherwise rewritten in place, which needs a redraw
+	// but no rebuild.
+	if (shown && mqtt_is_connected()) {
+		uint8_t tabs[MQTT_MAX_FLEETS];
+		uint8_t count = collect_fleet_tabs(tabs);
+		if (!fleet_tabs_built) {
+			// the placeholder saying no fleet has a device online
+			if (count > 0) {
+				ret = true;
+			}
+			else {
+			}
+		}
+		else if ((count != fleet_tab_count) ||
+				(memcmp(tabs, fleet_of_tab, count) != 0)) {
+			ret = true;
+		}
+		else {
+		}
+	}
+	else {
+	}
+	if (shown && fleet_tabs_built && !ret) {
 		bool relabel = false;
 		for (uint8_t i = 0; i < fleet_tab_count; i++) {
 			char label[sizeof(fleet_name_buf[i])];
