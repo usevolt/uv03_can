@@ -41,10 +41,12 @@
 #include <mosquitto.h>
 #include <uv_rtos.h>
 #include <errno.h>
+#include <stdlib.h>
+#include <stdint.h>
 #if CONFIG_TARGET_WIN
 #include <process.h>	// getpid()
 #else
-#include <unistd.h>		// getpid()
+#include <unistd.h>		// getpid(), gethostname(), getentropy()
 #endif
 // The broker's private CA certificate, compiled in as a byte array
 // (uvca_crt / uvca_crt_len). Generated from certs/uvca.crt by the makefile.
@@ -1020,6 +1022,56 @@ void mqtt_add_fleet(const char *name) {
 static void mqtt_disconnect_locked(void);
 
 
+// Fills *out* with a client id that no other uvcan anywhere uses: the broker
+// closes an existing connection when a new one arrives with the same id, so two
+// instances sharing an id would keep knocking each other off. The id is
+// uvcan_<host>_<pid>_<random>; the host and pid only make it readable in the
+// broker log, the random part is what keeps it unique between machines.
+static void client_id_make(char *out, size_t len) {
+	// glibc fails rather than truncates a host name that does not fit, so it
+	// is read whole and cut to fit the id afterwards
+	char host[256] = "";
+#if CONFIG_TARGET_WIN
+	const char *h = getenv("COMPUTERNAME");
+	if (h != NULL) {
+		snprintf(host, sizeof(host), "%s", h);
+	}
+#else
+	if (gethostname(host, sizeof(host)) != 0) {
+		host[0] = '\0';
+	}
+#endif
+	host[24] = '\0';
+	// keep the id to plain characters whatever the host is called
+	for (char *c = host; *c != '\0'; c++) {
+		if (!(((*c >= '0') && (*c <= '9')) ||
+				((*c >= 'a') && (*c <= 'z')) ||
+				((*c >= 'A') && (*c <= 'Z')) ||
+				(*c == '-'))) {
+			*c = '-';
+		}
+	}
+
+	uint32_t rnd = 0;
+#if !CONFIG_TARGET_WIN
+	if (getentropy(&rnd, sizeof(rnd)) != 0) {
+		rnd = 0;
+	}
+#endif
+	// mixed in always, and all there is on Windows: the clock, the pid and a
+	// stack address (randomised by ASLR) differ between any two starts
+	uint32_t mix = (uint32_t) time(NULL) ^ ((uint32_t) clock() << 16) ^
+			((uint32_t) getpid() * 2654435761U) ^ (uint32_t) (uintptr_t) &rnd;
+	mix ^= mix >> 16;
+	mix *= 0x45d9f3bU;
+	mix ^= mix >> 16;
+	rnd ^= mix;
+
+	snprintf(out, len, "uvcan_%s_%d_%08x", (host[0] != '\0') ? host : "host",
+			(int) getpid(), (unsigned int) rnd);
+}
+
+
 // mqtt_connect() for a caller holding handle_lock.
 static bool mqtt_connect_locked(const char *host, const char *username,
 		const char *password) {
@@ -1046,10 +1098,11 @@ static bool mqtt_connect_locked(const char *host, const char *username,
 			mosquitto_lib_init();
 			lib_inited = true;
 		}
-		// a unique-enough client id: the broker keys anonymous device permissions
-		// off the client id, but an authenticated admin is scoped by its username
+		// the broker keys anonymous device permissions off the client id, but an
+		// authenticated admin is scoped by its username, so the id only has to
+		// be unique
 		char client_id[64];
-		snprintf(client_id, sizeof(client_id), "uvcan_%d", (int) getpid());
+		client_id_make(client_id, sizeof(client_id));
 		mosq = mosquitto_new(client_id, true, NULL);
 		if (mosq == NULL) {
 			mqtt_fail("Out of memory starting the MQTT client.");
