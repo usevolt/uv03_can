@@ -367,11 +367,14 @@ bool mqtt_dev_send_sdo_req(uint8_t fleet_index, uint8_t dev_index,
 
 /// @brief: Called from the pump task with the result of one offloaded transfer.
 /// *abort* is 0 on success, otherwise the abort code it ended with; *data* /
-/// *len* carry what a read returned. Registered like the CAN callback, and
+/// *len* carry what a read returned. *busy* is set when the device did not run
+/// the transfer at all because it was running another admin's: nothing
+/// touched the bus, and the same request can be sent again. Only answers to
+/// this end's own requests are passed on. Registered like the CAN callback, and
 /// called on the same task, for the same reason: the answer goes straight back
 /// onto the netdev and waiting for a UI cycle is the latency being removed.
 typedef void (*mqtt_sdo_callb_t)(uint8_t fleet_index, uint8_t dev_index,
-		bool write, uint8_t node, uint16_t mindex, uint8_t sindex,
+		bool write, bool busy, uint8_t node, uint16_t mindex, uint8_t sindex,
 		uint32_t abort, const uint8_t *data, uint16_t len, void *user);
 
 void mqtt_set_sdo_callb(mqtt_sdo_callb_t callb, void *user);

@@ -327,6 +327,11 @@ static mqtt_can_callb_t can_callb;
 static void *can_user;
 static mqtt_sdo_callb_t sdo_callb;
 static void *sdo_user;
+// This process's sender tag, 1 to 63, sent in the flags of every SDO_REQ and
+// echoed back in the SDO_RES (REMOTE_SDO_FLAG_TAG_MASK): every admin on the
+// broker receives every answer of a device, and the tag is how this one knows
+// its own. Picked at random once, with the first client id.
+static uint8_t sdo_tag;
 
 
 // Connection parameters, copied here so the connect task can use them after
@@ -817,7 +822,17 @@ static void dev_frame_callb(void *user, remote_msg_types_e type,
 	case REMOTE_MSG_TYPE_SDO_RES:
 		// [start][type][payload_len][flags][node][mindex:2][sindex][len:2]
 		//       [abort:4][data]
-		if (sdo_callb != NULL) {
+		if (sdo_callb == NULL) {
+			// nothing is offloading transfers to this device
+		}
+		else if ((data[3] & REMOTE_SDO_FLAG_TAG_MASK) !=
+				((sdo_tag << REMOTE_SDO_FLAG_TAG_SHIFT) &
+				REMOTE_SDO_FLAG_TAG_MASK)) {
+			// the answer to another admin's transfer: the broker hands every
+			// admin every answer, and one asking for the same object at the
+			// same time would otherwise be taken for this end's
+		}
+		else {
 			uint16_t dlen = (uint16_t) ((uint16_t) data[8] |
 					((uint16_t) data[9] << 8));
 			if (dlen > (uint16_t) (len - REMOTE_MSG_TYPE_SDO_RES_HDR_LEN)) {
@@ -830,13 +845,11 @@ static void dev_frame_callb(void *user, remote_msg_types_e type,
 					((uint32_t) data[12] << 16) |
 					((uint32_t) data[13] << 24);
 			sdo_callb(ctx->fleet_index, ctx->dev_index,
-					((data[3] & REMOTE_SDO_FLAG_WRITE) != 0), data[4],
+					((data[3] & REMOTE_SDO_FLAG_WRITE) != 0),
+					((data[3] & REMOTE_SDO_FLAG_BUSY) != 0), data[4],
 					(uint16_t) ((uint16_t) data[5] | ((uint16_t) data[6] << 8)),
 					data[7], abort,
 					&data[REMOTE_MSG_TYPE_SDO_RES_HDR_LEN], dlen, sdo_user);
-		}
-		else {
-			// nothing is offloading transfers to this device
 		}
 		break;
 
@@ -1027,7 +1040,8 @@ static void mqtt_disconnect_locked(void);
 // instances sharing an id would keep knocking each other off. The id is
 // uvcan_<host>_<pid>_<random>; the host and pid only make it readable in the
 // broker log, the random part is what keeps it unique between machines.
-static void client_id_make(char *out, size_t len) {
+// Returns the random part.
+static uint32_t client_id_make(char *out, size_t len) {
 	// glibc fails rather than truncates a host name that does not fit, so it
 	// is read whole and cut to fit the id afterwards
 	char host[256] = "";
@@ -1069,6 +1083,7 @@ static void client_id_make(char *out, size_t len) {
 
 	snprintf(out, len, "uvcan_%s_%d_%08x", (host[0] != '\0') ? host : "host",
 			(int) getpid(), (unsigned int) rnd);
+	return rnd;
 }
 
 
@@ -1102,7 +1117,12 @@ static bool mqtt_connect_locked(const char *host, const char *username,
 		// authenticated admin is scoped by its username, so the id only has to
 		// be unique
 		char client_id[64];
-		client_id_make(client_id, sizeof(client_id));
+		uint32_t rnd = client_id_make(client_id, sizeof(client_id));
+		if (sdo_tag == 0u) {
+			sdo_tag = (uint8_t) (1u + ((rnd >> 24) % 63u));
+		}
+		else {
+		}
 		mosq = mosquitto_new(client_id, true, NULL);
 		if (mosq == NULL) {
 			mqtt_fail("Out of memory starting the MQTT client.");
@@ -1852,7 +1872,9 @@ bool mqtt_dev_send_sdo_req(uint8_t fleet_index, uint8_t dev_index,
 		frame[0] = REMOTE_MSG_START_BYTE;
 		frame[1] = REMOTE_MSG_TYPE_SDO_REQ;
 		frame[2] = (uint8_t) (len - 3);
-		frame[3] = write ? REMOTE_SDO_FLAG_WRITE : 0;
+		frame[3] = (uint8_t) ((write ? REMOTE_SDO_FLAG_WRITE : 0) |
+				((sdo_tag << REMOTE_SDO_FLAG_TAG_SHIFT) &
+				REMOTE_SDO_FLAG_TAG_MASK));
 		frame[4] = node;
 		frame[5] = (uint8_t) (mindex & 0xFFu);
 		frame[6] = (uint8_t) ((mindex >> 8) & 0xFFu);
@@ -2138,7 +2160,10 @@ bool mqtt_dev_set_ui_active(uint8_t fleet_index, uint8_t dev_index,
 		else {
 			d->ui_active = active;
 			d->ui_len = 0;
-			d->ui_dropping = false;
+			// Nothing is kept until a frame starts. The device may be in the
+			// middle of a frame already - mirroring it for another admin - and
+			// the tail of it, drawn on its own, is a torn screen.
+			d->ui_dropping = active;
 			if (!active) {
 				free(d->ui_buf);
 				d->ui_buf = NULL;

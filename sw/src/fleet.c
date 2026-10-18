@@ -21,6 +21,7 @@
 #include <ctype.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <uv_rtos.h>
 #include <uv_remote_proto.h>
 #include "mqtt.h"
@@ -40,6 +41,11 @@ static int16_t ui_dev = -1;
 // Set by what ends or starts a session behind the caller's back (the device's
 // close request), and reported by the next fleet_step()
 static bool changed;
+
+// How often a mirrored view that the device reports off is asked for again
+#define UI_REASSERT_S		2
+// When the UI feature was last re-asserted (see fleet_step)
+static time_t ui_reassert_at;
 
 
 void fleet_login(const char *files_url, const char *broker_url,
@@ -612,6 +618,31 @@ bool fleet_step(void) {
 	}
 
 #if CONFIG_UI
+	// The device keeps one feature mask for everyone, set by whoever wrote it
+	// last: another admin closing their view of this same device switches
+	// mirroring off for us as well, and so does a blink of the device's broker
+	// connection. This end's intent is the standing one, so - like the CAN
+	// bridge does - it is re-asserted until the device reports the UI in effect
+	// again. Only then: asking while it is on would make the device redraw a
+	// whole frame every time.
+	if (fleet_ui_is_active() && mqtt_is_connected()) {
+		time_t now = time(NULL);
+		if ((mqtt_get_dev_features((uint8_t) ui_fleet, (uint8_t) ui_dev) &
+				REMOTE_IOT_FEATURE_UI) != 0) {
+			ui_reassert_at = now;
+		}
+		else if (difftime(now, ui_reassert_at) >= UI_REASSERT_S) {
+			ui_reassert_at = now;
+			(void) mqtt_dev_set_features((uint8_t) ui_fleet, (uint8_t) ui_dev,
+					(uint8_t) (mqtt_get_dev_features((uint8_t) ui_fleet,
+					(uint8_t) ui_dev) | REMOTE_IOT_FEATURE_UI));
+		}
+		else {
+		}
+	}
+	else {
+	}
+
 	// The window is opened here rather than when the session is started,
 	// because it can only be sized once the device has answered with its
 	// display geometry - starting only asks it to start mirroring.

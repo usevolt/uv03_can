@@ -170,6 +170,11 @@ static void msg_to_frame(const uv_can_msg_st *msg, struct can_frame *frame);
 /// coming.
 #define SDO_OFFLOAD_TIMEOUT_MS	5000
 
+/// @brief: How long the bridge waits before asking again when the device
+/// answered busy, i.e. was running another admin's transfer. Theirs takes
+/// milliseconds on the bus, so this is mostly the link's round trip.
+#define SDO_BUSY_RETRY_MS		200
+
 typedef enum {
 	SDO_IDLE = 0,
 	// collecting the segments of a download the client is still sending
@@ -215,6 +220,9 @@ static bool sdo_toggle;
 static bool sdo_reply_is_segment;
 static bool sdo_reply_toggle;
 static uint32_t sdo_wait_ms;
+// *sdo_wait_ms* at which a transfer the device answered busy is sent again,
+// 0 for none
+static uint32_t sdo_resend_ms;
 static uint32_t sdo_count;
 
 // How long a node stays relayed after the last SDO request this end relayed to
@@ -246,6 +254,7 @@ static uint8_t sdo_res_node;
 static uint16_t sdo_res_mindex;
 static uint8_t sdo_res_sindex;
 static bool sdo_res_write;
+static bool sdo_res_busy;
 
 
 /// @brief: Writes one synthesised SDO response onto the netdev, as though the
@@ -414,6 +423,7 @@ static void sdo_relay_step(uint16_t step_ms) {
 /// @brief: Hands the collected transfer to the device.
 static void sdo_offload(void) {
 	sdo_wait_ms = 0;
+	sdo_resend_ms = 0;
 	sdo_state = SDO_WAIT;
 	sdo_res_ready = false;
 	if (!mqtt_dev_send_sdo_req((uint8_t) bridged_fleet, (uint8_t) bridged_dev,
@@ -558,7 +568,7 @@ static bool sdo_intercept(const uv_can_msg_st *msg) {
 /// @brief: Parks the device's answer for the bridge task. Runs on the broker's
 /// pump task, so it touches nothing the bridge task owns.
 static void sdo_from_dev(uint8_t fleet_index, uint8_t dev_index,
-		bool write, uint8_t node, uint16_t mindex, uint8_t sindex,
+		bool write, bool busy, uint8_t node, uint16_t mindex, uint8_t sindex,
 		uint32_t abort, const uint8_t *data, uint16_t len, void *user) {
 	(void) user;
 	if (active &&
@@ -566,6 +576,7 @@ static void sdo_from_dev(uint8_t fleet_index, uint8_t dev_index,
 			(dev_index == bridged_dev) &&
 			!sdo_res_ready) {
 		sdo_res_write = write;
+		sdo_res_busy = busy;
 		sdo_res_node = node;
 		sdo_res_mindex = mindex;
 		sdo_res_sindex = sindex;
@@ -597,6 +608,13 @@ static void sdo_result_step(uint16_t step_ms) {
 		if (!mine) {
 			// an answer to something this end has already given up on
 		}
+		else if (sdo_res_busy) {
+			// The device was running another admin's transfer and did not
+			// touch the bus for this one. Asked again shortly, within the
+			// time this end waits for it anyway, rather than failed: the
+			// client would only retry, and a parameter load would stop.
+			sdo_resend_ms = sdo_wait_ms + SDO_BUSY_RETRY_MS;
+		}
 		else if (sdo_res_abort != 0) {
 			sdo_abort_to_client(sdo_res_abort);
 			sdo_state = SDO_IDLE;
@@ -618,7 +636,17 @@ static void sdo_result_step(uint16_t step_ms) {
 	}
 	else if (sdo_state == SDO_WAIT) {
 		sdo_wait_ms += step_ms;
-		if (sdo_wait_ms >= SDO_OFFLOAD_TIMEOUT_MS) {
+		if ((sdo_resend_ms != 0u) && (sdo_wait_ms >= sdo_resend_ms) &&
+				(sdo_wait_ms < SDO_OFFLOAD_TIMEOUT_MS)) {
+			// the same request again; the time waited is not reset, so a
+			// device that stays busy still ends in the timeout below
+			sdo_resend_ms = 0;
+			(void) mqtt_dev_send_sdo_req((uint8_t) bridged_fleet,
+					(uint8_t) bridged_dev, sdo_write, sdo_node, sdo_mindex,
+					sdo_sindex, sdo_buf,
+					sdo_write ? sdo_len : REMOTE_SDO_DATA_MAX);
+		}
+		else if (sdo_wait_ms >= SDO_OFFLOAD_TIMEOUT_MS) {
 			printf("remote CAN: no answer to the offloaded transfer of "
 					"0x%x:%u at node 0x%x\n",
 					(unsigned int) sdo_mindex, (unsigned int) sdo_sindex,
