@@ -54,12 +54,6 @@ bool devicetab_step(void);
 /// client, which the running operation owns.
 bool devicetab_is_busy(void);
 
-/// @brief: Returns true when the in-progress busy operation is a CAN-bus device
-/// search (as opposed to a flash / parameter save / load). The search shows its
-/// own progress on the system tab, so the UI should not pop the log view open
-/// for it the way it does for the other operations.
-bool devicetab_busy_is_search(void);
-
 /// @brief: Returns true once after the user removed the currently-shown device
 /// via its "Remove" button (the flag is cleared by the read). Lets the caller
 /// move the tab selection to the tab just before the removed one instead of

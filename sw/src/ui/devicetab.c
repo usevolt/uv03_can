@@ -39,6 +39,8 @@
 #include "ui/uv_uitextedit.h"
 #include "ui/serverfiles_win.h"
 #include "ui/devsel_win.h"
+#include "ui/joystick_win.h"
+#include "joystick.h"
 
 
 // Color for the revision-mismatch warning and the mismatched revision numbers.
@@ -75,7 +77,7 @@ static void param_file_default_ext(char *path, size_t path_len) {
 #define TITLE_H			30
 // Height of a file picker on the system tab.
 #define FILEEDIT_H		56
-// Height of the "Search devices" button on the system tab.
+// Height of a button on the system tab.
 #define BUTTON_H		44
 // Gap in pixels between the running-simulator rows (and between the columns
 // inside a row) on the system tab's "Simulator" panel.
@@ -214,8 +216,8 @@ static struct {
 	uv_uiframewindow_st right_frame;
 	uv_uiobject_st *right_buf[12];
 
-	// the framed panels of the system tab: "System configuration" (the load /
-	// search / save / load-to-devices buttons) and, on Linux only, "Simulator"
+	// the framed panels of the system tab: "System configuration" (the open /
+	// joystick / save / load-to-devices buttons) and, on Linux only, "Simulator"
 	// (the run-simulator button and the running-simulator list)
 	uv_uiframewindow_st sys_frame;
 	uv_uiobject_st *sys_frame_buf[8];
@@ -299,16 +301,12 @@ static struct {
 	// system-file path buffer, filled by the "Load system configuration" dialog
 	char sys_fileedit_path[1024];
 
-	// "or" separator between the load-configuration button and the search button
-	uv_uilabel_st or_label;
-
 	// "Load system configuration from file" button, shown on the system tab
 	uv_uibutton_st sys_load_btn;
 
-	// "Search devices" button, shown on the system tab, plus its mutable label
-	// (it shows a live "Searching Xs..." countdown while a scan runs)
-	uv_uibutton_st search_btn;
-	char search_btn_str[64];
+	// "Configure joystick driver" button, shown on the system tab next to the
+	// open button. Reads "Edit joystick driver" once a configuration is in use.
+	uv_uibutton_st joystick_btn;
 
 	// "Save system configuration" button, shown on the system tab
 	uv_uibutton_st sys_save_btn;
@@ -388,7 +386,6 @@ typedef enum {
 	OP_ESP32,
 	OP_SAVE,
 	OP_LOAD,
-	OP_SEARCH,
 	OP_SAVESYS,
 	OP_SYSPARAM,
 	OP_SYSLOAD,
@@ -419,11 +416,6 @@ bool devicetab_is_busy(void) {
 }
 
 
-bool devicetab_busy_is_search(void) {
-	return busy && (busy_op == OP_SEARCH);
-}
-
-
 bool devicetab_poll_device_removed(void) {
 	bool ret = device_removed;
 	device_removed = false;
@@ -449,9 +441,6 @@ static bool busy_finished(void) {
 		break;
 	case OP_LOAD:
 		ret = loadparam_is_finished(&dev.loadparam);
-		break;
-	case OP_SEARCH:
-		ret = find_search_is_finished();
 		break;
 	case OP_SAVESYS:
 		ret = savesys_is_finished();
@@ -512,11 +501,11 @@ static void start_busy(busy_op_e op) {
 	// tab; grey out all of its buttons for the duration so they read as inactive
 	if ((op == OP_SAVESYS) || (op == OP_SYSLOAD) || (op == OP_SIMPARAM)) {
 		uv_uiobject_disable(&content.sys_load_btn);
-		uv_uiobject_disable(&content.search_btn);
+		uv_uiobject_disable(&content.joystick_btn);
 		uv_uiobject_disable(&content.sys_save_btn);
 		uv_uiobject_disable(&content.sys_loadparams_btn);
 		uv_ui_refresh(&content.sys_load_btn);
-		uv_ui_refresh(&content.search_btn);
+		uv_ui_refresh(&content.joystick_btn);
 		uv_ui_refresh(&content.sys_save_btn);
 		uv_ui_refresh(&content.sys_loadparams_btn);
 	}
@@ -555,56 +544,50 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	int16_t frame_x = MARGIN;
 	int16_t frame_w = cbb.w - 2 * MARGIN;
 #if !CONFIG_TARGET_WIN
-	// the configuration panel needs room for the double-height source row plus the
-	// save/load row; the simulator panel takes whatever is left below it
-	int16_t sys_frame_h = 4 * BUTTON_H + 2 * MARGIN;
+	// the configuration panel needs room for its two rows of buttons; the
+	// simulator panel takes whatever is left below it
+	int16_t sys_frame_h = 2 * BUTTON_H + 4 * MARGIN;
 #else
 	// no simulator panel on Windows: the configuration panel fills the tab
 	int16_t sys_frame_h = cbb.h - 2 * MARGIN;
 #endif
 
-	// --- "System configuration" panel: load / search / save / load-to-devices ---
+	// --- "System configuration" panel: open / joystick / save / load-to-devices ---
 	uv_uiframewindow_init(&content.sys_frame, content.sys_frame_buf, style);
 	uv_uiframewindow_set_title(&content.sys_frame, "System configuration");
 	uv_uitabwindow_addxy(tabwin, &content.sys_frame, frame_x, MARGIN,
 			frame_w, sys_frame_h);
 	uv_bounding_box_st sc = uv_uiframewindow_get_content_bb(&content.sys_frame);
 
-	// Source row: load a system configuration file, OR search the CAN bus. Two
-	// equally-wide, double-height buttons sit side by side with an "or" between.
-	int16_t or_w = 36;
-	int16_t src_h = 2 * BUTTON_H;
-	int16_t src_btn_w = (sc.w - or_w - 2 * MARGIN) / 2;
+	// Two rows of two equally-wide buttons: open a system file and the joystick
+	// driver on the first, save and load the system configuration on the second.
+	int16_t half_w = (sc.w - MARGIN) / 2;
 	int16_t y = 0;
-	int16_t x = 0;
 
-	// "Load system configuration from file": opens a .uvsys file chooser when
-	// clicked (handled in devicetab_step).
+	// "Open system configuration file": opens a .uvsys file chooser when clicked
+	// (handled in devicetab_step).
 	uv_uibutton_init(&content.sys_load_btn,
 			"Open system configuration file", style);
 	uv_uiframewindow_addxy(&content.sys_frame, &content.sys_load_btn,
-			x, y, src_btn_w, src_h);
-	x += src_btn_w + MARGIN;
+			0, y, half_w, BUTTON_H);
 
-	// "or" separator (string literal lives for the program's lifetime, so the
-	// label can point at it directly)
-	uv_uilabel_init(&content.or_label, &UI_TITLE_FONT, ALIGN_CENTER,
-			style->text_color, "or");
-	uv_uiframewindow_addxy(&content.sys_frame, &content.or_label, x, y, or_w, src_h);
-	x += or_w + MARGIN;
-
-	// "Search CAN-bus for devices": scans the bus and adds any newly found
-	// devices alongside the existing ones, on its own task (handled in
-	// devicetab_step()). While a scan runs, devicetab_step() rewrites the label
-	// to a live "Searching Xs..." countdown; reset it to the default here when
-	// no scan is in progress.
-	if (find_search_is_finished()) {
-		strcpy(content.search_btn_str, "Search CAN-bus for devices");
+	// "Configure joystick driver": opens the joystick driver's configuration
+	// window (handled in devicetab_step). Once a configuration is in use - one
+	// came with the system file, or was made in the window - it edits that one.
+	uv_uibutton_init(&content.joystick_btn, joystick_has_conf() ?
+			"Edit joystick driver" : "Configure joystick driver", style);
+	uv_uiframewindow_addxy(&content.sys_frame, &content.joystick_btn,
+			half_w + MARGIN, y, half_w, BUTTON_H);
+	// the bound values are found in the devices' packages and the configuration
+	// is saved into the system file, so both are needed
+	bool any_package = false;
+	for (uint8_t i = 0; !any_package && (i < system_get_dev_count(system)); i++) {
+		any_package = (strlen(system_get_dev(system, i)->filepath) != 0);
 	}
-	uv_uibutton_init(&content.search_btn, content.search_btn_str, style);
-	uv_uiframewindow_addxy(&content.sys_frame, &content.search_btn,
-			x, y, src_btn_w, src_h);
-	y += src_h + MARGIN;
+	if (!system_is_sysfile_loaded(system) || !any_package) {
+		uv_uiobject_disable(&content.joystick_btn);
+	}
+	y += BUTTON_H + MARGIN;
 
 	// Survey device states once: whether any device is operational (used to enable
 	// save / load to devices).
@@ -621,7 +604,6 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	// .uvdev and the parameters read from each operational device; Load writes the
 	// bundled parameters back onto the online devices. Both run on their own task
 	// (handled in devicetab_step). Both need an operational device.
-	int16_t half_w = (sc.w - MARGIN) / 2;
 	uv_uibutton_init(&content.sys_save_btn, "Save system configuration to file",
 			style);
 	uv_uiframewindow_addxy(&content.sys_frame, &content.sys_save_btn,
@@ -643,7 +625,7 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 			(busy_op == OP_SIMPARAM));
 	if (sys_busy) {
 		uv_uiobject_disable(&content.sys_load_btn);
-		uv_uiobject_disable(&content.search_btn);
+		uv_uiobject_disable(&content.joystick_btn);
 		uv_uiobject_disable(&content.sys_save_btn);
 		uv_uiobject_disable(&content.sys_loadparams_btn);
 	}
@@ -1243,17 +1225,6 @@ static const char *flashtarget_reason(device_st *device) {
 }
 
 
-/// @brief: Rewrites the system-tab search button label to a live countdown of
-/// the remaining listen time ("Searching Xs...") while a scan is running.
-static void refresh_search_btn_text(void) {
-	unsigned int rem_s = (find_search_remaining_ms() + 999u) / 1000u;
-	snprintf(content.search_btn_str, sizeof(content.search_btn_str),
-			"Searching %us...", rem_s);
-	uv_uibutton_set_text(&content.search_btn, content.search_btn_str);
-	uv_ui_refresh(&content.search_btn);
-}
-
-
 #if !CONFIG_TARGET_WIN
 /// @brief: Scrolls the running-simulator list with the mouse wheel while the
 /// pointer hovers over it.
@@ -1309,10 +1280,6 @@ bool devicetab_step(void) {
 	if (busy) {
 		// while an async operation runs all input is ignored and the frames stay
 		// disabled; rebuild once it finishes
-		if (busy_op == OP_SEARCH) {
-			// keep the search button's countdown ticking while the scan runs
-			refresh_search_btn_text();
-		}
 		// a firmware flash keeps its button live as a cancel button: update the
 		// label as the flash moves between waiting for the device and downloading,
 		// and cancel the flash when it is clicked again
@@ -1398,7 +1365,7 @@ bool devicetab_step(void) {
 			}
 			busy = false;
 			busy_op = OP_NONE;
-			// rebuild: show the final device list and reset the search label
+			// rebuild: show the final device list
 			ret = true;
 		}
 		return ret;
@@ -1408,17 +1375,12 @@ bool devicetab_step(void) {
 		if (sims_changed) {
 			ret = true;
 		}
-		// "Search devices" clicked: scan the CAN bus and add any newly found
-		// devices alongside the existing ones (the existing devices are kept).
-		if (uv_uibutton_clicked(&content.search_btn)) {
-			// a manual search clears the auto-discovery blacklist, so devices the
-			// user previously removed can be found again
-			find_clear_blacklist();
-			// run the scan on its own task so the UI stays live and new device
-			// tabs appear as soon as each device is found (the uvui loop
-			// rebuilds the tabs as the device count grows)
-			find_search_async();
-			start_busy(OP_SEARCH);
+		// "Configure joystick driver": edit the joystick driver's configuration
+		// in its own window. Saving it restarts the driver (see joystick_step) and
+		// writes it into the loaded system file; rebuild for the button's label.
+		if (uv_uibutton_clicked(&content.joystick_btn)) {
+			joystick_win_exec(&dev.system, &uv_uistyles[0]);
+			ret = true;
 		}
 		// "Load system configuration from file": pick a .uvsys file and load it.
 		// system_set_file() appends a device per its uvsys.json DEVS entry (see

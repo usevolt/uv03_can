@@ -275,6 +275,7 @@ the `.uvsys` system file).
 | versionnotes | `src/versionnotes.c` | This build's release notes, compiled in from git (see *Version notes*) |
 | fleet | `src/fleet.c` | The remote fleet session shared by the CLI and the UI: login, device lookup/info, remote UI session, session pump (see *Remote fleet*) |
 | fleetcmd | `src/fleetcmd.c` | `--login`, `--remotelist`, `--remoteui`, `--remotecan` |
+| joystick | `src/joystick.c`, `src/jsdriver.c` | The joystick driver: a virtual game controller fed from the devices' TXPDOs (see *Joystick driver*) |
 | web | `src/web/` | The web browser build's own parts (see *Web browser build*) |
 
 ### Remote fleet
@@ -319,6 +320,42 @@ tab with the name, or the client id when there is none, and shows both in the
 tab; each fleet tab reads `<fleet> (<devices online>)`, online meaning heard from
 within `MQTT_DEV_ONLINE_S` (15 s, three heartbeats). The counts are relabelled
 in place every UI step rather than rebuilding the tabs.
+
+### Joystick driver
+
+The System tab's "Configure joystick driver" button (it reads "Edit joystick
+driver" once a configuration is in use, and is disabled until a system file
+with at least one device package is loaded) opens `src/ui/joystick_win.c`: a
+row for each of the 8 axes and 32 buttons of a virtual game controller, each
+with a list button picking the CAN-bus device and a button opening the list of
+that device's inputs and outputs, plus the axis range (MIN / MAX) or the button
+threshold and an invert box. The list holds only the values the device sends in
+its TXPDOs (`joystick_catalog_build()` reads them from the device's package,
+resolving `"CANOPEN_TXPDOn_ID + <dev>_NODEID"` with the device's node id): the
+driver never sends anything on the bus, it picks the values out of the PDOs as
+they go by (`joystick_can_rx()`, called from the heartbeat monitor in
+`find.c`). A value not heard from for a second lets its axis centre and its
+button go.
+
+- The controller is a uinput device on Linux and vJoy device 1 on Windows
+  (`src/jsdriver.c`; `vJoyInterface.dll` is loaded at run time, so the build
+  needs no SDK). `install.sh` installs the udev rule giving the user logged in
+  access to `/dev/uinput` (`/etc/udev/rules.d/60-uvcan-uinput.rules`).
+- The configuration is `joystick.json` inside the .uvsys package, next to the
+  manifest (found by name, the manifest does not list it). Each binding carries
+  `COBID`, `OFFSET` and `TYPE`, which are what the value is decoded with, so a
+  file works without the device's package; `NODEID` / `MAININDEX` / `SUBINDEX`
+  name the object, `DEVICE` / `OBJECT` are for the reader. The format is
+  documented in `inc/joystick.h`.
+- Loading a .uvsys with one takes it into use (`system_set_file()`), and the UI
+  starts the driver from `joystick_step()` on its next cycle. Saving the window
+  restarts the driver and writes the file into the loaded .uvsys in place
+  (`joystick_save_to_system()`: `zip` on Linux, the archive written anew with
+  bsdtar on Windows). `--savesys` and "Save system configuration to file" carry
+  it along too.
+- `--joystick` runs the driver from the command line until Ctrl-C, with the
+  configuration of the `--sys` file given before it or of
+  `--joystick=<file>`.
 
 ### File formats: JSON and YAML
 

@@ -41,6 +41,18 @@ bool archive_mktempdir(const char *prefix, char *dest, size_t dest_len);
 /// *destdir*, overwriting any existing entries. Returns true on success.
 bool archive_extract(const char *archive, const char *destdir);
 
+/// @brief: Puts the file *name* of the directory *dir* into the zip archive
+/// *archive*, replacing an entry of the same name. *dir* is the directory the
+/// archive was extracted into: on Windows the archive is written anew from it.
+/// Returns true on success.
+bool archive_put_file(const char *archive, const char *dir, const char *name);
+
+/// @brief: Removes the entry *name* from the zip archive *archive*, which was
+/// extracted into *dir* and whose file *name* has been removed from there
+/// already (on Windows the archive is written anew from *dir*). Returns true on
+/// success.
+bool archive_remove_file(const char *archive, const char *dir, const char *name);
+
 /// @brief: Recursively removes the directory tree at *dir* (best effort; failures
 /// are ignored since the OS reaps the temp area eventually).
 void archive_rmtree(const char *dir);

@@ -34,6 +34,7 @@
 #include "mqtt.h"
 #include "uvstdin.h"
 #include "ui/devicetab.h"
+#include "joystick.h"
 #include "ui/fleettab.h"
 #include "ui/settingstab.h"
 #include "remotecan.h"
@@ -477,6 +478,10 @@ void uvui_exec(void) {
 			prev_prompts = prompts_now;
 			log_expand();
 		}
+
+		// the joystick driver starts with a configuration a system file brought
+		// or the joystick window saved, and restarts when that changes
+		joystick_step();
 
 		// poll the device tab: its file pickers, the running simulators and the
 		// progress of any asynchronous device operation. Driven from here rather

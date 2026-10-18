@@ -84,6 +84,40 @@ bool archive_extract(const char *archive, const char *destdir) {
 }
 
 
+bool archive_put_file(const char *archive, const char *dir,
+		const char *name) {
+	char cmd[2400];
+#if CONFIG_TARGET_WIN
+	// bsdtar cannot update a zip archive, so the archive is written anew from
+	// the directory it was extracted into, which holds every file of it
+	(void) name;
+	snprintf(cmd, sizeof(cmd), "tar.exe --format zip -cf \"%s\" -C \"%s\" .",
+			archive, dir);
+#else
+	// zip adds the file, or replaces the entry of that name
+	snprintf(cmd, sizeof(cmd), "cd \"%s\" && zip -q \"%s\" \"%s\"",
+			dir, archive, name);
+#endif
+	return (system(cmd) == 0);
+}
+
+
+bool archive_remove_file(const char *archive, const char *dir,
+		const char *name) {
+	char cmd[2400];
+#if CONFIG_TARGET_WIN
+	// written anew from the directory, which no longer holds the file
+	(void) name;
+	snprintf(cmd, sizeof(cmd), "tar.exe --format zip -cf \"%s\" -C \"%s\" .",
+			archive, dir);
+#else
+	(void) dir;
+	snprintf(cmd, sizeof(cmd), "zip -q -d \"%s\" \"%s\"", archive, name);
+#endif
+	return (system(cmd) == 0);
+}
+
+
 void archive_rmtree(const char *dir) {
 	if ((dir != NULL) && (strlen(dir) != 0)) {
 #if CONFIG_TARGET_WIN

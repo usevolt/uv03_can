@@ -143,6 +143,11 @@ typedef struct {
 	char name[128];
 	/// @brief: True once a system configuration file has been parsed.
 	bool loaded;
+	/// @brief: The directory the system file loaded last was extracted into.
+	/// Holds the package's files for as long as uvcan runs (the joystick
+	/// configuration is written back into the package from here). Empty when
+	/// no system file was loaded.
+	char extract_dir[1024];
 
 	device_st devs[SYSTEM_DEV_MAX_COUNT];
 	uint8_t dev_count;
@@ -287,6 +292,12 @@ void system_set_device_file(device_st *device, const char *filepath);
 /// tell the user which node id a device will boot with before the package is
 /// flashed onto it. Returns 0 when the file cannot be read or defines no node id.
 uint8_t system_read_file_nodeid(const char *filepath);
+
+/// @brief: Loads the database of *device*'s .uvdev package into dev.db, the
+/// way the device's identification is read when it is added. Returns false when
+/// the device has no package or its database could not be read. On success the
+/// caller reads what it needs from dev.db and then calls db_deinit().
+bool system_load_device_database(const device_st *device);
 
 /// @brief: Assigns *nodeid* to the device added last with --dev, i.e. the one a
 /// node id given after it on the command line refers to. Returns that device, or

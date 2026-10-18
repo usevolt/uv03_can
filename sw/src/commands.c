@@ -40,6 +40,7 @@
 #include "selfupdate.h"
 #include "remotefiles.h"
 #include "fleetcmd.h"
+#include "joystick.h"
 #include <time.h>
 #include "ui/uvui.h"
 #include <uv_ui.h>
@@ -650,6 +651,22 @@ commands_st commands[] = {
 						"Creating the netdev needs root, which is asked for with sudo.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_remotecan
+		},
+		{
+				.cmd_long = "joystick",
+				.str = "Runs the joystick driver: a virtual game controller on this "
+						"computer whose axes and buttons follow values the system's "
+						"devices send in their TXPDOs, as configured in the System tab's "
+						"\"Configure joystick driver\" window. The configuration is the "
+						"one of the system file given before this with *sys*, or the "
+						"joystick configuration file given as the argument "
+						"('--joystick=joystick.json'). Blocks until Ctrl-C. On Linux the "
+						"controller is a uinput device, which needs access to /dev/uinput "
+						"(install.sh installs a udev rule for it); on Windows it is vJoy "
+						"device 1, which needs the vJoy driver installed. "
+						"E.g. 'uvcan --sys machine.uvsys --joystick'.",
+				.args = ARG_OPTIONAL,
+				.callback = &cmd_joystick
 		},
 		{
 				.cmd_long = "silent",

@@ -27,6 +27,7 @@
 #include "system.h"
 #include "saveparam.h"
 #include "find.h"
+#include "joystick.h"
 #include "uvstdin.h"
 #include "ui/uvui.h"
 
@@ -373,6 +374,13 @@ bool savesys_save(const char *file) {
 	e |= parser_writer_end_array(&writer);
 	e |= parser_writer_end(&writer);
 	LOG_END();
+
+	// the joystick driver's configuration goes along as a file of its own
+	char js_name[64];
+	if (joystick_write_to_dir(stage, js_name, sizeof(js_name))) {
+		printf("Adding the joystick configuration '%s'\n", js_name);
+		fflush(stdout);
+	}
 
 	// warn about Usevolt devices that were offline and therefore left out of the
 	// system configuration entirely (no configuration package, no parameters)

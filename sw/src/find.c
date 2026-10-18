@@ -24,6 +24,7 @@
 #include <uv_canopen.h>
 #include "main.h"
 #include "system.h"
+#include "joystick.h"
 
 
 // Duration of the heartbeat listen window in milliseconds.
@@ -187,6 +188,8 @@ static void find_can_callb(void *ptr, uv_can_msg_st *msg) {
 			last_seen_tick[nodeid] = (t != 0) ? t : 1;
 		}
 	}
+	// the joystick driver picks its values out of the devices' TXPDOs
+	joystick_can_rx(msg);
 	// forward the frame to the optional extra sniffer (e.g. the GUI terminal),
 	// so it can observe raw traffic without displacing the heartbeat monitor
 	if (extra_can_callb != NULL) {

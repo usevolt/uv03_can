@@ -29,6 +29,7 @@
 #include "parser.h"
 #include "ui/uv_uifileedit.h"
 #include "commands.h"
+#include "joystick.h"
 
 // Platform null device, used to silence a child command's stdout.
 #if CONFIG_TARGET_WIN
@@ -252,6 +253,12 @@ bool system_set_file(system_st *this, const char *filepath) {
 		this->filepath[sizeof(this->filepath) - 1] = '\0';
 		name_from_path(filepath, this->name, sizeof(this->name));
 		this->loaded = true;
+		snprintf(this->extract_dir, sizeof(this->extract_dir), "%s", tmpdir);
+		// a joystick configuration in the package replaces the one in use; the
+		// UI (or *joystick*) starts the driver with it
+		if (joystick_load_from_dir(tmpdir)) {
+			PRINT("Loaded the joystick configuration from the system file.\n");
+		}
 		// The system package's own directory is where the user keeps this system's
 		// files, so the UI's file dialogs should start there. It is the only hint
 		// available when uvcan was started by double-clicking the .uvsys file: the
@@ -585,6 +592,12 @@ void system_set_device_file(device_st *device, const char *filepath) {
 	// offline): those are devices we are configuring before they exist on the bus.
 	uint8_t nodeid = (device->state != DEV_STATE_OFFLINE) ? device->nodeid : 0;
 	device_assign_file(device, filepath, nodeid);
+}
+
+
+bool system_load_device_database(const device_st *device) {
+	return (device != NULL) && (strlen(device->filepath) != 0) &&
+			load_uvdev_database(device->filepath, NULL, 0, NULL, NULL);
 }
 
 

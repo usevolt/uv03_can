@@ -17,7 +17,9 @@
 #
 # The dependency step installs the runtime libraries always, and the -dev
 # packages needed to compile uvcan whenever this run builds it from source,
-# and esptool (v5 or newer, from PyPI with pipx) for flashing ESP32 modules.
+# and esptool (v5 or newer, from PyPI with pipx) for flashing ESP32 modules,
+# and a udev rule that lets the user logged in use /dev/uinput, which the
+# joystick driver creates its virtual game controller with.
 # A source build also gets the Emscripten SDK, which `make web` (the browser
 # build) and `make package` compile with: it goes to ~/emsdk, or to $EMSDK
 # when that is set. --web installs it on its own too, without a build.
@@ -295,6 +297,33 @@ if [ "$DO_DEPS" -eq 1 ]; then
 		warn "apt-get not found; skipping dependency install. Ensure these are"
 		warn "present, under whatever names your distribution gives them:"
 		warn "  $(echo $DEPS)"
+	fi
+fi
+
+# ---- joystick driver ----------------------------------------------------------
+# The joystick driver (the System tab's "Configure joystick driver", *joystick*)
+# creates a virtual game controller through /dev/uinput, which is root's only.
+# The rule hands it to the user logged in at the seat (uaccess), like the
+# distributions do for game controllers themselves, and the uinput module is
+# loaded at boot so that the device node is there.
+UINPUT_RULE="/etc/udev/rules.d/60-uvcan-uinput.rules"
+UINPUT_RULE_TEXT='KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"'
+UINPUT_MODULES="/etc/modules-load.d/uvcan-uinput.conf"
+
+if [ "$DO_DEPS" -eq 1 ] && [ "$ACTION" = "install" ]; then
+	if [ -f "$UINPUT_RULE" ] && grep -qF "$UINPUT_RULE_TEXT" "$UINPUT_RULE"; then
+		say "The udev rule for the joystick driver is already installed"
+	elif command -v udevadm >/dev/null; then
+		say "Installing the udev rule for the joystick driver (sudo)"
+		echo "$UINPUT_RULE_TEXT" | sudo tee "$UINPUT_RULE" >/dev/null
+		echo "uinput" | sudo tee "$UINPUT_MODULES" >/dev/null
+		sudo modprobe uinput || warn "loading the uinput kernel module failed."
+		sudo udevadm control --reload-rules
+		sudo udevadm trigger --action=change --sysname-match=uinput ||
+			warn "applying the udev rule failed; it takes effect after a reboot."
+	else
+		warn "udevadm not found; skipping the joystick driver's udev rule. The"
+		warn "joystick driver needs write access to /dev/uinput."
 	fi
 fi
 
