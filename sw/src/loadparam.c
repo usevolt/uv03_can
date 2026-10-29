@@ -123,52 +123,85 @@ uint32_t loadparam_get_progress_counter(void) {
 }
 
 
+// Set by loadparam_load_files_cancel() while a loadparam_load_files_async() load
+// runs: every parameter read and write after it fails without reaching the bus,
+// the prompts answer "stop", and the load ends without storing or resetting the
+// devices. Cleared when that load ends.
+static volatile bool load_cancelled;
+
+
 // Wrappers around the SDO client that additionally retry the whole transfer when
 // the device aborts with CANOPEN_SDO_ERROR_UNSUPPORTED_ACCESS_TO_OBJECT (see
 // LOADPARAM_SDO_RETRY_COUNT). All of loadparam's parameter reads/writes go
 // through these instead of calling uv_canopen_sdo_*() directly.
-static uv_errors_e loadparam_sdo_write(uint8_t node_id, uint16_t mindex,
-		uint8_t sindex, uint32_t data_len, void *data) {
-	progress_counter++;
-	uv_errors_e ret = uv_canopen_sdo_write(node_id, mindex, sindex, data_len, data);
-	uint8_t attempt = 0;
-	while (loadparam_sdo_should_retry(ret, node_id, mindex, attempt, "write")) {
-		attempt++;
+//
+// A cancelled load (see load_cancelled) writes nothing more, except for
+// *uncancellable* writes: re-enabling the EMCY messages the load suppressed.
+static uv_errors_e loadparam_sdo_write_ex(uint8_t node_id, uint16_t mindex,
+		uint8_t sindex, uint32_t data_len, void *data, bool uncancellable) {
+	uv_errors_e ret = ERR_ABORTED;
+	if (!load_cancelled || uncancellable) {
+		progress_counter++;
 		ret = uv_canopen_sdo_write(node_id, mindex, sindex, data_len, data);
+		uint8_t attempt = 0;
+		while (loadparam_sdo_should_retry(ret, node_id, mindex, attempt, "write")) {
+			attempt++;
+			ret = uv_canopen_sdo_write(node_id, mindex, sindex, data_len, data);
+		}
+		loadparam_sdo_log_retried(ret, node_id, mindex, attempt, "write");
+		// pace consecutive writes so the next request does not arrive inside the
+		// device's post-response CAN RX recovery window (see the pacing #define)
+		if (ret == ERR_NONE) {
+			uv_rtos_task_delay(LOADPARAM_SDO_WRITE_PACING_MS);
+		}
 	}
-	loadparam_sdo_log_retried(ret, node_id, mindex, attempt, "write");
-	// pace consecutive writes so the next request does not arrive inside the
-	// device's post-response CAN RX recovery window (see the pacing #define)
-	if (ret == ERR_NONE) {
-		uv_rtos_task_delay(LOADPARAM_SDO_WRITE_PACING_MS);
+	else {
+		// the load was stopped
 	}
 	return ret;
 }
 
+static uv_errors_e loadparam_sdo_write(uint8_t node_id, uint16_t mindex,
+		uint8_t sindex, uint32_t data_len, void *data) {
+	return loadparam_sdo_write_ex(node_id, mindex, sindex, data_len, data, false);
+}
+
 static uv_errors_e loadparam_sdo_read(uint8_t node_id, uint16_t mindex,
 		uint8_t sindex, uint32_t data_len, void *data) {
-	progress_counter++;
-	uv_errors_e ret = uv_canopen_sdo_read(node_id, mindex, sindex, data_len, data);
-	uint8_t attempt = 0;
-	while (loadparam_sdo_should_retry(ret, node_id, mindex, attempt, "read")) {
-		attempt++;
+	uv_errors_e ret = ERR_ABORTED;
+	if (!load_cancelled) {
+		progress_counter++;
 		ret = uv_canopen_sdo_read(node_id, mindex, sindex, data_len, data);
+		uint8_t attempt = 0;
+		while (loadparam_sdo_should_retry(ret, node_id, mindex, attempt, "read")) {
+			attempt++;
+			ret = uv_canopen_sdo_read(node_id, mindex, sindex, data_len, data);
+		}
+		loadparam_sdo_log_retried(ret, node_id, mindex, attempt, "read");
 	}
-	loadparam_sdo_log_retried(ret, node_id, mindex, attempt, "read");
+	else {
+		// the load was stopped
+	}
 	return ret;
 }
 
 static uv_errors_e loadparam_sdo_store_params(uint8_t node_id,
 		memory_scope_e_ param_scope) {
-	uv_errors_e ret = uv_canopen_sdo_store_params(node_id, param_scope);
-	uint8_t attempt = 0;
-	while (loadparam_sdo_should_retry(ret, node_id,
-			CONFIG_CANOPEN_STORE_PARAMS_INDEX, attempt, "store")) {
-		attempt++;
+	uv_errors_e ret = ERR_ABORTED;
+	if (!load_cancelled) {
 		ret = uv_canopen_sdo_store_params(node_id, param_scope);
+		uint8_t attempt = 0;
+		while (loadparam_sdo_should_retry(ret, node_id,
+				CONFIG_CANOPEN_STORE_PARAMS_INDEX, attempt, "store")) {
+			attempt++;
+			ret = uv_canopen_sdo_store_params(node_id, param_scope);
+		}
+		loadparam_sdo_log_retried(ret, node_id, CONFIG_CANOPEN_STORE_PARAMS_INDEX,
+				attempt, "store");
 	}
-	loadparam_sdo_log_retried(ret, node_id, CONFIG_CANOPEN_STORE_PARAMS_INDEX,
-			attempt, "store");
+	else {
+		// the load was stopped
+	}
 	return ret;
 }
 
@@ -556,27 +589,33 @@ static uint8_t param_file_single_nodeid(const char *file) {
 /// failed, with *remaining* files still to load. See loadparam_ask_continue().
 /// @return: true to load the remaining files, false to stop
 static bool loadparam_files_ask_continue(const char *file, uint8_t remaining) {
-	bool ret = true;
-	PROMPT("\n\n"
-			"Loading the parameter file '%s' failed (%s).\n"
-			"%u parameter file(s) of this load have not been loaded yet.\n\n"
-			"Type 'abort' to stop the whole load and leave the remaining "
-			"files unloaded,\n"
-			"or press anything to continue with the next file.\n\n",
-			file,
-			this->file_invalid ? "the parameter file cannot be used" :
-					"a CANopen transfer failed",
-			(unsigned int) remaining);
-	char str[128] = {};
-	uv_stdin_getline(str, sizeof(str) - 1);
-	if (strstr(str, "abort") != NULL) {
-		printf("User selected: abort the whole parameter load\n");
-		ret = false;
+	// a load the user stopped is not asked about
+	bool ret = false;
+	if (!load_cancelled) {
+		ret = true;
+		PROMPT("\n\n"
+				"Loading the parameter file '%s' failed (%s).\n"
+				"%u parameter file(s) of this load have not been loaded yet.\n\n"
+				"Type 'abort' to stop the whole load and leave the remaining "
+				"files unloaded,\n"
+				"or press anything to continue with the next file.\n\n",
+				file,
+				this->file_invalid ? "the parameter file cannot be used" :
+						"a CANopen transfer failed",
+				(unsigned int) remaining);
+		char str[128] = {};
+		uv_stdin_getline(str, sizeof(str) - 1);
+		if (strstr(str, "abort") != NULL) {
+			printf("User selected: abort the whole parameter load\n");
+			ret = false;
+		}
+		else {
+			printf("User selected: continue with the next file\n");
+		}
+		fflush(stdout);
 	}
 	else {
-		printf("User selected: continue with the next file\n");
 	}
-	fflush(stdout);
 	return ret;
 }
 
@@ -587,7 +626,8 @@ static void loadparam_files_task(void *ptr) {
 	uint8_t reset_count = 0;
 	bool aborted = false;
 	loadparam_sequence_begin();
-	for (uint8_t i = 0; (i < async_file_count) && !aborted; i++) {
+	for (uint8_t i = 0; (i < async_file_count) && !aborted && !load_cancelled;
+			i++) {
 		const char *file = async_files[i];
 
 		// the devices the previous file stored and reset have to be back up
@@ -596,7 +636,7 @@ static void loadparam_files_task(void *ptr) {
 			// let them drop off the bus first, so their heartbeats from before the
 			// reset are not taken for them being back
 			uv_rtos_task_delay(1500);
-			for (uint8_t j = 0; j < reset_count; j++) {
+			for (uint8_t j = 0; (j < reset_count) && !load_cancelled; j++) {
 				printf("Waiting for node 0x%x to come back online...\n",
 						(unsigned int) reset_nodes[j]);
 				fflush(stdout);
@@ -607,6 +647,10 @@ static void loadparam_files_task(void *ptr) {
 				}
 			}
 			reset_count = 0;
+			if (load_cancelled) {
+				// stopped while the devices were waited for
+				break;
+			}
 		}
 
 		uint8_t nodeid = param_file_single_nodeid(file);
@@ -661,13 +705,17 @@ static void loadparam_files_task(void *ptr) {
 		}
 	}
 	loadparam_sequence_end();
-	if (aborted) {
+	if (load_cancelled) {
+		ERRORSTR("Parameter loading stopped by the user.\n");
+	}
+	else if (aborted) {
 		ERRORSTR("Parameter loading stopped.\n");
 	}
 	else {
 		printf("All %u parameter file(s) loaded.\n", (unsigned int) async_file_count);
 	}
 	fflush(stdout);
+	load_cancelled = false;
 	async_files_finished = true;
 	uv_rtos_task_delete(NULL);
 }
@@ -682,10 +730,28 @@ void loadparam_load_files_async(const char **files, uint8_t count) {
 		async_files[i][sizeof(async_files[i]) - 1] = '\0';
 	}
 	async_file_count = count;
+	load_cancelled = false;
 	// mark in-progress before the task starts so a caller can poll immediately
 	async_files_finished = false;
 	uv_rtos_task_create(&loadparam_files_task, "loadfiles_task",
 			UV_RTOS_MIN_STACK_SIZE * 5, NULL, UV_RTOS_IDLE_PRIORITY + 1, NULL);
+}
+
+
+void loadparam_load_files_cancel(void) {
+	if (!async_files_finished && !load_cancelled) {
+		printf("Stopping the parameter load...\n");
+		fflush(stdout);
+		load_cancelled = true;
+		// a prompt waiting for its answer would hold the load up until the user
+		// typed one: answer it with an empty line, which every prompt of the load
+		// takes as "go on" - and going on, everything now fails and stops
+		if (uv_stdin_is_waiting()) {
+			uv_stdin_feed("");
+		}
+	}
+	else {
+	}
 }
 
 
@@ -860,7 +926,12 @@ static bool loadparam_ask_sdo_continue(const char *info) {
 	bool ret = true;
 	bool answered = this->force_continue;
 
-	if (answered) {
+	if (load_cancelled) {
+		// the user stopped the load
+		ret = false;
+		answered = true;
+	}
+	else if (answered) {
 		printf("Force continue: skipping '%s'\n", info);
 	}
 	while (!answered) {
@@ -874,7 +945,12 @@ static bool loadparam_ask_sdo_continue(const char *info) {
 		char str[128] = {};
 		uv_stdin_getline(str, sizeof(str) - 1);
 		const char *ans = str + strspn(str, " \t\r\n");
-		if (*ans == '\0') {
+		if (load_cancelled) {
+			// the user stopped the load while this was asked
+			ret = false;
+			answered = true;
+		}
+		else if (*ans == '\0') {
 			printf("User selected: skip '%s' and continue\n", info);
 			answered = true;
 		}
@@ -1337,8 +1413,10 @@ static bool emcy_suppress_find(emcy_suppress_st *out) {
 static uv_errors_e emcy_suppress_write(const emcy_suppress_st *s, uint8_t node,
 		uint32_t value) {
 	uint32_t v = value;
-	uv_errors_e e = loadparam_sdo_write(node, s->mindex, s->sindex,
-			CANOPEN_SIZEOF(s->type), &v);
+	// re-enabling has to happen also when the load was stopped, or the device
+	// would be left silenced
+	uv_errors_e e = loadparam_sdo_write_ex(node, s->mindex, s->sindex,
+			CANOPEN_SIZEOF(s->type), &v, (value == 0));
 	if (e == ERR_NONE) {
 		printf("%s EMCY messages on node 0x%x\n",
 				value ? "Suppressing" : "Re-enabling", (unsigned int) node);
@@ -2041,7 +2119,15 @@ void loadparam_step(void *ptr) {
 	emcy_suppress_end();
 
 	uv_errors_e ret = ERR_NONE;
-	if (this->file_invalid) {
+	if (load_cancelled) {
+		LOG_END();
+		ERRORSTR("\nParameter loading was stopped by the user.\n"
+				"The target device(s) may be left partially programmed and were\n"
+				"NOT stored or reset.\n\n");
+		fflush(stdout);
+		ret = ERR_ABORTED;
+	}
+	else if (this->file_invalid) {
 		// The parameter file could not be read at all, so nothing was written to
 		// begin with: say that instead of blaming the bus, and do not claim the
 		// device might be half programmed.

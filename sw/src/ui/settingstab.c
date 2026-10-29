@@ -123,6 +123,8 @@ static uint8_t param_file_count;
 
 // True while the panel's load runs (see settingstab_is_busy())
 static bool params_loading;
+// True once the load's "Stop" was clicked, until the load has ended
+static bool params_stopping;
 
 
 // Whether the widgets above are part of the display right now. The main tab
@@ -461,15 +463,21 @@ static void down_btn_draw(void *me, const uv_bounding_box_st *pbb) {
 }
 
 
-// Enables the panel's buttons according to the list and whether a load runs
+// Enables the panel's buttons according to the list and whether a load runs.
+// While the load runs the "Load parameters" button is its "Stop" button.
 static void params_refresh_buttons(void) {
+	// uv_uibutton_set_text takes a mutable string
+	static char load_str[] = "Load parameters";
+	static char stop_str[] = "Stop";
+	uv_uibutton_set_text(&content.params_load_btn,
+			params_loading ? stop_str : load_str);
 	if (params_loading || (param_file_count >= LOADPARAM_FILES_MAX)) {
 		uv_uiobject_disable(&content.params_add_btn);
 	}
 	else {
 		uv_uiobject_enable(&content.params_add_btn);
 	}
-	if (params_loading || (param_file_count == 0)) {
+	if (params_loading ? params_stopping : (param_file_count == 0)) {
 		uv_uiobject_disable(&content.params_load_btn);
 	}
 	else {
@@ -577,7 +585,12 @@ static void params_list_wheel_step(void) {
 static void params_step(void) {
 	bool rebuild = false;
 	if (params_loading) {
-		// nothing is clickable while the load runs
+		// only "Stop" is clickable while the load runs
+		if (!params_stopping && uv_uibutton_clicked(&content.params_load_btn)) {
+			loadparam_load_files_cancel();
+			params_stopping = true;
+			params_refresh_buttons();
+		}
 	}
 	else if (uv_uibutton_clicked(&content.params_add_btn)) {
 		// static: room for every file the list can hold, too much for the stack
@@ -1135,6 +1148,7 @@ void settingstab_step(void) {
 	// whichever tab is shown, though the load keeps the user on this one.
 	if (params_loading && loadparam_load_files_is_finished()) {
 		params_loading = false;
+		params_stopping = false;
 		uvui_reset_log_title();
 		if (shown) {
 			params_build_list();

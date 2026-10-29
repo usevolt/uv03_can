@@ -181,6 +181,14 @@ void loadparam_load_files_async(const char **files, uint8_t count);
 bool loadparam_load_files_is_finished(void);
 
 
+/// @brief: Stops a running loadparam_load_files_async() load: nothing more is
+/// written to the devices, a prompt waiting for an answer is answered, and the
+/// devices written so far are left as they are - not stored or reset - apart
+/// from re-enabling their EMCY messages. Poll loadparam_load_files_is_finished()
+/// for the load to end. No-op when no such load runs.
+void loadparam_load_files_cancel(void);
+
+
 /// @brief: Loads the parameters bundled with a system configuration onto every
 /// given device, sequencing the load across all of them in five phases: EMCY
 /// messages are suppressed on every device first, then each device's parameters
