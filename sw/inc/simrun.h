@@ -199,15 +199,31 @@ void simrun_kill(uint8_t index);
 
 /// @brief: Relaunches simulator *index* after it has stopped (crashed, exited or
 /// been killed): starts its process again with the same arguments, in the same
-/// run directory, and loads the device's parameters onto it on its own task, the
-/// same way simrun_load_params_async() does after a start. The simulator moves
-/// STARTED -> PARAM -> RUNNING again. Poll simrun_load_params_is_finished() for
-/// the load, exactly as after a start.
+/// run directory, and moves it straight to RUNNING. The device's parameters are
+/// not loaded: the simulator runs with the settings stored in its run directory,
+/// and when its device carries parameters they are left pending
+/// (simrun_params_pending()) until simrun_load_params() loads them.
 ///
 /// Returns false (and does nothing) when *index* is invalid, when that simulator
 /// is still alive, when a parameter load is already running, or when the process
 /// could not be launched.
 bool simrun_restart(uint8_t index);
+
+
+/// @brief: True when simulator *index* is alive and was restarted with
+/// simrun_restart() without its device's parameters having been loaded since.
+bool simrun_params_pending(uint8_t index);
+
+
+/// @brief: Loads the pending parameters of restarted simulator *index* on its
+/// own task: waits until it is operational, then runs the same EMCY-suppress /
+/// write / store / reset sequence a start does, moving it RUNNING -> PARAM ->
+/// RUNNING. Poll simrun_load_params_is_finished() for the load. A simulator that
+/// does not come online keeps its parameters pending.
+///
+/// Returns false (and does nothing) when *index* has no pending parameters, is
+/// not RUNNING, or when a parameter load is already running.
+bool simrun_load_params(uint8_t index);
 
 
 /// @brief: Kills every running simulator and removes all temp dirs. Also cancels

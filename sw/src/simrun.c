@@ -63,6 +63,9 @@ typedef struct {
 	// -n: kept so simrun_restart() can launch it again exactly the same way
 	char can_channel[64];
 	bool set_nodeid;
+	// set when simrun_restart() relaunched the simulator without loading its
+	// device's parameters; cleared once simrun_load_params() has loaded them
+	bool params_pending;
 	// running / killed / stopped. Stopped entries are kept (so their final state
 	// and log stay visible) until the next simrun_start_system().
 	simrun_state_e state;
@@ -936,36 +939,34 @@ static void postparam_task(void *ptr) {
 
 // ---- restarting a single simulator ---------------------------------------
 
-// the simulator restart_task() is working on
-static volatile uint8_t restart_index;
+// the simulator param_task() is working on
+static volatile uint8_t param_index;
 
 
-/// @brief: Task body for simrun_restart(): waits for the relaunched simulator to
-/// come operational, loads its device's parameters onto it and moves it
-/// STARTED -> PARAM -> RUNNING, the same way the post-launch load does after a
-/// start. Gives up on a simulator that does not come online (or is killed again
-/// while it is waited for), leaving it in whatever state it ended up in.
-static void restart_task(void *ptr) {
-	simproc_st *p = &procs[restart_index];
+// True when the system device of *p* carries parameters to load onto it.
+static bool proc_has_params(const simproc_st *p) {
+	device_st *d = proc_device(p);
+	return (d != NULL) && (strlen(d->param_file) != 0);
+}
+
+
+/// @brief: Task body for simrun_load_params(): waits for the restarted simulator
+/// to be operational, loads its device's parameters onto it and moves it
+/// RUNNING -> PARAM -> RUNNING, the same load the post-launch one runs after a
+/// start. Gives up on a simulator that does not come online (or is killed while
+/// it is waited for), leaving its parameters pending so they can be tried again.
+static void param_task(void *ptr) {
+	simproc_st *p = &procs[param_index];
 	device_st *d = proc_device(p);
 
-	// As after a start, the wait and the load are skipped when the device carries
-	// no parameters - the normal case when no system configuration file is
-	// loaded. Such a simulator may also have been started without -n and be free
-	// to boot on another node id than the one it is tracked with, so waiting for
-	// its node to answer would only stall the restart until the timeout.
-	if ((d == NULL) || (strlen(d->param_file) == 0)) {
-		PRINT("No parameters to load for '%s'; it runs with the settings stored "
-				"in its own run directory.\n", p->name);
+	if (d == NULL) {
+		PRINT("The device of '%s' is no longer in the system; its parameters are "
+				"not loaded.\n", p->name);
 		fflush(stdout);
 	}
 	else {
 		// make sure heartbeats are tracked so the operational state can be seen
 		find_start_monitor();
-		// let the device drop off the bus before waiting for it to come back, so
-		// the loop below does not see the heartbeat state it had before it was
-		// stopped and load onto a device which is still booting
-		uv_rtos_task_delay(1500);
 
 		PRINT("Waiting for '%s' (node 0x%x) to come online...\n",
 				p->name, (unsigned int) p->nodeid);
@@ -996,16 +997,18 @@ static void restart_task(void *ptr) {
 			fflush(stdout);
 			loadparam_load_system_async(&d, 1);
 			wait_for_param_load();
+			p->params_pending = false;
+			state_changed = true;
 		}
 		else {
 			// stopped again, or the whole run was cancelled, while waiting
 		}
 	}
 
-	// as after a start, a simulator that is still alive is now running - also when
-	// the load above was given up on, so the row's button works again. Not after a
-	// Force stop: the list has been cleared under us and this slot may already
-	// belong to a simulator of the next run.
+	// a simulator that is still alive is running again - also when the load above
+	// was given up on, so the row's button works again. Not after a Force stop:
+	// the list has been cleared under us and this slot may already belong to a
+	// simulator of the next run.
 	if (!pp_cancel && state_is_alive(p->state)) {
 		set_state(p, SIMRUN_RUNNING);
 	}
@@ -1028,15 +1031,17 @@ bool simrun_restart(uint8_t index) {
 				p->name, (unsigned int) p->nodeid);
 		// the run directory (and with it the device's stored settings) is still
 		// there, so the simulator is simply launched in it again
-		pp_cancel = false;
 		if (spawn_proc(p, p->can_channel, p->set_nodeid)) {
 			PRINT("Restarted simulator for '%s' (node 0x%x), pid %d in '%s'\n",
 					p->name, (unsigned int) p->nodeid, p->pid, p->pkg.dir);
-			restart_index = index;
-			pp_finished = false;
-			uv_rtos_task_create(&restart_task, "simrestart",
-					UV_RTOS_MIN_STACK_SIZE * 5, NULL,
-					UV_RTOS_IDLE_PRIORITY + 1, NULL);
+			// its parameters are not loaded here: the simulator runs with the
+			// settings stored in its run directory until simrun_load_params()
+			p->params_pending = proc_has_params(p);
+			if (p->params_pending) {
+				PRINT("The parameters of '%s' are not loaded; load them with its "
+						"\"Load params\" button.\n", p->name);
+			}
+			set_state(p, SIMRUN_RUNNING);
 			ret = true;
 		}
 		else {
@@ -1045,6 +1050,35 @@ bool simrun_restart(uint8_t index) {
 	}
 	else {
 		// invalid index, still running, or a parameter load is in progress
+	}
+	return ret;
+}
+
+
+bool simrun_params_pending(uint8_t index) {
+	return (index < proc_count) && procs[index].params_pending &&
+			state_is_alive(procs[index].state);
+}
+
+
+bool simrun_load_params(uint8_t index) {
+	bool ret = false;
+	// the load owns the SDO client, so only one runs at a time
+	if (simrun_params_pending(index) &&
+			(procs[index].state == SIMRUN_RUNNING) && pp_finished) {
+		simproc_st *p = &procs[index];
+		pp_cancel = false;
+		param_index = index;
+		pp_finished = false;
+		uv_rtos_task_create(&param_task, "simparam",
+				UV_RTOS_MIN_STACK_SIZE * 5, NULL,
+				UV_RTOS_IDLE_PRIORITY + 1, NULL);
+		PRINT("Loading the parameters of the restarted simulator '%s'...\n",
+				p->name);
+		ret = true;
+	}
+	else {
+		// invalid index, nothing pending, or a parameter load is in progress
 	}
 	return ret;
 }
@@ -1176,6 +1210,16 @@ void simrun_kill(uint8_t index) {
 }
 
 bool simrun_restart(uint8_t index) {
+	(void) index;
+	return false;
+}
+
+bool simrun_params_pending(uint8_t index) {
+	(void) index;
+	return false;
+}
+
+bool simrun_load_params(uint8_t index) {
 	(void) index;
 	return false;
 }

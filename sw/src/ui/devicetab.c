@@ -323,19 +323,20 @@ static struct {
 
 	// Running-simulator list on the system tab: its own window holding one row per
 	// running simulator. Each row has a name/PID label, the node id, a "Log"
-	// button (opens a terminal on the simulator's output) and an action button
-	// that is a "Kill" while the simulator runs and a "Restart" once it has
-	// stopped. The rows keep a fixed height: when more simulators are running
+	// button (opens a terminal on the simulator's output), a "Restart" button
+	// for a simulator which has stopped (it reads "Load params" after a restart,
+	// until the parameters are loaded) and a "Kill" button for a running one. The rows keep a fixed height: when more simulators are running
 	// than fit, the window scrolls (by its scroll bar, by dragging, or with the
 	// mouse wheel over it - see sim_list_wheel_step()).
 	uv_uiwindow_st sim_window;
-	uv_uiobject_st *sim_window_buf[4 * SYSTEM_DEV_MAX_COUNT];
+	uv_uiobject_st *sim_window_buf[5 * SYSTEM_DEV_MAX_COUNT];
 	uv_uilabel_st sim_labels[SYSTEM_DEV_MAX_COUNT];
 	char sim_label_strs[SYSTEM_DEV_MAX_COUNT][96];
 	uv_uilabel_st sim_node_labels[SYSTEM_DEV_MAX_COUNT];
 	char sim_node_strs[SYSTEM_DEV_MAX_COUNT][32];
 	uv_uibutton_st sim_log_btns[SYSTEM_DEV_MAX_COUNT];
 	uv_uibutton_st sim_action_btns[SYSTEM_DEV_MAX_COUNT];
+	uv_uibutton_st sim_kill_btns[SYSTEM_DEV_MAX_COUNT];
 } content;
 
 
@@ -684,7 +685,8 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	}
 
 	// Running-simulator list in the right column: one row per running simulator,
-	// showing its device name and process id with a "Kill" / "Restart" button.
+	// showing its device name and process id with "Restart" / "Load params" and
+	// "Kill" buttons.
 	// Polled in devicetab_step().
 	uint8_t simcount = simrun_get_count();
 	if (simcount == 0) {
@@ -716,13 +718,15 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 		if (rows_h > mc.h) {
 			list_w -= CONFIG_UI_WINDOW_SCROLLBAR_WIDTH + gap;
 		}
-		// columns laid out from the right: Kill / Restart, Log, node id, then the
-		// name fills whatever is left. The action column fits the wider of the two
-		// labels, so the row does not change shape when the simulator stops.
-		int16_t action_w = 110;
+		// columns laid out from the right: Kill, Restart / Load params, Log, node
+		// id, then the name fills whatever is left. The action column fits the
+		// wider of its labels, so the row does not change shape between them.
+		int16_t kill_w = 80;
+		int16_t action_w = 130;
 		int16_t log_w = 80;
 		int16_t node_w = 140;
-		int16_t action_x = list_w - action_w;
+		int16_t kill_x = list_w - kill_w;
+		int16_t action_x = kill_x - gap - action_w;
 		int16_t log_x = action_x - gap - log_w;
 		int16_t node_x = log_x - gap - node_w;
 		int16_t name_w = node_x - gap;
@@ -751,19 +755,29 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 			uv_uiwindow_addxy(&content.sim_window, &content.sim_log_btns[i],
 					log_x, row_y, log_w, row_h);
 
-			// while the simulator runs the button kills it; once it has stopped
-			// (killed, exited or crashed) the same button restarts it, launching
-			// it again and loading its parameters onto it
+			// once the simulator has stopped (killed, exited or crashed) the
+			// button restarts it, launching it again without its parameters. The
+			// button then loads them, and is idle while the simulator runs with
+			// them. Nothing is restarted or loaded while a parameter load owns
+			// the bus.
 			bool alive = simrun_is_alive(i);
+			bool pending = simrun_params_pending(i);
+			bool running = alive && (simrun_get_state(i) == SIMRUN_RUNNING);
 			uv_uibutton_init(&content.sim_action_btns[i],
-					alive ? "Kill" : "Restart", style);
+					pending ? "Load params" : "Restart", style);
 			uv_uiwindow_addxy(&content.sim_window, &content.sim_action_btns[i],
 					action_x, row_y, action_w, row_h);
-			// a simulator which is still starting up or loading its parameters is
-			// not killed from here (the "Force stop simulator" button does that),
-			// and nothing is restarted while a parameter load owns the bus
-			if (alive ? (simrun_get_state(i) != SIMRUN_RUNNING) : simparam_busy) {
+			if (simparam_busy || (alive && !(pending && running))) {
 				uv_uiobject_disable(&content.sim_action_btns[i]);
+			}
+
+			// a simulator which is still starting up or loading its parameters is
+			// not killed from here (the "Force stop simulator" button does that)
+			uv_uibutton_init(&content.sim_kill_btns[i], "Kill", style);
+			uv_uiwindow_addxy(&content.sim_window, &content.sim_kill_btns[i],
+					kill_x, row_y, kill_w, row_h);
+			if (!running) {
+				uv_uiobject_disable(&content.sim_kill_btns[i]);
 			}
 		}
 	}
@@ -1659,22 +1673,28 @@ bool devicetab_step(void) {
 			}
 		}
 		else {
-			// no system-level button clicked; check the per-simulator "Log" and
-			// "Kill" / "Restart" buttons
+			// no system-level button clicked; check the per-simulator "Log",
+			// "Restart" / "Load params" and "Kill" buttons
 			for (uint8_t i = 0; i < simrun_get_count(); i++) {
 				if (uv_uibutton_clicked(&content.sim_log_btns[i])) {
 					simrun_open_log(i);
 					break;
 				}
 				if (uv_uibutton_clicked(&content.sim_action_btns[i])) {
-					if (simrun_is_alive(i)) {
-						simrun_kill(i);
+					if (simrun_params_pending(i)) {
+						// the parameters load on their own task; go busy for it
+						// exactly as a start does, so nothing else touches the SDO
+						// client meanwhile
+						if (simrun_load_params(i)) {
+							start_busy(OP_SIMPARAM);
+						}
+					}
+					else if (simrun_is_alive(i)) {
+						// the button is disabled while the simulator runs
 					}
 					else if (simrun_restart(i)) {
-						// the restart loads the simulator's parameters on its own
-						// task; go busy for it exactly as a start does, so nothing
-						// else touches the SDO client meanwhile
-						start_busy(OP_SIMPARAM);
+						// relaunched without its parameters: the row's button now
+						// reads "Load params"
 					}
 					else {
 						uv_uiacceptdialog_st dialog = { };
@@ -1683,6 +1703,11 @@ bool devicetab_step(void) {
 								"simulators again to run it.", "OK", "OK",
 								&uv_uistyles[0]);
 					}
+					ret = true;
+					break;
+				}
+				if (uv_uibutton_clicked(&content.sim_kill_btns[i])) {
+					simrun_kill(i);
 					ret = true;
 					break;
 				}
