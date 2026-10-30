@@ -66,10 +66,10 @@ typedef struct {
 
 	query_st queries_buffer[QUERY_COUNT];
 	uv_vector_st queries;
-	// Set for the length of a load sequence which loads several files in turn
-	// (the Settings tab's parameter files, a system's devices): the queries
-	// answered for one file are kept for the next ones, so a query of the same
-	// NAME is asked once per sequence rather than once per file.
+	// Set for the length of a load sequence which loads several devices in turn
+	// (a system's devices): the queries answered for one file are kept for the
+	// next ones, so a query of the same NAME is asked once per sequence rather
+	// than once per file.
 	bool keep_queries;
 
 	uint8_t modified_dev_nodeids[64];
@@ -164,15 +164,15 @@ bool loadparam_load_params_is_finished(void);
 
 
 /// @brief: Loads the parameter files *files* (*count* of them, at most
-/// LOADPARAM_FILES_MAX) onto the devices, one file after another in the given
-/// order, on its own task so the caller (the UI) stays live.
+/// LOADPARAM_FILES_MAX) onto the devices in the given order, on its own task so
+/// the caller (the UI) stays live.
 ///
-/// A file addressing a single node which is a device of the system with a
-/// configuration package is loaded with that device's database, like the device
-/// tab's "Load parameters"; any other file is loaded as it is, like a raw
-/// --loadparam. Each file stores and resets the devices it wrote, and the next
-/// file waits for them to come back online. A file which fails lets the user
-/// choose whether the remaining files are still loaded.
+/// The files are loaded as one load, the same as
+/// 'uvcan --loadparam <file1> <file2> ...': each file addresses its devices with
+/// the node ids written in it, a query is asked once for all of the files, and
+/// the devices are stored and reset together only after every file has been
+/// written. A file which cannot be read or a failed transfer stops the whole load
+/// without storing or resetting any device.
 /// Poll loadparam_load_files_is_finished().
 void loadparam_load_files_async(const char **files, uint8_t count);
 
