@@ -132,6 +132,25 @@ typedef struct {
 } device_st;
 
 
+/// @brief: Size of a system file's DATE string ("2026-11-02 14:03:12").
+#define SYSTEM_DATE_LEN			32
+
+
+/// @brief: One device package bundled in the system file loaded last, as it
+/// was in the file. Kept apart from the system's devices, which can be added
+/// to and removed afterwards.
+typedef struct {
+	/// @brief: The .uvdev package's file name inside the system file.
+	char uvdev[128];
+	/// @brief: The device's friendly name (DEV_NAME), empty when not known.
+	char devname[64];
+	/// @brief: The node id the device was given in the system file.
+	uint8_t nodeid;
+	/// @brief: The firmware version from the package manifest's VERSION.
+	char version[64];
+} sysfile_dev_st;
+
+
 /// @brief: A system groups together up to SYSTEM_DEV_MAX_COUNT devices that
 /// share a CAN bus. The system itself is described by a configuration file
 /// given on the command line with --system.
@@ -148,6 +167,13 @@ typedef struct {
 	/// configuration is written back into the package from here). Empty when
 	/// no system file was loaded.
 	char extract_dir[1024];
+	/// @brief: The DATE the system file loaded last was saved on, in the local
+	/// time of the computer which saved it. Empty when no system file was
+	/// loaded or the file has no DATE (saved by an older uvcan).
+	char date[SYSTEM_DATE_LEN];
+	/// @brief: The device packages the system file loaded last bundled.
+	sysfile_dev_st sysfile_devs[SYSTEM_DEV_MAX_COUNT];
+	uint8_t sysfile_dev_count;
 
 	device_st devs[SYSTEM_DEV_MAX_COUNT];
 	uint8_t dev_count;

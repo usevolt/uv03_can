@@ -138,6 +138,17 @@ static bool system_parse_sysfile(system_st *this, parser_node_st manifest,
 		PRINT("ERROR: the system file has no DEVS array.\n");
 	}
 	else {
+		// the date the system file was saved on; files saved by an older uvcan
+		// have none
+		this->date[0] = '\0';
+		parser_node_st date = parser_find_child(manifest, "DATE");
+		if (parser_node_is_valid(date) && (parser_get_type(date) == PARSER_STRING)) {
+			parser_get_string(date, this->date, sizeof(this->date));
+		}
+		printf("System file saved on %s\n",
+				(strlen(this->date) != 0) ? this->date : "an unknown date");
+		this->sysfile_dev_count = 0;
+
 		unsigned int count = parser_array_get_size(devs);
 		for (unsigned int i = 0; i < count; i++) {
 			parser_node_st obj = parser_array_at(devs, i);
@@ -189,8 +200,18 @@ static bool system_parse_sysfile(system_st *this, parser_node_st manifest,
 					snprintf(added->param_file, sizeof(added->param_file),
 							"%s/%s", tmpdir, param_name);
 				}
-				PRINT("Loaded device '%s' (node 0x%x) from the system file.\n",
-						uvdev_name, (unsigned int) nodeid);
+				printf("Loaded device '%s' (node 0x%x, version %s) from the "
+						"system file.\n", uvdev_name, (unsigned int) added->nodeid,
+						(strlen(added->conf_version) != 0) ?
+								added->conf_version : "unknown");
+				// remember the file's contents for the system tab
+				sysfile_dev_st *sd = &this->sysfile_devs[this->sysfile_dev_count++];
+				snprintf(sd->uvdev, sizeof(sd->uvdev), "%.*s",
+						(int) sizeof(sd->uvdev) - 1, uvdev_name);
+				snprintf(sd->devname, sizeof(sd->devname), "%s", added->devname);
+				snprintf(sd->version, sizeof(sd->version), "%s",
+						added->conf_version);
+				sd->nodeid = added->nodeid;
 			}
 			else {
 				PRINT("System is full; ignoring the remaining devices.\n");

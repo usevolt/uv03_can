@@ -224,6 +224,11 @@ static struct {
 	uv_uiframewindow_st sim_frame;
 	uv_uiobject_st *sim_frame_buf[4];
 
+	// "System configuration" panel's information on the loaded system file,
+	// under its buttons: the file, the date it was saved on and its devices
+	uv_uilabel_st sysinfo;
+	char sysinfo_str[160 + SYSTEM_DEV_MAX_COUNT * 288];
+
 	// right-panel subtitle naming the device being configured ("current topic")
 	uv_uilabel_st curtopic;
 	char curtopic_str[128];
@@ -545,9 +550,11 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	int16_t frame_x = MARGIN;
 	int16_t frame_w = cbb.w - 2 * MARGIN;
 #if !CONFIG_TARGET_WIN
-	// the configuration panel needs room for its two rows of buttons; the
-	// simulator panel takes whatever is left below it
-	int16_t sys_frame_h = 2 * BUTTON_H + 4 * MARGIN;
+	// the simulator panel shows three running-simulator rows before its list
+	// scrolls; the configuration panel takes whatever is left above it, its
+	// buttons and the system file's information
+	int16_t sim_frame_h = 3 * SIM_ROW_H + 2 * SIM_ROW_GAP + 3 * MARGIN;
+	int16_t sys_frame_h = cbb.h - 3 * MARGIN - sim_frame_h;
 #else
 	// no simulator panel on Windows: the configuration panel fills the tab
 	int16_t sys_frame_h = cbb.h - 2 * MARGIN;
@@ -624,6 +631,39 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 	// configuration-panel button greyed out
 	bool sys_busy = busy && ((busy_op == OP_SAVESYS) || (busy_op == OP_SYSLOAD) ||
 			(busy_op == OP_SIMPARAM));
+	y += BUTTON_H + MARGIN;
+
+	// the loaded system file's information below the buttons
+	size_t len = 0;
+	size_t size = sizeof(content.sysinfo_str);
+	content.sysinfo_str[0] = '\0';
+	if (!system_is_sysfile_loaded(system)) {
+		snprintf(content.sysinfo_str, size, "No system configuration file loaded.");
+	}
+	else {
+		len += snprintf(content.sysinfo_str + len, size - len,
+				"System file: %s\nSaved: %s\nDevices:", system->name,
+				(strlen(system->date) != 0) ? system->date : "unknown");
+		for (uint8_t i = 0; (i < system->sysfile_dev_count) && (len < size); i++) {
+			const sysfile_dev_st *sd = &system->sysfile_devs[i];
+			len += snprintf(content.sysinfo_str + len, size - len,
+					"\n    0x%x    %s%s%s%s    version %s",
+					(unsigned int) sd->nodeid,
+					sd->uvdev,
+					(strlen(sd->devname) != 0) ? " (" : "",
+					sd->devname,
+					(strlen(sd->devname) != 0) ? ")" : "",
+					(strlen(sd->version) != 0) ? sd->version : "unknown");
+		}
+		if ((system->sysfile_dev_count == 0) && (len < size)) {
+			snprintf(content.sysinfo_str + len, size - len, " none");
+		}
+	}
+	uv_uilabel_init(&content.sysinfo, style->font, ALIGN_TOP_LEFT,
+			style->text_color, content.sysinfo_str);
+	uv_uiframewindow_addxy(&content.sys_frame, &content.sysinfo,
+			0, y, sc.w, (sc.h > y) ? (sc.h - y) : 0);
+
 	if (sys_busy) {
 		uv_uiobject_disable(&content.sys_load_btn);
 		uv_uiobject_disable(&content.joystick_btn);
@@ -634,8 +674,6 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 #if !CONFIG_TARGET_WIN
 	// --- "Simulator" panel (Linux only): run-simulator button + running list ---
 	int16_t sim_frame_y = MARGIN + sys_frame_h + MARGIN;
-	// down to the bottom of the tab
-	int16_t sim_frame_h = cbb.h - MARGIN - sim_frame_y;
 	uv_uiframewindow_init(&content.sim_frame, content.sim_frame_buf, style);
 	uv_uiframewindow_set_title(&content.sim_frame, "Simulator");
 	uv_uitabwindow_addxy(tabwin, &content.sim_frame, frame_x, sim_frame_y,

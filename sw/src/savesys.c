@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <ctype.h>
 #include "parser.h"
 #include <uv_rtos.h>
@@ -280,6 +281,14 @@ bool savesys_save(const char *file) {
 	uv_errors_e e = ERR_NONE;
 	e |= parser_writer_init(&writer, manifest_buffer, sizeof(manifest_buffer),
 			PARSER_FORMAT_JSON);
+	// the time the system was saved, in this computer's local time
+	char date[SYSTEM_DATE_LEN] = "";
+	time_t now = time(NULL);
+	struct tm *tm = localtime(&now);
+	if (tm != NULL) {
+		strftime(date, sizeof(date), "%Y-%m-%d %H:%M:%S", tm);
+	}
+	e |= parser_writer_add_string(&writer, "DATE", date);
 	e |= parser_writer_begin_array(&writer, "DEVS");
 
 	uint8_t param_index = 0;
