@@ -19,6 +19,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include "parser.h"
 #include "saveparam.h"
 #include "uvstdin.h"
@@ -256,6 +257,15 @@ static uv_errors_e save_device(parser_writer_st *writer) {
 		e |= parser_writer_add_int(writer, "CAN IF SINDEX", if_obj->obj.sub_index);
 		e |= parser_writer_add_string(writer, "CAN IF TYPE", if_obj->type_str);
 	}
+
+	// the time the parameters were saved, in this computer's local time
+	char date[32] = "";
+	time_t now = time(NULL);
+	struct tm *tm = localtime(&now);
+	if (tm != NULL) {
+		strftime(date, sizeof(date), "%Y-%m-%d %H:%M:%S", tm);
+	}
+	e |= parser_writer_add_string(writer, "DATE", date);
 
 	e |= parser_writer_add_int_hex(writer, "NODEID", db_get_nodeid(&dev.db));
 
