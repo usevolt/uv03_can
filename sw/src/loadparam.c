@@ -31,6 +31,7 @@
 #include "uvdev.h"
 #include "find.h"
 #include "ui/uvui.h"
+#include "commands.h"
 
 #define this (&dev.loadparam)
 
@@ -230,11 +231,74 @@ static void loadparam_sequence_end(void) {
 }
 
 
+// Empties the file list of the next load, together with each file's node id
+// filter.
+static void loadparam_clear_files(void) {
+	memset(this->files, 0, sizeof(this->files));
+	memset(this->nodeid_filter_count, 0, sizeof(this->nodeid_filter_count));
+}
+
+
+// true when the current file's ':<nodeid>' list selects which of its devices
+// are loaded: two or more node ids, or any node id on a file holding more than
+// one device (a single node id cannot name one of several devices, so it acts
+// as a one-entry list there). Needs file_dev_count to be set for the file.
+static bool loadparam_filter_active(void) {
+	uint8_t n = this->nodeid_filter_count[this->current_file];
+	return (n > 1) || ((n == 1) && (this->file_dev_count > 1));
+}
+
+
+// true when *nodeid* is in the current file's node id list
+static bool loadparam_filter_has(uint8_t nodeid) {
+	bool ret = false;
+	for (uint8_t i = 0; i < this->nodeid_filter_count[this->current_file]; i++) {
+		if (this->nodeid_filter[this->current_file][i] == nodeid) {
+			ret = true;
+			break;
+		}
+	}
+	return ret;
+}
+
+
+// Prints the current file's node id list as "0xd, 0x7" into *dest*.
+static void loadparam_filter_str(char *dest, size_t len) {
+	dest[0] = '\0';
+	size_t used = 0;
+	for (uint8_t i = 0; (i < this->nodeid_filter_count[this->current_file]) &&
+			(used < len); i++) {
+		int w = snprintf(dest + used, len - used, "%s0x%x",
+				(i == 0) ? "" : ", ",
+				(unsigned int) this->nodeid_filter[this->current_file][i]);
+		used += (w > 0) ? (size_t) w : 0;
+	}
+}
+
+
+// Splits *arg*'s ':<nodeid>' list into the file slot *index* (the path into
+// this->files[index], the node ids into its filter). Returns false, leaving
+// the slot empty, when the list is invalid (already reported).
+static bool loadparam_set_file(unsigned int index, const char *arg) {
+	bool ret = cmdline_parse_nodeid_list(arg, this->files[index],
+			sizeof(this->files[index]), this->nodeid_filter[index],
+			LOADPARAM_NODEID_FILTER_MAX, &this->nodeid_filter_count[index]);
+	if (!ret) {
+		ERROR("ERROR: invalid node id list in '%s'; each node id must be in the "
+				"range 1..127 (0x1..0x7f), at most %u of them.\n",
+				arg, (unsigned int) LOADPARAM_NODEID_FILTER_MAX);
+		this->files[index][0] = '\0';
+		this->nodeid_filter_count[index] = 0;
+	}
+	return ret;
+}
+
+
 bool loadparam_load(const char *path) {
 	bool ret = false;
 
 	this->current_file = 0;
-	memset(this->files, 0, sizeof(this->files));
+	loadparam_clear_files();
 
 	uv_vector_init(&this->queries, this->queries_buffer,
 			QUERY_COUNT, sizeof(this->queries_buffer[0]));
@@ -326,15 +390,17 @@ static void loadparam_devices(uint8_t start, uint8_t end) {
 // as *primary* when it came from the non-option list itself). This is the legacy
 // --loadparam behavior, preserved now that the option's argument is optional.
 static void loadparam_run_files(const char *primary) {
+	bool ok = true;
 	this->current_file = 0;
 	this->dev_count = 0;
 	this->sys_load_mode = false;
-	memset(this->files, 0, sizeof(this->files));
+	loadparam_clear_files();
 	uv_vector_init(&this->queries, this->queries_buffer,
 			QUERY_COUNT, sizeof(this->queries_buffer[0]));
 
-	strncpy(this->files[0], primary, sizeof(this->files[0]) - 1);
-	this->files[0][sizeof(this->files[0]) - 1] = '\0';
+	// the primary file still carries its ':<nodeid>' list (the dispatch already
+	// selected a single node id from it, see loadparam_dispatch_step)
+	ok = loadparam_set_file(0, primary);
 
 	// append the remaining non-option file arguments. When the primary itself came
 	// from the first non-option token (no =value was attached), skip that token so
@@ -345,12 +411,19 @@ static void loadparam_run_files(const char *primary) {
 	for (unsigned int i = start;
 			(i < dev.argv_count) && (fi < sizeof(this->files) / sizeof(this->files[0]));
 			i++) {
-		strncpy(this->files[fi], dev.nonopt_argv[i], sizeof(this->files[fi]) - 1);
-		this->files[fi][sizeof(this->files[fi]) - 1] = '\0';
+		// each extra file takes its own ':<nodeid>' list
+		if (!loadparam_set_file(fi, dev.nonopt_argv[i])) {
+			ok = false;
+		}
 		fi++;
 	}
 
-	loadparam_step(NULL);
+	if (ok) {
+		loadparam_step(NULL);
+	}
+	else {
+		ERRORSTR("Nothing was loaded.\n");
+	}
 }
 
 
@@ -372,11 +445,45 @@ static void loadparam_dispatch_step(void *ptr) {
 	// resolve the parameter file and, when it carries a ':<nodeid>' suffix, select
 	// that node id as *forcenodeid* would. Done after the restore above, which
 	// would otherwise undo the selection.
+	// The argument may carry a list of node ids ('params.yml:0xd:0x7'), which
+	// for a parameter file selects the devices of the file to load. A single
+	// node id is selected as *forcenodeid* would, as before.
 	char argbuf[1024];
+	const char *raw = cmdline_load_arg(this->dispatch_arg);
 	const char *arg = NULL;
-	if (!cmdline_load_arg_nodeid(this->dispatch_arg, argbuf, sizeof(argbuf),
-			&arg)) {
-		// the node id in the argument is out of range; already reported
+	uint8_t ids[LOADPARAM_NODEID_FILTER_MAX];
+	uint8_t idcount = 0;
+	bool valid = true;
+	if ((raw != NULL) && !cmdline_parse_nodeid_list(raw, argbuf, sizeof(argbuf),
+			ids, LOADPARAM_NODEID_FILTER_MAX, &idcount)) {
+		ERROR("ERROR: invalid node id in '%s'; each node id must be in the range "
+				"1..127 (0x1..0x7f), at most %u of them.\n",
+				raw, (unsigned int) LOADPARAM_NODEID_FILTER_MAX);
+		valid = false;
+	}
+	else if (raw != NULL) {
+		arg = (strlen(argbuf) != 0) ? argbuf : NULL;
+		if (idcount == 1) {
+			commands_select_nodeid(ids[0], true);
+			printf("Selected Node ID 0x%x\n", (unsigned int) ids[0]);
+		}
+		else if ((idcount > 1) &&
+				((arg == NULL) || path_is_uvsys(arg) || path_is_uvdev(arg))) {
+			ERROR("ERROR: a list of node ids ('%s') selects the devices of a "
+					"parameter file; it cannot be used with %s.\n", raw,
+					(arg == NULL) ? "the loaded --dev / --sys devices" : arg);
+			valid = false;
+		}
+		else {
+			// no node id, or a list for a parameter file (see loadparam_run_files)
+		}
+	}
+	else {
+		// no argument at all
+	}
+
+	if (!valid) {
+		// already reported
 	}
 	else if (path_is_uvsys(arg)) {
 		uint8_t prev = dev.system.dev_count;
@@ -392,8 +499,9 @@ static void loadparam_dispatch_step(void *ptr) {
 				"'%s'.\n", arg);
 	}
 	else if (arg != NULL) {
-		// raw parameter JSON file(s): legacy behavior
-		loadparam_run_files(arg);
+		// raw parameter file(s): legacy behavior. The file is passed with its
+		// node id list, which loadparam_run_files() splits again per file.
+		loadparam_run_files(raw);
 	}
 	else if (dev.system.dev_count != 0) {
 		// no file given: push bundled parameters for the loaded --dev / --sys devices
@@ -567,7 +675,7 @@ static void loadparam_files_task(void *ptr) {
 	this->current_file = 0;
 	this->dev_count = 0;
 	this->sys_load_mode = false;
-	memset(this->files, 0, sizeof(this->files));
+	loadparam_clear_files();
 	uv_vector_init(&this->queries, this->queries_buffer,
 			QUERY_COUNT, sizeof(this->queries_buffer[0]));
 	for (uint8_t i = 0; i < async_file_count; i++) {
@@ -647,7 +755,7 @@ static bool loadparam_load_device_ex(device_st *device, const char *file,
 		this->current_file = 0;
 		this->dev_count = 0;
 		this->sys_load_mode = sys_mode;
-		memset(this->files, 0, sizeof(this->files));
+		loadparam_clear_files();
 		loadparam_queries_reset();
 		strcpy(this->files[0], file);
 
@@ -1394,6 +1502,31 @@ static void emcy_suppress_end(void) {
 }
 
 
+/// @brief: Interprets the answer *str* to one of parse_dev's "continue or skip
+/// this device" prompts. 'skipall' also sets loadparam_st.skip_file, so the
+/// rest of the parameter file is skipped as well (checked before 'skip', which
+/// it contains).
+///
+/// @return: true if the device should be skipped ('skip' or 'skipall')
+static bool loadparam_answer_skips(const char *str) {
+	bool ret = false;
+	if (strstr(str, "skipall") != NULL) {
+		printf("User selected: skip the rest of the parameter file\n");
+		this->skip_file = true;
+		ret = true;
+	}
+	else if (strstr(str, "skip") != NULL) {
+		printf("User selected: skip device 0x%x\n", db_get_nodeid(&dev.db));
+		ret = true;
+	}
+	else {
+		// continue
+	}
+	fflush(stdout);
+	return ret;
+}
+
+
 static uv_errors_e parse_dev(parser_node_st devnode) {
 	uv_errors_e ret = ERR_NONE;
 	parser_node_st obj = parser_find_child(devnode, "NODEID");
@@ -1414,12 +1547,34 @@ static uv_errors_e parse_dev(parser_node_st devnode) {
 		// another device, which then collides on the bus with the real owner of
 		// that node id.
 		uint8_t target_nodeid = nodeid;
-		if (dev.system.forced_nodeid_set &&
+		// A single node id in this file's own ':<nodeid>' postfix targets the
+		// node as *forcenodeid* does, also for the extra files of the command
+		// line (the primary file's has been selected globally already).
+		bool forced_set = dev.system.forced_nodeid_set;
+		uint8_t forced_nodeid = dev.system.forced_nodeid;
+		bool forcenodeid = dev.system.forcenodeid;
+		if (this->nodeid_filter_count[this->current_file] == 1) {
+			forced_set = true;
+			forced_nodeid = this->nodeid_filter[this->current_file][0];
+			forcenodeid = true;
+		}
+		if (loadparam_filter_active()) {
+			// the file's node id list selects which of its devices are loaded,
+			// each to its own node id
+			if (!loadparam_filter_has(nodeid)) {
+				printf("Node 0x%x is not in the given node id list, skipping it.\n",
+						(unsigned int) nodeid);
+				fflush(stdout);
+				return ERR_SKIPPED;
+			}
+			this->nodeid_filter_matched = true;
+		}
+		else if (forced_set &&
 				(this->file_dev_count == 1) &&
-				(dev.system.forced_nodeid != nodeid)) {
-			target_nodeid = dev.system.forced_nodeid;
+				(forced_nodeid != nodeid)) {
+			target_nodeid = forced_nodeid;
 
-			if (!dev.system.forcenodeid) {
+			if (!forcenodeid) {
 				// the node id merely selects the device to talk to, the device is
 				// never reprogrammed
 				WARNING("The selected node id (0x%x) differs from the node id in "
@@ -1447,6 +1602,7 @@ static uv_errors_e parse_dev(parser_node_st devnode) {
 						"Make sure that no other device on the bus uses the node id "
 						"0x%x.\n\n"
 						"Press ENTER (empty line) to continue loading the parameters,\n"
+						"type 'skipall' to skip the rest of the parameter file,\n"
 						"or type anything else to skip this device.\n\n",
 						(unsigned int) target_nodeid,
 						(unsigned int) nodeid,
@@ -1454,8 +1610,14 @@ static uv_errors_e parse_dev(parser_node_st devnode) {
 				char str[128] = {};
 				uv_stdin_getline(str, sizeof(str) - 1);
 				if (!is_empty_line(str)) {
-					printf("User selected: skip device 0x%x\n",
-							(unsigned int) target_nodeid);
+					if (strstr(str, "skipall") != NULL) {
+						printf("User selected: skip the rest of the parameter file\n");
+						this->skip_file = true;
+					}
+					else {
+						printf("User selected: skip device 0x%x\n",
+								(unsigned int) target_nodeid);
+					}
 					fflush(stdout);
 					return ERR_SKIPPED;
 				}
@@ -1549,7 +1711,7 @@ static uv_errors_e parse_dev(parser_node_st devnode) {
 					LOG_OK();
 					ret = db_check_can_if_version(&dev.db,
 							can_if, dev_if,
-							"parameter file", "device");
+							"parameter file", "device", &this->skip_file);
 				}
 				else {
 					LOG_END();
@@ -1557,11 +1719,11 @@ static uv_errors_e parse_dev(parser_node_st devnode) {
 					PROMPTSTR(
 						   "Failed to read CAN interface from the device.\n"
 							"The CAN IF VERSION object dictionary entry might not be defined.\n"
-							"Press anything to continue or 'skip' to skip this device.\n\n");
+							"Press ENTER to continue, type 'skip' to skip this device\n"
+							"or 'skipall' to skip the rest of the parameter file.\n\n");
 					char str[128] = {};
 					uv_stdin_getline(str, sizeof(str) - 1);
-					if (strstr(str, "skip")) {
-						printf("User selected: skip device\n");
+					if (loadparam_answer_skips(str)) {
 						ret = ERR_SKIPPED;
 					}
 					else {
@@ -1572,11 +1734,11 @@ static uv_errors_e parse_dev(parser_node_st devnode) {
 			else {
 				PROMPTSTR(
 					   "\"CAN IF MINDEX\" or \"CAN IF SINDEX\" not found in the parameter file.\n\n"
-					   "Press anything to continue or type 'skip' to skip this device.\n\n");
+					   "Press ENTER to continue, type 'skip' to skip this device\n"
+					   "or 'skipall' to skip the rest of the parameter file.\n\n");
 				char str[128] = {};
 				uv_stdin_getline(str, sizeof(str) - 1);
-				if (strstr(str, "skip")) {
-					printf("User selected: skip device\n");
+				if (loadparam_answer_skips(str)) {
 					ret = ERR_SKIPPED;
 				}
 				else {
@@ -1589,12 +1751,12 @@ static uv_errors_e parse_dev(parser_node_st devnode) {
 			PROMPT(
 				   "Parameter file didn't contain CAN interface version number for device 0x%x.\n"
 					"Undefined behaviour might occur while loading the parameters.\n\n"
-					"Press anything to continue or type 'skip' to skip this device.\n\n",
+					"Press ENTER to continue, type 'skip' to skip this device\n"
+					"or 'skipall' to skip the rest of the parameter file.\n\n",
 					db_get_nodeid(&dev.db));
 			char str[128] = {};
 			uv_stdin_getline(str, sizeof(str) - 1);
-			if (strstr(str, "skip")) {
-				printf("User selected: skip device 0x%x\n", db_get_nodeid(&dev.db));
+			if (loadparam_answer_skips(str)) {
 				ret = ERR_SKIPPED;
 			}
 			else {
@@ -1807,6 +1969,8 @@ void loadparam_step(void *ptr) {
 
 	while (strlen(this->files[this->current_file]) != 0) {
 		char *file = this->files[this->current_file];
+		this->skip_file = false;
+		this->nodeid_filter_matched = false;
 		// the file's format is selected by it's extension
 		parser_formats_e format = parser_format_from_filename(file);
 		char *buffer = NULL;
@@ -1941,7 +2105,15 @@ void loadparam_step(void *ptr) {
 					parser_get_type(obj) == PARSER_ARRAY) {
 				// new protocol where each device's settings are stored in a DEVS-array
 				this->file_dev_count = parser_array_get_size(obj);
-				if ((this->file_dev_count > 1) &&
+				if (loadparam_filter_active()) {
+					char ids[256];
+					loadparam_filter_str(ids, sizeof(ids));
+					printf("The parameter file contains %u device(s). Loading only "
+							"the ones with node id %s.\n",
+							(unsigned int) this->file_dev_count, ids);
+					fflush(stdout);
+				}
+				else if ((this->file_dev_count > 1) &&
 						dev.system.forced_nodeid_set) {
 					// a single node id cannot refer to any one device of a
 					// multi-device file, see parse_dev
@@ -1955,7 +2127,14 @@ void loadparam_step(void *ptr) {
 				for (uint16_t i = 0; i < parser_array_get_size(obj); i++) {
 					parser_node_st devnode = parser_array_at(obj, i);
 					if (parser_node_is_valid(devnode)) {
-						e |= parse_dev(devnode);
+						uv_errors_e de = parse_dev(devnode);
+						if (de != ERR_SKIPPED) {
+							e |= de;
+						}
+						else {
+							// the user skipped this device: go on with the
+							// next one, unless they skipped the whole file
+						}
 					}
 					else {
 						ERROR("Parsing DEVS array with index %i resulted in an invalid node\n", i);
@@ -1964,6 +2143,18 @@ void loadparam_step(void *ptr) {
 						// a transfer to this device failed: stop the load
 						break;
 					}
+					else if (this->skip_file) {
+						if ((i + 1) < parser_array_get_size(obj)) {
+							printf("Skipping the remaining %u device(s) of '%s'.\n",
+									(unsigned int) (parser_array_get_size(obj) - i - 1),
+									file);
+							fflush(stdout);
+						}
+						break;
+					}
+					else {
+						// next device
+					}
 				}
 			}
 			else {
@@ -1971,6 +2162,20 @@ void loadparam_step(void *ptr) {
 				// supported
 				this->file_dev_count = 1;
 				e = parse_dev(root);
+				if (e == ERR_SKIPPED) {
+					// the user skipped the file's only device, or it was not in
+					// the node id list
+					e = ERR_NONE;
+				}
+			}
+
+			if ((e == ERR_NONE) && !this->skip_file &&
+					loadparam_filter_active() && !this->nodeid_filter_matched) {
+				char ids[256];
+				loadparam_filter_str(ids, sizeof(ids));
+				WARNING("No device with node id %s was found in '%s'.\n",
+						ids, file);
+				fflush(stdout);
 			}
 
 			if (e != ERR_NONE) {

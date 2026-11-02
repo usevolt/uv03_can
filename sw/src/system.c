@@ -749,6 +749,86 @@ bool cmdline_parse_nodeid_arg(const char *arg, char *path, size_t path_len,
 }
 
 
+bool cmdline_parse_nodeid_list(const char *arg, char *path, size_t path_len,
+		uint8_t *nodeids, uint8_t max, uint8_t *count) {
+	bool ret = true;
+	uint8_t found[128] = { };
+	uint8_t n = 0;
+	*count = 0;
+
+	// peel the numeric ':<nodeid>' suffixes off the end one at a time; the first
+	// one which is not a number (e.g. a Windows drive letter's "C:\...") ends the
+	// list and belongs to the path
+	size_t len = strlen(arg);
+	bool done = false;
+	while (!done && ret) {
+		const char *colon = NULL;
+		for (size_t i = len; i > 0; i--) {
+			if (arg[i - 1] == ':') {
+				colon = &arg[i - 1];
+				break;
+			}
+		}
+		if ((colon == NULL) || ((size_t) (colon - arg) + 1 == len)) {
+			// no colon, or nothing after it
+			done = true;
+		}
+		else {
+			char num[16] = { };
+			size_t numlen = len - (size_t) (colon - arg) - 1;
+			if (numlen >= sizeof(num)) {
+				// too long to be a node id: part of the path
+				done = true;
+			}
+			else {
+				memcpy(num, colon + 1, numlen);
+				char *numend = NULL;
+				unsigned long parsed = strtoul(num, &numend, 0);
+				if ((*numend != '\0') || (numend == num)) {
+					// not a number: the colon belongs to the path
+					done = true;
+				}
+				else if ((parsed < 1) || (parsed > 127)) {
+					ret = false;
+				}
+				else {
+					if (found[parsed] == 0) {
+						if (n < max) {
+							// collected last to first, reversed below
+							nodeids[n++] = (uint8_t) parsed;
+							found[parsed] = 1;
+						}
+						else {
+							ret = false;
+						}
+					}
+					len = (size_t) (colon - arg);
+				}
+			}
+		}
+	}
+
+	if (ret) {
+		for (uint8_t i = 0; i < n / 2; i++) {
+			uint8_t t = nodeids[i];
+			nodeids[i] = nodeids[n - 1 - i];
+			nodeids[n - 1 - i] = t;
+		}
+		*count = n;
+		if (len >= path_len) {
+			len = path_len - 1;
+		}
+		memcpy(path, arg, len);
+		path[len] = '\0';
+	}
+	else {
+		path[0] = '\0';
+	}
+
+	return ret;
+}
+
+
 bool cmd_device(const char *arg) {
 	char path[1024];
 	uint8_t nodeid;

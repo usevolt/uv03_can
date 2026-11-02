@@ -221,7 +221,7 @@ static uv_errors_e save_device(parser_writer_st *writer) {
 					CANOPEN_SIZEOF(if_obj->obj.type), &can_if) == ERR_NONE) {
 				uv_errors_e e = db_check_can_if_version(&dev.db,
 						db_get_revision_number(&dev.db), can_if,
-						"database", "device");
+						"database", "device", NULL);
 				if (e == ERR_NONE) {
 					if_found = true;
 				}

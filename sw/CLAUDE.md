@@ -234,6 +234,14 @@ the `.uvsys` system file).
   `--forcenodeid 0xd --loadparam params.json`; an argument holding nothing but
   the postfix (`--loadbin :0x22`) selects the node and operates on the devices
   already loaded with `--dev` / `--sys`.
+- A raw `--loadparam` file also takes a chained list, split by
+  `cmdline_parse_nodeid_list()`: `--loadparam params.yml:0xd:0x7` loads only the
+  file's devices whose `NODEID` is 0xd or 0x7, each to its own node id; the rest
+  are skipped (`loadparam_filter_active()`). A single node id filters the same way
+  on a file holding several devices, and keeps its `--forcenodeid` meaning on a
+  single-device file. Each extra file of the command line takes its own list
+  (`loadparam_st.nodeid_filter`). A list of two or more is refused for `.uvsys`
+  / `.uvdev` packages and for the `--dev` / `--sys` devices.
 - The selection lives in `system_st` (`forced_nodeid_set` / `forced_nodeid` /
   `forcenodeid`) and is captured into `system_nodeids_st` by
   `system_nodeids_save()`. The command callbacks all run while the command line

@@ -416,8 +416,12 @@ canopen_object_type_e db_paramval_to_type(parser_node_st node);
 /// (e.g. parameter file vs device, or database vs device). If they differ,
 /// prints revision notes between the two versions and prompts the user
 /// to continue or skip. Returns ERR_SKIPPED if user typed 'skip'.
+/// When *skip_all* is not NULL the user is also offered 'skipall' (skip the
+/// rest of the parameter file); answering it returns ERR_SKIPPED and sets
+/// *skip_all* to true.
 uv_errors_e db_check_can_if_version(db_st *db, uint16_t file_version,
-		uint16_t dev_version, const char *file_source, const char *dev_source);
+		uint16_t dev_version, const char *file_source, const char *dev_source,
+		bool *skip_all);
 
 /// @brief: Deinitializes the database: frees all allocated memory and resets it
 /// to an empty, not-loaded state (db_is_loaded() returns false afterwards).

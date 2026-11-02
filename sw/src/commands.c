@@ -574,7 +574,12 @@ commands_st commands[] = {
 						"whole system the devices are stored and reset together once all of them have\n"
 						"been written.\n"
 						DEV_NODEID_HELP "\n"
-						LOAD_NODEID_HELP,
+						LOAD_NODEID_HELP "\n"
+						"A parameter file may also carry a list of node ids, e.g.\n"
+						"'params.yml:0xd:0x7': only the file's devices with those node ids\n"
+						"are loaded, each to its own node id. A single node id on a file\n"
+						"holding several devices selects the device the same way. Extra\n"
+						"parameter files given after the first take their own postfix.",
 				.args = ARG_OPTIONAL,
 				.callback = &cmd_loadparam
 		},

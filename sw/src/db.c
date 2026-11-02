@@ -1865,8 +1865,12 @@ static bool print_revnotes(uv_vector_st *revnotes,
 
 
 uv_errors_e db_check_can_if_version(db_st *db, uint16_t file_version,
-		uint16_t dev_version, const char *file_source, const char *dev_source) {
+		uint16_t dev_version, const char *file_source, const char *dev_source,
+		bool *skip_all) {
 	uv_errors_e ret = ERR_NONE;
+	// 'skipall' is offered only when the caller can act on it
+	const char *skipall_str = (skip_all != NULL) ?
+			",\nor 'skipall' to skip the rest of the parameter file" : "";
 	if (file_version != dev_version) {
 		PROMPT(
 				"CAN interface revision differ between %s (%i) and %s (%i).\n"
@@ -1879,15 +1883,21 @@ uv_errors_e db_check_can_if_version(db_st *db, uint16_t file_version,
 
 		if (db_is_loaded(db)) {
 			print_revnotes(&db->revnotes, low, high);
-			PROMPTSTR(
-					"\nPress ENTER to continue or type 'skip' to skip this device\n\n");
+			PROMPT(
+					"\nPress ENTER to continue, type 'skip' to skip this device%s\n\n",
+					skipall_str);
 			// uv_stdin_getline() blocks for user input without halting the
 			// scheduler (the FreeRTOS POSIX port uses signals for context
 			// switching, which would interrupt a plain fgets), so the GUI stays
 			// live and can feed the answer via its log command line.
 			char str[256] = {};
 			uv_stdin_getline(str, sizeof(str) - 1);
-			if (strstr(str, "skip")) {
+			if ((skip_all != NULL) && (strstr(str, "skipall") != NULL)) {
+				printf("User selected: skip the rest of the parameter file\n");
+				*skip_all = true;
+				ret = ERR_SKIPPED;
+			}
+			else if (strstr(str, "skip")) {
 				printf("User selected: skip device\n");
 				ret = ERR_SKIPPED;
 			}
@@ -1899,9 +1909,10 @@ uv_errors_e db_check_can_if_version(db_st *db, uint16_t file_version,
 			// use readline for file path tab-completion
 			rl_bind_key('\t', rl_complete);
 			while (true) {
-				PROMPTSTR(
+				PROMPT(
 						"\nPress ENTER to continue, enter path to database JSON file\n"
-						"to load it and show revision notes, or type 'skip' to skip this device\n\n");
+						"to load it and show revision notes, or type 'skip' to skip this device%s\n\n",
+						skipall_str);
 				// FreeRTOS POSIX port uses signals for context switching.
 				// Without disabling interrupts, readline gets interrupted by
 				// these signals and returns empty, causing default answer.
@@ -1911,6 +1922,13 @@ uv_errors_e db_check_can_if_version(db_st *db, uint16_t file_version,
 				if (line == NULL || strlen(line) == 0) {
 					// user pressed ENTER or Ctrl+D, continue
 					printf("User selected: continue\n");
+					free(line);
+					break;
+				}
+				else if ((skip_all != NULL) && (strcmp(line, "skipall") == 0)) {
+					printf("User selected: skip the rest of the parameter file\n");
+					*skip_all = true;
+					ret = ERR_SKIPPED;
 					free(line);
 					break;
 				}

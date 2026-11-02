@@ -47,10 +47,24 @@ typedef struct {
 /// @brief: How many parameter files loadparam_load_files_async() loads at once
 #define LOADPARAM_FILES_MAX		32
 
+/// @brief: How many node ids one parameter file's ':<nodeid>' list can hold
+#define LOADPARAM_NODEID_FILTER_MAX	32
+
 
 typedef struct {
 	char files[64][LOADPARAM_FILE_LEN];
 	unsigned int current_file;
+
+	// The node ids given in each file's ':<nodeid>' postfix on the command line
+	// (e.g. 'params.yml:0xd:0x7'), indexed like *files*. Two or more node ids,
+	// or any node id on a file holding more than one device, load only the
+	// file's devices whose NODEID is listed (see loadparam_filter_active). A
+	// single node id on a single-device file instead targets that node, as
+	// *forcenodeid* does. Zero count: no postfix, every device is loaded.
+	uint8_t nodeid_filter[64][LOADPARAM_NODEID_FILTER_MAX];
+	uint8_t nodeid_filter_count[64];
+	// true once a device of the current file matched its node id filter
+	bool nodeid_filter_matched;
 
 	// The --loadparam option's attached argument (empty when none was given).
 	// Captured by cmd_loadparam; the dispatch task resolves it (against the
@@ -102,6 +116,11 @@ typedef struct {
 	// continue): every later failed write of the same load is skipped without
 	// asking. Cleared when loadparam_step() starts a new load.
 	bool force_continue;
+
+	// Set when the user answers a device's 'skip' prompt with 'skipall': the
+	// device and every remaining device of the current parameter file are
+	// skipped. Cleared when loadparam_step() opens the next file.
+	bool skip_file;
 } loadparam_st;
 
 

@@ -397,5 +397,14 @@ const char *cmdline_load_arg(const char *stored);
 bool cmdline_load_arg_nodeid(const char *stored, char *path, size_t path_len,
 		const char **file_out);
 
+/// @brief: Like cmdline_parse_nodeid_arg(), but takes any number of chained
+/// ':<nodeid>' suffixes, e.g. 'params.yml:0xd:0x7'. The node ids are written
+/// to *nodeids* (at most *max*, in the order given, duplicates dropped) and their
+/// count to *count*; *path* receives the argument with the suffixes removed.
+///
+/// Returns false when a node id is outside 1..127 or more than *max* are given.
+bool cmdline_parse_nodeid_list(const char *arg, char *path, size_t path_len,
+		uint8_t *nodeids, uint8_t max, uint8_t *count);
+
 
 #endif /* SYSTEM_H_ */
