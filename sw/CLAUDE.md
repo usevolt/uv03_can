@@ -128,6 +128,30 @@ authenticated file panel) and `selfupdate.c` (the public, unauthenticated
 updater). Every request is made through a curl **config file** rather than a
 command line, so nothing user- or server-supplied reaches a shell and no
 credentials appear in the process arguments. Redirects are never followed.
+Each run gets config and status files of its own (`http_call_tag()`), because
+requests are made from several tasks at once.
+
+### Server files panel
+
+The device tab's "Server files" window (`src/ui/serverfiles_win.c`) logs in
+when it opens, which is `GET /fleets.json` and nothing more, and shows a tab per
+fleet. A fleet's files are fetched only when its tab is first shown, by a
+background task (`remotefiles_list_fleet_async()`), and the tab reads
+"Loading..." until they arrive. Opening the window again lists the tabs afresh
+(the login forgets the old listings).
+
+- A fleet is listed from its file index, `GET /<fleet>/.uvindex.json`: the
+  fleet's whole tree in one document, written by the file server's `uvfilesctl`
+  on every upload (see uv3b_iotbrkr). When the server answers 404, or the index
+  cannot be read, the fleet is walked instead, a level of its directory listings
+  per curl run, as before the indexes existed.
+- The listings are kept per fleet (`rf_lists[]`). A listing is built in a store
+  of its own and moved in, in a critical section, only while the generation it
+  started in is still current; logins, logouts and
+  `remotefiles_forget_lists()` bump the generation. The tree holds pointers into
+  the products, so no fleet's array may move while it is READY.
+- `--serverfiles` lists every fleet the same way and prints for each whether
+  it came from the index or the walk, with the time it took.
 
 ## Web browser build
 

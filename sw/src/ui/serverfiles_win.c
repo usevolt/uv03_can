@@ -180,6 +180,15 @@ typedef struct {
 } sfw_node_st;
 
 static sfw_node_st *nodes;
+// The fleet the nodes were built for, or -1 when there are none. Only the
+// fleet on show has nodes: the others may not even be listed yet.
+static int nodes_fleet = -1;
+// How the listing of the fleet on show stood when its tab was last built. The
+// step loop rebuilds the tab when that changes, which is how a tab showing
+// "Loading..." turns into the tree once the listing arrives.
+static remotefiles_fleet_state_e shown_state;
+// what the tab says while it has no tree to show
+static char fleet_msg[320];
 // the pointer array uv_uitreeview_init() keeps. One entry per node: a single
 // fleet can hold all of them, and the tree only ever shows one fleet's worth.
 static uv_uitreeobject_st **tree_buf;
@@ -187,10 +196,11 @@ static uint16_t node_n;
 // how many the arrays were allocated for; see sfw_node_bound()
 static uint16_t node_cap;
 
-// What the user clicked "Download" on, as product / version index, or -1 when
+// What the user clicked "Download" on, as fleet / product / version index, or -1 when
 // the window was closed without downloading anything. The click closes the
 // window and the transfer runs after it is gone, so the choice has to outlive
 // the dialog's step loop.
+static int sel_fleet;
 static int sel_prod;
 static int sel_ver;
 
@@ -218,6 +228,7 @@ static void sfw_free_ui(void) {
 	tree_buf = NULL;
 	node_n = 0;
 	node_cap = 0;
+	nodes_fleet = -1;
 }
 
 
@@ -305,11 +316,11 @@ static int sfw_node_for(uint8_t fleet, const char *path) {
 // one directory plus one for each of its ancestors, and ancestors shared
 // between products are counted more than once. Bounding it rather than
 // counting exactly keeps this to one pass; the slack is a handful of structs.
-static uint16_t sfw_node_bound(void) {
+static uint16_t sfw_node_bound(uint8_t f) {
 	uint16_t ret = 0;
-	uint16_t n = remotefiles_get_product_count();
+	uint16_t n = remotefiles_get_product_count(f);
 	for (uint16_t p = 0; p < n; p++) {
-		const remotefiles_product_st *prod = remotefiles_get_product(p);
+		const remotefiles_product_st *prod = remotefiles_get_product(f, p);
 		ret++;
 		if (prod != NULL) {
 			char path[SFW_PATH_LEN];
@@ -338,10 +349,14 @@ static uint16_t sfw_node_bound(void) {
 // sorts ahead of everything inside it, so it is created at its own place rather
 // than as an ancestor of something later, and the tree reads alphabetically at
 // every level.
-static bool sfw_alloc_ui(void) {
+//
+// Only fleet *f*'s nodes: the nodes are built for the tab on show, when its
+// listing is in.
+static bool sfw_alloc_ui(uint8_t f) {
 	sfw_free_ui();
-	uint16_t bound = sfw_node_bound();
+	uint16_t bound = sfw_node_bound(f);
 	if (bound == 0) {
+		nodes_fleet = f;
 		return true;
 	}
 	nodes = calloc(bound, sizeof(*nodes));
@@ -351,11 +366,12 @@ static bool sfw_alloc_ui(void) {
 		return false;
 	}
 	node_cap = bound;
+	nodes_fleet = f;
 
 	// 1. a node for every directory, and for every directory above it
-	uint16_t prod_count = remotefiles_get_product_count();
+	uint16_t prod_count = remotefiles_get_product_count(f);
 	for (uint16_t p = 0; p < prod_count; p++) {
-		const remotefiles_product_st *prod = remotefiles_get_product(p);
+		const remotefiles_product_st *prod = remotefiles_get_product(f, p);
 		if (prod == NULL) {
 			continue;
 		}
@@ -470,9 +486,9 @@ static const char *sfw_pkg_dir_get(void) {
 // Started once the window is closed, and on a task of its own: the transfer takes
 // as long as it takes and reports how far it has got on stdout, which the UI's
 // log view shows only while the UI keeps running.
-static bool sfw_start_fetch(uint16_t p, uint16_t j) {
+static bool sfw_start_fetch(uint8_t f, uint16_t p, uint16_t j) {
 	bool ret = false;
-	const remotefiles_product_st *prod = remotefiles_get_product(p);
+	const remotefiles_product_st *prod = remotefiles_get_product(f, p);
 	if ((prod != NULL) && (j < prod->version_count)) {
 		const remotefiles_version_st *v = &prod->versions[j];
 		// the file keeps the name it has on the server; that name carries the
@@ -575,7 +591,7 @@ static const char *sfw_own_name(const sfw_node_st *n) {
 static const char *sfw_row_name(const sfw_node_st *n, uint16_t j) {
 	const char *ret = "";
 	const remotefiles_product_st *prod = (n->product >= 0) ?
-			remotefiles_get_product((uint16_t) n->product) : NULL;
+			remotefiles_get_product(n->fleet, (uint16_t) n->product) : NULL;
 	if ((prod != NULL) && (j < prod->version_count)) {
 		ret = prod->versions[j].version;
 	}
@@ -643,7 +659,7 @@ static void sfw_node_add_rows(uint16_t i, const char *seg) {
 	}
 	uv_uitreeobject_st *obj = &n->obj;
 	const remotefiles_product_st *prod =
-			remotefiles_get_product((uint16_t) n->product);
+			remotefiles_get_product(n->fleet, (uint16_t) n->product);
 	if (prod == NULL) {
 		return;
 	}
@@ -754,31 +770,82 @@ static void sfw_build_node(void *container, uint16_t i, uint8_t depth) {
 // and decides alone which directories are open: whatever was open before is
 // closed.
 //
+// A fleet is listed when its tab is first shown, on a task of its own, and
+// until the listing is in the tab says so; the step loop calls this again when
+// the listing's state changes. *retry* asks for a listing that failed to be
+// tried again, which is what opening its tab anew does.
+//
 // Called every time a tab is picked, and whenever the filter changes. The tree
 // objects are re-initialised rather than kept,
 // because a tree object belongs to the tree it was added to - the previous
 // fleet's tree is exactly what this replaces.
-static void sfw_show_fleet(uint8_t f) {
+static void sfw_show_fleet(uint8_t f, bool retry) {
 	uv_uitabwindow_clear(&fleet_tabs);
 	uv_bounding_box_st cbb = uv_uitabwindow_get_contentbb(&fleet_tabs);
 
 	cur_fleet = f;
-	sfw_filter_apply(f);
+	char err[256] = { '\0' };
+	remotefiles_fleet_state_e state = remotefiles_get_fleet_state(f,
+			err, sizeof(err));
+	if ((state == REMOTEFILES_FLEET_UNLISTED) ||
+			(retry && (state == REMOTEFILES_FLEET_FAILED))) {
+		remotefiles_list_fleet_async(f);
+		state = remotefiles_get_fleet_state(f, err, sizeof(err));
+	}
+	else {
+	}
+	shown_state = state;
+
+	// The tab window no longer holds the tree, so the nodes it was built from
+	// can go: they belong to the fleet shown before, or are rebuilt below.
+	bool have_nodes = false;
+	fleet_msg[0] = '\0';
+	if (state == REMOTEFILES_FLEET_READY) {
+		if (nodes_fleet == (int) f) {
+			have_nodes = true;
+		}
+		else if (sfw_alloc_ui(f)) {
+			have_nodes = true;
+		}
+		else {
+			snprintf(fleet_msg, sizeof(fleet_msg),
+					"Not enough memory to show the file list.");
+		}
+	}
+	else {
+		sfw_free_ui();
+		if (state == REMOTEFILES_FLEET_FAILED) {
+			snprintf(fleet_msg, sizeof(fleet_msg),
+					"The files of this fleet could not be listed:\n%.250s",
+					(err[0] != '\0') ? err : "no reason given.");
+		}
+		else {
+			snprintf(fleet_msg, sizeof(fleet_msg), "Loading...");
+		}
+	}
 
 	uint16_t count = 0;
-	for (uint16_t i = 0; i < node_n; i++) {
-		if (nodes[i].fleet == f) {
-			count++;
+	if (have_nodes) {
+		sfw_filter_apply(f);
+		count = node_n;
+		if (count == 0) {
+			snprintf(fleet_msg, sizeof(fleet_msg), "No files in this fleet.");
 		}
 		else {
 		}
+	}
+	else {
+		// still noted, so that the step loop does not see a filter change
+		snprintf(filter_applied, sizeof(filter_applied), "%s", filter_buf);
+		filter_seg_n = 0;
+		filter_open_n = 0;
 	}
 
 	tree_shown = (count != 0);
 
 	if (count == 0) {
 		uv_uilabel_init(&fleet_empty_label, win_style->font, ALIGN_CENTER,
-				C(0xFFFFFFFF), "No files in this fleet.");
+				C(0xFFFFFFFF), fleet_msg);
 		uv_uitabwindow_addxy(&fleet_tabs, &fleet_empty_label,
 				0, 0, cbb.width, cbb.height);
 	}
@@ -843,7 +910,12 @@ static void sfw_wheel_step(void) {
 static void sfw_filter_step(void) {
 	if (fleet_count > 0) {
 		if (strcmp(filter_buf, filter_applied) != 0) {
-			sfw_show_fleet(cur_fleet);
+			sfw_show_fleet(cur_fleet, false);
+		}
+		else if (remotefiles_get_fleet_state(cur_fleet, NULL, 0) !=
+				shown_state) {
+			// the listing of the tab on show has arrived, or failed
+			sfw_show_fleet(cur_fleet, false);
 		}
 		else {
 		}
@@ -866,7 +938,7 @@ static uv_uiobject_ret_e sfw_step(void *user_ptr, uint16_t step_ms) {
 	else if ((fleet_count > 0) && uv_uitabwindow_tab_changed(&fleet_tabs)) {
 		// the filter is a path from the tab's own top level, so a new tab
 		// takes it from the start
-		sfw_show_fleet(fleet_of_tab[uv_uitabwindow_get_tab(&fleet_tabs)]);
+		sfw_show_fleet(fleet_of_tab[uv_uitabwindow_get_tab(&fleet_tabs)], true);
 	}
 	else {
 		// poll every version's Download button (products not on the active tab,
@@ -880,6 +952,7 @@ static uv_uiobject_ret_e sfw_step(void *user_ptr, uint16_t step_ms) {
 					// the caller that does something with the file, and a modal
 					// dialog frozen for the length of a transfer shows nothing
 					// the log does not show better.
+					sel_fleet = (int) nodes[i].fleet;
 					sel_prod = nodes[i].product;
 					sel_ver = (int) j;
 					ret = UIOBJECT_RETURN_KILLED;
@@ -901,6 +974,7 @@ static uv_uiobject_ret_e sfw_step(void *user_ptr, uint16_t step_ms) {
 bool serverfiles_win_exec(const uv_uistyle_st *style) {
 	bool ret = false;
 	win_style = style;
+	sel_fleet = -1;
 	sel_prod = -1;
 	sel_ver = -1;
 	tree_shown = false;
@@ -917,14 +991,14 @@ bool serverfiles_win_exec(const uv_uistyle_st *style) {
 		return false;
 	}
 
-	// 1. log in and fetch the file list (blocks; failures are reported and abort)
+	// 1. log in, which fetches the fleet list and nothing more (blocks;
+	// failures are reported and abort). It also forgets the listings of the
+	// last time the window was open, so every fleet is listed afresh when its
+	// tab is opened -- in the background, one request for a fleet the server
+	// has a file index of.
 	char err[256] = "";
 	if (!remotefiles_login(credentials_get_url(), credentials_get_username(),
 			credentials_get_password(), err, sizeof(err))) {
-		sfw_message(err);
-		return false;
-	}
-	if (!remotefiles_list(err, sizeof(err))) {
 		sfw_message(err);
 		return false;
 	}
@@ -944,11 +1018,6 @@ bool serverfiles_win_exec(const uv_uistyle_st *style) {
 
 	int16_t tabs_y = SFW_MARGIN + SFW_TITLE_H + SFW_MARGIN;
 	int16_t tabs_h = h - tabs_y - (SFW_BTN_H + 2 * SFW_MARGIN);
-
-	if (!sfw_alloc_ui()) {
-		sfw_message("Not enough memory to show the file list.");
-		return false;
-	}
 
 	// 3. one tab per fleet, the main fleet first. The tab names point straight
 	// at the fleet names remotefiles keeps, which outlive this window.
@@ -981,7 +1050,7 @@ bool serverfiles_win_exec(const uv_uistyle_st *style) {
 				fleet_tabs_buf, fleet_names);
 		uv_uidialog_addxy(&dialog, &fleet_tabs,
 				SFW_MARGIN, tabs_y, w - 2 * SFW_MARGIN, tabs_h);
-		sfw_show_fleet(fleet_of_tab[0]);
+		sfw_show_fleet(fleet_of_tab[0], true);
 	}
 
 	int16_t bottom_y = h - SFW_BTN_H - SFW_MARGIN;
@@ -1016,14 +1085,15 @@ bool serverfiles_win_exec(const uv_uistyle_st *style) {
 	// Only now: uv_uidialog_exec() runs the modal's own loop and returns when
 	// the dialog is closed, so up to this point the dialog still holds pointers
 	// to everything allocated above.
+	int f = sel_fleet;
 	int p = sel_prod;
 	int j = sel_ver;
 	sfw_free_ui();
 
 	// The listing itself is not freed with the UI, so the chosen file is still
 	// known here - and the window is gone while the transfer runs.
-	if ((p >= 0) && (j >= 0)) {
-		ret = sfw_start_fetch((uint16_t) p, (uint16_t) j);
+	if ((f >= 0) && (p >= 0) && (j >= 0)) {
+		ret = sfw_start_fetch((uint8_t) f, (uint16_t) p, (uint16_t) j);
 	}
 	return ret;
 }

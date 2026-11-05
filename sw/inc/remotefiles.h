@@ -88,9 +88,10 @@ typedef struct {
 	// shows one fleet per tab, and prefixing it there would only say twice what
 	// the tab already says.
 	uint8_t fleet;
-	// Grown as files are found; owned by remotefiles.c and valid until the next
-	// remotefiles_list() or remotefiles_logout(). Callers may read it (and hold
-	// pointers into `name`) only for that long.
+	// Grown as files are found; owned by remotefiles.c and valid until the
+	// next remotefiles_forget_lists(), remotefiles_login() or
+	// remotefiles_logout(). Callers may read it (and hold pointers into `name`)
+	// only for that long.
 	remotefiles_version_st *versions;
 	uint16_t version_count;
 	uint16_t version_cap;
@@ -141,20 +142,70 @@ bool remotefiles_login_is_running(void);
 void remotefiles_logout(void);
 
 
-/// @brief: Fetches the file list for the logged-in account into the internal store
-/// (accessed with remotefiles_get_*). Must be called after remotefiles_login().
-/// Returns true on success; fills *err* on failure.
-bool remotefiles_list(char *err, unsigned int err_len);
+/// @brief: Where the listing of one fleet stands.
+typedef enum {
+	// not asked for since the lists were last forgotten
+	REMOTEFILES_FLEET_UNLISTED = 0,
+	// waiting for the listing task, or being listed by it
+	REMOTEFILES_FLEET_LOADING,
+	// listed: remotefiles_get_product() serves it
+	REMOTEFILES_FLEET_READY,
+	// the listing failed; remotefiles_get_fleet_state() says why
+	REMOTEFILES_FLEET_FAILED
+} remotefiles_fleet_state_e;
 
 
-/// @brief: Number of products in the last successful remotefiles_list().
-uint16_t remotefiles_get_product_count(void);
+/// @brief: Each fleet is listed on its own, when it is asked for, so what the
+/// server holds for fleets nobody looks at is never fetched. A fleet is listed
+/// with its file index (GET /<fleet>/.uvindex.json, the whole tree in one
+/// document, see uv3b_iotbrkr's uvfilesctl) and, on a server that has none, by
+/// walking the fleet's directory listings a level at a time.
+///
+/// Lists *fleet* (an index into remotefiles_get_fleet()) and blocks until it is
+/// done. Returns true on success; fills *err* on failure. Must be called after
+/// remotefiles_login(). Replaces the fleet's earlier listing, so nothing may be
+/// holding pointers into that one.
+bool remotefiles_list_fleet(uint8_t fleet, char *err, unsigned int err_len);
 
-/// @brief: Product at *index*, or NULL when out of range.
+
+/// @brief: Asks for *fleet* to be listed on a background task and returns at
+/// once; poll remotefiles_get_fleet_state() for it. Does nothing to a fleet
+/// that is listed already or being listed, but moves one still waiting to the
+/// front: the fleet asked for last is listed first, being the one on screen. A
+/// fleet whose listing failed is tried again.
+void remotefiles_list_fleet_async(uint8_t fleet);
+
+
+/// @brief: Where the listing of *fleet* stands. When it is FAILED, *err* (if
+/// non-NULL) is filled with the reason, as a sentence fit for the user.
+remotefiles_fleet_state_e remotefiles_get_fleet_state(uint8_t fleet,
+		char *err, unsigned int err_len);
+
+
+/// @brief: True when *fleet* is listed, and was listed from the server's file
+/// index rather than by walking its listings.
+bool remotefiles_fleet_is_indexed(uint8_t fleet);
+
+
+/// @brief: Forgets every fleet's listing, so that each is fetched anew when it
+/// is next asked for. A listing still under way is thrown away when it
+/// finishes. Frees the products, so nothing may be holding pointers into them.
+/// remotefiles_login() and remotefiles_logout() forget them too.
+void remotefiles_forget_lists(void);
+
+
+/// @brief: Number of products in *fleet*, 0 unless it is READY.
+uint16_t remotefiles_get_product_count(uint8_t fleet);
+
+/// @brief: Product at *index* of *fleet*, or NULL when out of range or when
+/// the fleet is not READY.
 ///
 /// The returned pointer, and everything it points at, belongs to remotefiles.c
-/// and stays valid until the next remotefiles_list() or remotefiles_logout().
-const remotefiles_product_st *remotefiles_get_product(uint16_t index);
+/// and stays valid until the lists are next forgotten (see
+/// remotefiles_forget_lists()) or the fleet is listed again with
+/// remotefiles_list_fleet().
+const remotefiles_product_st *remotefiles_get_product(uint8_t fleet,
+		uint16_t index);
 
 
 /// @brief: Downloads the file at server-relative *path* to the local *dest_path*.

@@ -866,33 +866,31 @@ static void serverfiles_task(void *ptr) {
 	printf("  logged in in %.2f s; %u fleet(s)\n", t1 - t0,
 			(unsigned int) fleets);
 
-	printf("Listing...\n");
-	fflush(stdout);
-	if (!remotefiles_list(err, sizeof(err))) {
-		printf("%s\n", err);
-		return;
-	}
-	double t2 = sf_now();
-
-	uint16_t products = remotefiles_get_product_count();
-	uint16_t files = 0;
-	for (uint16_t p = 0; p < products; p++) {
-		const remotefiles_product_st *prod = remotefiles_get_product(p);
-		if (prod != NULL) {
-			files = (uint16_t) (files + prod->version_count);
-		}
-	}
-	printf("  listed %u director(ies) holding %u file(s) in %.2f s\n\n",
-			(unsigned int) products, (unsigned int) files, t2 - t1);
-
-	// one block per fleet, in the order the panel puts its tabs in
+	// one block per fleet, in the order the panel puts its tabs in, each
+	// listed on its own like the panel lists the tab that is opened
+	double t2 = t1;
+	unsigned int dirs = 0;
+	unsigned int files = 0;
 	for (uint8_t f = 0; f < fleets; f++) {
-		printf("%s\n", remotefiles_get_fleet(f));
+		double tf = sf_now();
+		bool ok = remotefiles_list_fleet(f, err, sizeof(err));
+		t2 = sf_now();
+		printf("%s  (%s, %.2f s)\n", remotefiles_get_fleet(f),
+				!ok ? "failed" :
+				remotefiles_fleet_is_indexed(f) ? "index" : "walked",
+				t2 - tf);
+		if (!ok) {
+			printf("  %s\n", err);
+			continue;
+		}
+		uint16_t products = remotefiles_get_product_count(f);
 		for (uint16_t p = 0; p < products; p++) {
-			const remotefiles_product_st *prod = remotefiles_get_product(p);
-			if ((prod == NULL) || (prod->fleet != f)) {
+			const remotefiles_product_st *prod = remotefiles_get_product(f, p);
+			if (prod == NULL) {
 				continue;
 			}
+			dirs++;
+			files += prod->version_count;
 			printf("  %s  (%u)\n", prod->name,
 					(unsigned int) prod->version_count);
 			for (uint16_t v = 0; v < prod->version_count; v++) {
@@ -903,6 +901,8 @@ static void serverfiles_task(void *ptr) {
 			}
 		}
 	}
+	printf("\nlisted %u director(ies) holding %u file(s) in %.2f s\n",
+			dirs, files, t2 - t1);
 	printf("\ntotal %.2f s\n", t2 - t0);
 	fflush(stdout);
 }

@@ -54,12 +54,43 @@ static uint8_t rf_fleet_count;
 static bool rf_logged_in;
 // set for the duration of remotefiles_login(), see remotefiles_login_is_running()
 static volatile bool rf_login_running;
-// The product store: grown on demand rather than a fixed array, so no fleet
-// layout can silently lose entries. Owned here and freed by rf_free_products(),
-// which every fresh listing and every logout calls.
-static remotefiles_product_st *rf_products;
-static uint16_t rf_product_count;
-static uint16_t rf_product_cap;
+
+// One fleet's products: grown on demand rather than a fixed array, so no fleet
+// layout can silently lose entries.
+typedef struct {
+	remotefiles_product_st *products;
+	uint16_t count;
+	uint16_t cap;
+} rf_store_st;
+
+// The listing of each fleet, by the fleet's index. Each fleet is listed on its
+// own, when it is first asked for, so opening the panel costs the fleet list
+// and nothing more, and a fleet's tab costs one request when it is opened.
+//
+// A listing is built in a store of its own and only moved in here once it is
+// complete, while its state is still LOADING; the state turns READY after
+// that. A reader only ever reads a READY fleet, so the task listing one fleet
+// never moves the products of another under a tree that is pointing into them.
+static rf_store_st rf_lists[REMOTEFILES_MAX_FLEETS];
+static volatile remotefiles_fleet_state_e rf_state[REMOTEFILES_MAX_FLEETS];
+static bool rf_indexed[REMOTEFILES_MAX_FLEETS];
+static char rf_list_err[REMOTEFILES_MAX_FLEETS][256];
+// Bumped by everything that makes the listings in flight meaningless: a login
+// (the fleet indices may name other fleets now), a logout, and
+// remotefiles_forget_lists(). A listing that finishes under another generation
+// than it started in is thrown away instead of stored.
+static volatile uint32_t rf_generation;
+// The fleets waiting for the background listing task, one bit each, and the
+// one asked for last, which is listed first: it is the tab on screen.
+static volatile uint32_t rf_pending;
+static volatile int rf_wanted = -1;
+static volatile bool rf_list_task_running;
+
+// What the server serves a fleet's file index as (see uv3b_iotbrkr's
+// uvfilesctl): the fleet's whole tree in one document.
+#define RF_INDEX_NAME		".uvindex.json"
+
+static void rf_forget_all(void);
 
 
 // The HTTP plumbing all of this is built on lives in http.c, shared with the
@@ -179,6 +210,8 @@ bool remotefiles_login(const char *url, const char *username,
 	bool ret = false;
 	rf_login_running = true;
 	rf_logged_in = false;
+	// the fleet indices the listings are kept by belong to the old fleet list
+	rf_forget_all();
 	rf_fleet_count = 0;
 	rf_cfg_sanitize(rf_url, sizeof(rf_url), (url != NULL) ? url : "");
 	// strip a trailing '/' so "<url>/<fleet>" never doubles the slash
@@ -419,35 +452,35 @@ static parser_node_st rf_parse_listing(const char *body, char **wrapper) {
 /// the treeview), so this must not run while a listing is on screen - it is
 /// called at the start of a new listing and on logout, both of which mean the
 /// old list is already gone.
-static void rf_free_products(void) {
-	if (rf_products != NULL) {
-		for (uint16_t i = 0; i < rf_product_count; i++) {
-			free(rf_products[i].versions);
-			rf_products[i].versions = NULL;
+static void rf_free_products(rf_store_st *st) {
+	if (st->products != NULL) {
+		for (uint16_t i = 0; i < st->count; i++) {
+			free(st->products[i].versions);
+			st->products[i].versions = NULL;
 		}
-		free(rf_products);
-		rf_products = NULL;
+		free(st->products);
+		st->products = NULL;
 	}
-	rf_product_count = 0;
-	rf_product_cap = 0;
+	st->count = 0;
+	st->cap = 0;
 }
 
 
 /// @brief: Makes room for one more product. Doubling growth, so a listing costs
 /// a handful of reallocs rather than one per directory.
 /// @return: false when out of memory, in which case the store is left as it was.
-static bool rf_products_reserve(void) {
+static bool rf_products_reserve(rf_store_st *st) {
 	bool ret = true;
-	if (rf_product_count >= rf_product_cap) {
-		uint16_t cap = (rf_product_cap == 0) ? 8 : (uint16_t) (rf_product_cap * 2);
-		remotefiles_product_st *n = realloc(rf_products,
+	if (st->count >= st->cap) {
+		uint16_t cap = (st->cap == 0) ? 8 : (uint16_t) (st->cap * 2);
+		remotefiles_product_st *n = realloc(st->products,
 				(size_t) cap * sizeof(*n));
 		if (n == NULL) {
 			ret = false;
 		}
 		else {
-			rf_products = n;
-			rf_product_cap = cap;
+			st->products = n;
+			st->cap = cap;
 		}
 	}
 	return ret;
@@ -475,12 +508,12 @@ static bool rf_versions_reserve(remotefiles_product_st *p) {
 
 /// @brief: Starts a product for directory *rel* of *fleet* ("" for the fleet's
 /// own folder). Returns NULL when out of memory.
-static remotefiles_product_st *rf_new_product(uint8_t fleet_i,
-		const char *rel) {
+static remotefiles_product_st *rf_new_product(rf_store_st *st,
+		uint8_t fleet_i, const char *rel) {
 	const char *fleet = remotefiles_get_fleet(fleet_i);
 	remotefiles_product_st *p = NULL;
-	if (rf_products_reserve()) {
-		p = &rf_products[rf_product_count];
+	if (rf_products_reserve(st)) {
+		p = &st->products[st->count];
 		memset(p, 0, sizeof(*p));
 		p->fleet = fleet_i;
 		// The id doubles as the server-relative path every download of this
@@ -503,7 +536,7 @@ static remotefiles_product_st *rf_new_product(uint8_t fleet_i,
 		else {
 			strncpy(p->name, rel, sizeof(p->name) - 1);
 		}
-		rf_product_count++;
+		st->count++;
 	}
 	return p;
 }
@@ -556,17 +589,17 @@ static int rf_cmp_product(const void *a, const void *b) {
 /// Done once here rather than in the panel, so that every reader of the listing
 /// sees the same order and the indices the panel hands back (which product,
 /// which version) keep meaning what they meant when the rows were built.
-static void rf_sort_products(void) {
-	for (uint16_t i = 0; i < rf_product_count; i++) {
-		if (rf_products[i].version_count > 1) {
-			qsort(rf_products[i].versions, rf_products[i].version_count,
-					sizeof(rf_products[i].versions[0]), &rf_cmp_version);
+static void rf_sort_products(rf_store_st *st) {
+	for (uint16_t i = 0; i < st->count; i++) {
+		if (st->products[i].version_count > 1) {
+			qsort(st->products[i].versions, st->products[i].version_count,
+					sizeof(st->products[i].versions[0]), &rf_cmp_version);
 		}
 		else {
 		}
 	}
-	if (rf_product_count > 1) {
-		qsort(rf_products, rf_product_count, sizeof(rf_products[0]),
+	if (st->count > 1) {
+		qsort(st->products, st->count, sizeof(st->products[0]),
 				&rf_cmp_product);
 	}
 	else {
@@ -590,20 +623,45 @@ static void rf_sort_products(void) {
 ///
 /// @return: false when the body was not a listing at all, which the caller only
 /// cares about for a fleet's own root.
-static bool rf_read_listing(const rf_dir_st *dir, const char *body,
+static bool rf_read_listing(rf_store_st *st, const rf_dir_st *dir,
+		const char *body,
 		bool want_children, rf_dir_st **next, uint16_t *next_count,
 		uint16_t *next_cap) {
 	bool ret = false;
 	char *wrap = NULL;
-	parser_node_st root = rf_parse_listing(body, &wrap);
-	if (parser_node_is_valid(root) && (parser_get_type(root) == PARSER_ARRAY)) {
+	// An empty directory is listed as null (the server's empty list) or as [],
+	// neither of which the reader takes for an array; it is a listing all the
+	// same, and of an empty fleet the whole of it.
+	const char *b = body;
+	while ((*b == ' ') || (*b == '\t') || (*b == '\r') || (*b == '\n')) {
+		b++;
+	}
+	size_t bl = strlen(b);
+	while ((bl > 0) && ((b[bl - 1] == ' ') || (b[bl - 1] == '\t') ||
+			(b[bl - 1] == '\r') || (b[bl - 1] == '\n'))) {
+		bl--;
+	}
+	bool empty = ((bl == 4) && (strncmp(b, "null", 4) == 0)) ||
+			((bl == 2) && (strncmp(b, "[]", 2) == 0));
+	parser_node_st root = empty ? parser_node_invalid() :
+			rf_parse_listing(body, &wrap);
+	if (empty) {
+		ret = true;
+		if (dir->rel[0] != '\0') {
+			ret = (rf_new_product(st, dir->fleet, dir->rel) != NULL);
+		}
+		else {
+		}
+	}
+	else if (parser_node_is_valid(root) &&
+			(parser_get_type(root) == PARSER_ARRAY)) {
 		ret = true;
 		unsigned int n = parser_array_get_size(root);
 		remotefiles_product_st *p = NULL;
 		unsigned int i;
 
 		if (dir->rel[0] != '\0') {
-			p = rf_new_product(dir->fleet, dir->rel);
+			p = rf_new_product(st, dir->fleet, dir->rel);
 		}
 		else {
 		}
@@ -614,7 +672,7 @@ static bool rf_read_listing(const rf_dir_st *dir, const char *body,
 				continue;
 			}
 			if (p == NULL) {
-				p = rf_new_product(dir->fleet, dir->rel);
+				p = rf_new_product(st, dir->fleet, dir->rel);
 				if (p == NULL) {
 					break;
 				}
@@ -684,42 +742,36 @@ static bool rf_read_listing(const rf_dir_st *dir, const char *body,
 }
 
 
-/// @brief: Lists every fleet, a level of the directory tree at a time.
+/// @brief: Lists one fleet by walking its listings, a level of the directory
+/// tree at a time.
 ///
-/// Breadth first, and deliberately: every directory at one depth is fetched in
-/// one curl run, so the whole walk costs a handful of connections rather than
-/// one per directory. Depth first would learn the same directories but could
-/// only ever ask for them one at a time, which is what made opening the panel
-/// take seconds of pure handshaking.
+/// What a fleet is listed with when the server has no file index for it (a
+/// host from before the indexes, or one whose index is unreadable). Breadth
+/// first, and deliberately: every directory at one depth is fetched in one
+/// curl run, so the walk costs a connection per level rather than one per
+/// directory.
 ///
-/// The order products are created in no longer decides the order they are shown
-/// in -- rf_sort_products() settles that -- so nothing depends on the walk
-/// being depth first any more.
-///
-/// @return: false only when no fleet could be listed at all.
-static bool rf_walk_fleets(char *err, unsigned int err_len) {
+/// @return: false when the fleet's own folder could not be listed. A
+/// subdirectory that fails is skipped quietly: one unreadable folder must not
+/// blank the whole tab.
+static bool rf_walk_fleet(rf_store_st *st, uint8_t fleet,
+		char *err, unsigned int err_len) {
 	bool ret = false;
-	char first_err[256] = { '\0' };
 
-	rf_dir_st *level = NULL;
+	rf_dir_st *level = malloc(sizeof(*level));
 	uint16_t level_count = 0;
-	uint16_t level_cap = 0;
 	rf_dir_st *next = NULL;
 	uint16_t next_count = 0;
 	uint16_t next_cap = 0;
 
-	// the first level is every fleet's own folder
-	level_cap = rf_fleet_count;
-	level = malloc((size_t) level_cap * sizeof(*level));
 	if (level == NULL) {
 		rf_err(err, err_len, "Not enough memory to list the files.");
 		return false;
 	}
-	for (uint8_t i = 0; i < rf_fleet_count; i++) {
-		level[level_count].fleet = i;
-		level[level_count].rel[0] = '\0';
-		level_count++;
-	}
+	// the first level is the fleet's own folder
+	level[0].fleet = fleet;
+	level[0].rel[0] = '\0';
+	level_count = 1;
 
 	for (unsigned int depth = 0; (depth < RF_MAX_DEPTH) && (level_count > 0);
 			depth++) {
@@ -733,10 +785,9 @@ static bool rf_walk_fleets(char *err, unsigned int err_len) {
 
 			for (int i = 0; i < n; i++) {
 				const rf_dir_st *d = &level[off + i];
-				bool is_root = (d->rel[0] == '\0');
 				bool ok = false;
 				if ((codes[i] == 200) && (bodies[i] != NULL)) {
-					ok = rf_read_listing(d, bodies[i],
+					ok = rf_read_listing(st, d, bodies[i],
 							(depth + 1) < RF_MAX_DEPTH,
 							&next, &next_count, &next_cap);
 				}
@@ -744,32 +795,17 @@ static bool rf_walk_fleets(char *err, unsigned int err_len) {
 				}
 				free(bodies[i]);
 
-				// Only a fleet's own root decides whether that fleet was
-				// listable. A subdirectory that fails is skipped quietly: one
-				// unreadable folder must not blank the whole panel.
-				if (is_root) {
-					if (ok) {
-						// one readable fleet is enough for the list to be usable
-						ret = true;
-					}
-					else if (first_err[0] == '\0') {
-						char one[256] = { '\0' };
-						if (codes[i] == 200) {
-							rf_err(one, sizeof(one),
-									"The server did not answer with a file "
-									"listing.");
-						}
-						else {
-							rf_http_err(codes[i], "listing files",
-									one, sizeof(one));
-						}
-						snprintf(first_err, sizeof(first_err), "%.63s: %.180s",
-								rf_fleets[d->fleet], one);
-					}
-					else {
-					}
+				if (d->rel[0] != '\0') {
+				}
+				else if (ok) {
+					ret = true;
+				}
+				else if (codes[i] == 200) {
+					rf_err(err, err_len,
+							"The server did not answer with a file listing.");
 				}
 				else {
+					rf_http_err(codes[i], "listing files", err, err_len);
 				}
 			}
 		}
@@ -778,16 +814,79 @@ static bool rf_walk_fleets(char *err, unsigned int err_len) {
 		free(level);
 		level = next;
 		level_count = next_count;
-		level_cap = next_cap;
 		next = NULL;
 		next_count = 0;
 		next_cap = 0;
 	}
 	free(level);
 	free(next);
+	return ret;
+}
 
-	if (!ret) {
-		rf_err(err, err_len, first_err);
+
+/// @brief: Fetches the fleet's file index into *body* (the caller frees it).
+/// @return: the HTTP status, 0 when the server could not be reached.
+static long rf_fetch_index(uint8_t fleet, char **body) {
+	*body = NULL;
+	char resp_path[256];
+	rf_tmp_path(resp_path, sizeof(resp_path), "index");
+	remove(resp_path);
+
+	char base[1024];
+	rf_fleet_url(base, sizeof(base), remotefiles_get_fleet(fleet));
+	char cfg[4096];
+	int w = rf_cfg_common(cfg, sizeof(cfg), 30);
+	snprintf(&cfg[w], sizeof(cfg) - (size_t) w,
+			"url = \"%s/" RF_INDEX_NAME "\"\n"
+			"output = \"%s\"\n"
+			"write-out = \"%%{http_code}\"\n",
+			base, resp_path);
+	long code = rf_curl_with_cfg(cfg);
+	if (code == 200) {
+		*body = rf_read_file(resp_path);
+	}
+	else {
+	}
+	remove(resp_path);
+	return code;
+}
+
+
+/// @brief: The product for directory *rel* of *fleet* in *st*, created when
+/// there is none yet. *hint* is the product found last, which is usually the
+/// one asked for again: the index lists a directory's files right after it.
+static remotefiles_product_st *rf_index_product(rf_store_st *st,
+		uint8_t fleet, const char *rel, uint16_t *hint) {
+	remotefiles_product_st *ret = NULL;
+	char id[sizeof(ret->id)];
+	const char *fname = remotefiles_get_fleet(fleet);
+	if (rel[0] != '\0') {
+		snprintf(id, sizeof(id), "%s/%s", fname, rel);
+	}
+	else {
+		snprintf(id, sizeof(id), "%s", fname);
+	}
+	if ((*hint < st->count) && (strcmp(st->products[*hint].id, id) == 0)) {
+		ret = &st->products[*hint];
+	}
+	else {
+		for (uint16_t i = st->count; i > 0; i--) {
+			if (strcmp(st->products[i - 1].id, id) == 0) {
+				ret = &st->products[i - 1];
+				*hint = (uint16_t) (i - 1);
+				break;
+			}
+			else {
+			}
+		}
+	}
+	if (ret == NULL) {
+		ret = rf_new_product(st, fleet, rel);
+		if (ret != NULL) {
+			*hint = (uint16_t) (st->count - 1);
+		}
+		else {
+		}
 	}
 	else {
 	}
@@ -795,33 +894,322 @@ static bool rf_walk_fleets(char *err, unsigned int err_len) {
 }
 
 
-bool remotefiles_list(char *err, unsigned int err_len) {
+/// @brief: Reads a fleet's file index (see uv3b_iotbrkr's uvfilesctl):
+///
+///   {"fleet":"acme","generated":"…","entries":[
+///    {"path":"uv07","is_dir":true,"size":0,"mod_time":"…"},
+///    {"path":"uv07/uv07_300.uvdev","is_dir":false,"size":123,"mod_time":"…"}]}
+///
+/// into the same products the walk makes: every directory one, and the files
+/// in the fleet's own folder one named after the fleet, made only when there
+/// is such a file.
+///
+/// The entries are stepped through as siblings rather than by index: finding
+/// the n'th element scans the array from its start, which over an index of a
+/// few thousand entries would be the slowest part of the whole listing.
+///
+/// @return: false when the body is not an index at all.
+static bool rf_read_index(rf_store_st *st, uint8_t fleet, char *body) {
 	bool ret = false;
-	// Releases the previous listing, so repeated opens of the panel do not leak
-	// it. Safe here: the panel that could be holding pointers into it has been
-	// closed by the time a new listing is asked for.
-	rf_free_products();
+	parser_node_st root = parser_read_buffer(body, strlen(body),
+			PARSER_FORMAT_JSON);
+	parser_node_st arr = parser_node_is_valid(root) ?
+			parser_find_child(root, "entries") : parser_node_invalid();
+	if (parser_node_is_valid(arr) && (parser_get_type(arr) == PARSER_ARRAY)) {
+		ret = true;
+		unsigned int n = parser_array_get_size(arr);
+		parser_node_st e = (n > 0) ? parser_array_at(arr, 0) :
+				parser_node_invalid();
+		uint16_t hint = 0;
+		for (unsigned int i = 0; (i < n) && parser_node_is_valid(e); i++) {
+			char path[RF_REL_MAX] = { '\0' };
+			parser_node_st c = parser_find_child(e, "path");
+			if (parser_node_is_valid(c)) {
+				parser_get_string(c, path, sizeof(path));
+			}
+			else {
+			}
+
+			if (path[0] == '\0') {
+			}
+			else if (rf_entry_is_dir(e)) {
+				if (rf_index_product(st, fleet, path, &hint) == NULL) {
+					ret = false;
+				}
+				else {
+				}
+			}
+			else {
+				// the directory part of the path is the product, the rest
+				// the file
+				char *slash = strrchr(path, '/');
+				const char *name = path;
+				const char *rel = "";
+				if (slash != NULL) {
+					*slash = '\0';
+					name = slash + 1;
+					rel = path;
+				}
+				else {
+				}
+				remotefiles_product_st *p =
+						rf_index_product(st, fleet, rel, &hint);
+				remotefiles_version_st *v = NULL;
+				if ((p == NULL) || !rf_versions_reserve(p)) {
+					ret = false;
+				}
+				else {
+					v = &p->versions[p->version_count];
+					memset(v, 0, sizeof(*v));
+					// A path that would not fit is left out rather than cut:
+					// cut, it names some other file, and that is what the
+					// Download button would fetch.
+					int need = snprintf(v->path, sizeof(v->path), "%s/%.*s",
+							p->id, (int) (sizeof(v->path) - 1), name);
+					if ((need < 0) || ((size_t) need >= sizeof(v->path))) {
+						v = NULL;
+					}
+					else {
+					}
+				}
+				if (v != NULL) {
+					snprintf(v->version, sizeof(v->version), "%.*s",
+							(int) (sizeof(v->version) - 1), name);
+					if (parser_node_is_valid(c = parser_find_child(e, "size"))) {
+						v->size = (uint64_t) parser_get_int(c);
+					}
+					else {
+					}
+					if (parser_node_is_valid(c = parser_find_child(e, "mod_time"))) {
+						parser_get_string(c, v->modified, sizeof(v->modified));
+						// the date alone is what the list shows
+						strncpy(v->released, v->modified, 10);
+						v->released[10] = '\0';
+					}
+					else {
+					}
+					p->version_count++;
+				}
+			}
+
+			if (!ret) {
+				// out of memory: a partial list would look like the whole one
+				break;
+			}
+			else if (((i + 1) < n) && !parser_get_next_sibling(e, &e)) {
+				break;
+			}
+			else {
+			}
+		}
+	}
+	else {
+	}
+	return ret;
+}
+
+
+/// @brief: Lists *fleet* into *st*: with its file index when the server has
+/// one, by walking its listings when it does not.
+static bool rf_list_into(rf_store_st *st, uint8_t fleet, bool *indexed,
+		char *err, unsigned int err_len) {
+	bool ret = false;
+	*indexed = false;
+	char *body = NULL;
+	long code = rf_fetch_index(fleet, &body);
+	if ((code == 200) && (body != NULL) && rf_read_index(st, fleet, body)) {
+		*indexed = true;
+		ret = true;
+	}
+	else if ((code == 200) || (code == 404)) {
+		// No index (404), or one that could not be read: the listings say the
+		// same, a request per level instead of one.
+		rf_free_products(st);
+		ret = rf_walk_fleet(st, fleet, err, err_len);
+	}
+	else {
+		rf_http_err(code, "listing files", err, err_len);
+	}
+	free(body);
+
+	if (ret) {
+		rf_sort_products(st);
+	}
+	else {
+		rf_free_products(st);
+	}
+	return ret;
+}
+
+
+/// @brief: Stores the listing of *fleet* made in *st*, unless the lists have
+/// been forgotten since it was started in generation *gen* -- then it belongs
+/// to a session or a fleet list that is gone, and is thrown away.
+static void rf_commit(uint8_t fleet, uint32_t gen, rf_store_st *st, bool ok,
+		bool indexed, const char *err) {
+	rf_store_st old = { 0 };
+	uv_enter_critical();
+	if (gen == rf_generation) {
+		old = rf_lists[fleet];
+		rf_lists[fleet] = *st;
+		rf_indexed[fleet] = indexed;
+		snprintf(rf_list_err[fleet], sizeof(rf_list_err[fleet]), "%s",
+				(err != NULL) ? err : "");
+		// last, so that a reader who sees READY sees the products too
+		__sync_synchronize();
+		rf_state[fleet] = ok ? REMOTEFILES_FLEET_READY :
+				REMOTEFILES_FLEET_FAILED;
+	}
+	else {
+		old = *st;
+	}
+	uv_exit_critical();
+	rf_free_products(&old);
+}
+
+
+/// @brief: Forgets every fleet's listing and the ones waiting to be made.
+static void rf_forget_all(void) {
+	rf_store_st old[REMOTEFILES_MAX_FLEETS];
+	uv_enter_critical();
+	rf_generation++;
+	rf_pending = 0;
+	rf_wanted = -1;
+	for (uint8_t i = 0; i < REMOTEFILES_MAX_FLEETS; i++) {
+		old[i] = rf_lists[i];
+		memset(&rf_lists[i], 0, sizeof(rf_lists[i]));
+		rf_state[i] = REMOTEFILES_FLEET_UNLISTED;
+		rf_indexed[i] = false;
+		rf_list_err[i][0] = '\0';
+	}
+	uv_exit_critical();
+	for (uint8_t i = 0; i < REMOTEFILES_MAX_FLEETS; i++) {
+		rf_free_products(&old[i]);
+	}
+}
+
+
+void remotefiles_forget_lists(void) {
+	rf_forget_all();
+}
+
+
+bool remotefiles_list_fleet(uint8_t fleet, char *err, unsigned int err_len) {
+	bool ret = false;
 	if (!rf_logged_in) {
 		rf_err(err, err_len, "Not logged in.");
 	}
-	else if (rf_fleet_count == 0) {
-		rf_err(err, err_len,
-				"This account holds no fleets yet, so it has no files.");
+	else if (fleet >= rf_fleet_count) {
+		rf_err(err, err_len, "No such fleet.");
 	}
 	else {
-		// One account may hold several fleets. Listing them all keeps the file
-		// view whole rather than making the user pick a fleet first; each
-		// product remembers which fleet it came from, which is what the panel
-		// puts on a tab of its own. They are walked together, a level of the
-		// tree at a time, so the fetches of every fleet share the same runs.
-		ret = rf_walk_fleets(err, err_len);
-		if (ret) {
-			rf_sort_products();
+		uint32_t gen = rf_generation;
+		rf_state[fleet] = REMOTEFILES_FLEET_LOADING;
+		rf_store_st st = { 0 };
+		bool indexed = false;
+		char e[256] = { '\0' };
+		ret = rf_list_into(&st, fleet, &indexed, e, sizeof(e));
+		rf_commit(fleet, gen, &st, ret, indexed, e);
+		rf_err(err, err_len, e);
+	}
+	return ret;
+}
+
+
+// Task body: lists the fleets asked for with remotefiles_list_fleet_async(),
+// the one asked for last first, until none is left waiting.
+static void rf_list_task(void *ptr) {
+	(void) ptr;
+	while (true) {
+		int f = -1;
+		uv_enter_critical();
+		uint32_t gen = rf_generation;
+		if (rf_pending == 0) {
+			rf_list_task_running = false;
+		}
+		else if ((rf_wanted >= 0) && (rf_pending & (1u << rf_wanted))) {
+			f = rf_wanted;
+		}
+		else {
+			f = __builtin_ctz(rf_pending);
+		}
+		if (f >= 0) {
+			rf_pending &= ~(1u << f);
 		}
 		else {
 		}
+		uv_exit_critical();
+		if (f < 0) {
+			break;
+		}
+		else {
+			rf_store_st st = { 0 };
+			bool indexed = false;
+			char e[256] = { '\0' };
+			bool ok = rf_list_into(&st, (uint8_t) f, &indexed, e, sizeof(e));
+			rf_commit((uint8_t) f, gen, &st, ok, indexed, e);
+		}
+	}
+	uv_rtos_task_delete(NULL);
+}
+
+
+void remotefiles_list_fleet_async(uint8_t fleet) {
+	bool start = false;
+	if (rf_logged_in && (fleet < rf_fleet_count)) {
+		uv_enter_critical();
+		if ((rf_state[fleet] == REMOTEFILES_FLEET_UNLISTED) ||
+				(rf_state[fleet] == REMOTEFILES_FLEET_FAILED)) {
+			rf_state[fleet] = REMOTEFILES_FLEET_LOADING;
+			rf_list_err[fleet][0] = '\0';
+			rf_pending |= (1u << fleet);
+		}
+		else {
+		}
+		if (rf_pending & (1u << fleet)) {
+			// the tab on screen goes ahead of the ones asked for before it
+			rf_wanted = fleet;
+		}
+		else {
+		}
+		if ((rf_pending != 0) && !rf_list_task_running) {
+			rf_list_task_running = true;
+			start = true;
+		}
+		else {
+		}
+		uv_exit_critical();
+	}
+	else {
+	}
+	if (start) {
+		uv_rtos_task_create(&rf_list_task, "rf_list",
+				UV_RTOS_MIN_STACK_SIZE * 10, NULL,
+				UV_RTOS_IDLE_PRIORITY + 1, NULL);
+	}
+	else {
+	}
+}
+
+
+remotefiles_fleet_state_e remotefiles_get_fleet_state(uint8_t fleet,
+		char *err, unsigned int err_len) {
+	remotefiles_fleet_state_e ret = (fleet < rf_fleet_count) ?
+			rf_state[fleet] : REMOTEFILES_FLEET_FAILED;
+	if (ret == REMOTEFILES_FLEET_FAILED) {
+		__sync_synchronize();
+		rf_err(err, err_len, (fleet < rf_fleet_count) ?
+				rf_list_err[fleet] : "No such fleet.");
+	}
+	else {
 	}
 	return ret;
+}
+
+
+bool remotefiles_fleet_is_indexed(uint8_t fleet) {
+	return (fleet < rf_fleet_count) &&
+			(rf_state[fleet] == REMOTEFILES_FLEET_READY) && rf_indexed[fleet];
 }
 
 
@@ -949,13 +1337,17 @@ bool remotefiles_download_result(char *dest, unsigned int dest_len,
 }
 
 
-uint16_t remotefiles_get_product_count(void) {
-	return rf_product_count;
+uint16_t remotefiles_get_product_count(uint8_t fleet) {
+	return ((fleet < rf_fleet_count) &&
+			(rf_state[fleet] == REMOTEFILES_FLEET_READY)) ?
+			rf_lists[fleet].count : 0;
 }
 
 
-const remotefiles_product_st *remotefiles_get_product(uint16_t index) {
-	return (index < rf_product_count) ? &rf_products[index] : NULL;
+const remotefiles_product_st *remotefiles_get_product(uint8_t fleet,
+		uint16_t index) {
+	return (index < remotefiles_get_product_count(fleet)) ?
+			&rf_lists[fleet].products[index] : NULL;
 }
 
 
@@ -975,7 +1367,7 @@ void remotefiles_logout(void) {
 	rf_pass[0] = '\0';
 	// The list belonged to the session being dropped; holding it would only
 	// hand the next caller stale files under credentials that no longer apply.
-	rf_free_products();
+	rf_forget_all();
 }
 
 
@@ -1015,17 +1407,41 @@ bool remotefiles_login(const char *url, const char *username,
 	return false;
 }
 
-bool remotefiles_list(char *err, unsigned int err_len) {
+bool remotefiles_list_fleet(uint8_t fleet, char *err, unsigned int err_len) {
+	(void) fleet;
 	(void) err;
 	(void) err_len;
 	return false;
 }
 
-uint16_t remotefiles_get_product_count(void) {
+void remotefiles_list_fleet_async(uint8_t fleet) {
+	(void) fleet;
+}
+
+remotefiles_fleet_state_e remotefiles_get_fleet_state(uint8_t fleet,
+		char *err, unsigned int err_len) {
+	(void) fleet;
+	(void) err;
+	(void) err_len;
+	return REMOTEFILES_FLEET_FAILED;
+}
+
+bool remotefiles_fleet_is_indexed(uint8_t fleet) {
+	(void) fleet;
+	return false;
+}
+
+void remotefiles_forget_lists(void) {
+}
+
+uint16_t remotefiles_get_product_count(uint8_t fleet) {
+	(void) fleet;
 	return 0;
 }
 
-const remotefiles_product_st *remotefiles_get_product(uint16_t index) {
+const remotefiles_product_st *remotefiles_get_product(uint8_t fleet,
+		uint16_t index) {
+	(void) fleet;
 	(void) index;
 	return NULL;
 }

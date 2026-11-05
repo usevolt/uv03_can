@@ -318,12 +318,27 @@ static int http_run_curl_codes(const char *cfg_path, const char *tag,
 }
 
 
+/// @brief: A tag of this request's own for its config and status files.
+///
+/// Requests are made from several tasks at once -- the server file panel lists
+/// a fleet in the background while a download, the Settings tab's login or the
+/// update check runs -- and with one fixed name per process, one request's
+/// config file was written over by the next one's before curl had read it.
+static void http_call_tag(char *tag, size_t len) {
+	static volatile unsigned int seq;
+	unsigned int n = __atomic_fetch_add(&seq, 1u, __ATOMIC_RELAXED);
+	snprintf(tag, len, "http%u", n);
+}
+
+
 int uvhttp_curl_multi(const char *cfg, long *codes, int max_codes) {
+	char tag[16];
+	http_call_tag(tag, sizeof(tag));
 	char cfg_path[256];
-	uvhttp_tmp_path(cfg_path, sizeof(cfg_path), "http", "cfg");
+	uvhttp_tmp_path(cfg_path, sizeof(cfg_path), tag, "cfg");
 	int n = 0;
 	if (uvhttp_write_file(cfg_path, cfg)) {
-		n = http_run_curl_codes(cfg_path, "http", codes, max_codes);
+		n = http_run_curl_codes(cfg_path, tag, codes, max_codes);
 	}
 	else {
 	}
@@ -333,11 +348,13 @@ int uvhttp_curl_multi(const char *cfg, long *codes, int max_codes) {
 
 
 long uvhttp_curl(const char *cfg) {
+	char tag[16];
+	http_call_tag(tag, sizeof(tag));
 	char cfg_path[256];
-	uvhttp_tmp_path(cfg_path, sizeof(cfg_path), "http", "cfg");
+	uvhttp_tmp_path(cfg_path, sizeof(cfg_path), tag, "cfg");
 	long code = 0;
 	if (uvhttp_write_file(cfg_path, cfg)) {
-		code = http_run_curl(cfg_path, "http");
+		code = http_run_curl(cfg_path, tag);
 	}
 	remove(cfg_path);
 	return code;
@@ -348,11 +365,13 @@ long uvhttp_curl(const char *cfg) {
 
 long uvhttp_curl_logged(const char *cfg, const char *dest_path,
 		uint64_t expected) {
+	char tag[16];
+	http_call_tag(tag, sizeof(tag));
 	char cfg_path[256];
-	uvhttp_tmp_path(cfg_path, sizeof(cfg_path), "http", "cfg");
+	uvhttp_tmp_path(cfg_path, sizeof(cfg_path), tag, "cfg");
 	long code = 0;
 	if (uvhttp_write_file(cfg_path, cfg)) {
-		code = http_run_curl_logged(cfg_path, "http", dest_path, expected);
+		code = http_run_curl_logged(cfg_path, tag, dest_path, expected);
 	}
 	remove(cfg_path);
 	return code;
