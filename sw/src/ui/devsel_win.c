@@ -35,8 +35,10 @@
 #define DSW_ROW_H		44
 
 // The window lists at most every device of the system, plus the optional extra
-// row of the single-selection mode.
-#define DSW_ROW_MAX		(SYSTEM_DEV_MAX_COUNT + 1)
+// row of the single-selection mode, or at most DEVSEL_LIST_MAX rows of a list
+// of text items.
+#define DSW_ROW_MAX		(((SYSTEM_DEV_MAX_COUNT + 1) > DEVSEL_LIST_MAX) ? \
+		(SYSTEM_DEV_MAX_COUNT + 1) : DEVSEL_LIST_MAX)
 
 // colour of the greyed-out reason text of a device that cannot be selected
 #define DSW_DIM_COLOR	C(0xFF909090)
@@ -73,6 +75,9 @@ static char dev_reason_strs[DSW_ROW_MAX][96];
 // device is the single-selection mode's extra row, which stands for something
 // other than a device.
 static device_st *listed[DSW_ROW_MAX];
+// the index of the text item each row lists, when the window lists text items
+// (devsel_win_exec_list) instead of devices
+static uint8_t listed_item[DSW_ROW_MAX];
 static bool selectable[DSW_ROW_MAX];
 static uint8_t listed_count;
 
@@ -152,6 +157,7 @@ static void add_row(device_st *device, const char *text, const char *reason,
 		bool checked, int16_t box_w, int16_t reason_w, const uv_uistyle_st *style) {
 	uint8_t r = listed_count;
 	listed[r] = device;
+	listed_item[r] = r;
 	selectable[r] = (reason == NULL);
 
 	if (device != NULL) {
@@ -186,12 +192,16 @@ static void add_row(device_st *device, const char *text, const char *reason,
 }
 
 
-/// @brief: Builds and runs the device-selection window in either mode, and
-/// writes the selected devices into *targets*. See the two public functions.
-static uint8_t devsel_exec(system_st *system, const char *title, const char *info,
-		const char *accept_text, devsel_reason_t reason_callb,
-		const char *extra_text, device_st **targets, uint8_t max_count,
-		bool single, const uv_uistyle_st *style) {
+/// @brief: Builds and runs the selection window in either mode. The rows are the
+/// devices of *system*, or when *items* is not NULL its *item_count* text items,
+/// of which the one at *default_item* starts selected. Returns the number of
+/// rows selected: the devices are written into *targets*, the text items'
+/// indexes into *item_targets*. See the public functions.
+static uint8_t devsel_exec(system_st *system, const char *const *items,
+		uint8_t item_count, uint8_t default_item, const char *title,
+		const char *info, const char *accept_text, devsel_reason_t reason_callb,
+		const char *extra_text, device_st **targets, uint8_t *item_targets,
+		uint8_t max_count, bool single, const uv_uistyle_st *style) {
 	uint8_t ret = 0;
 	accepted = false;
 	listed_count = 0;
@@ -231,7 +241,12 @@ static uint8_t devsel_exec(system_st *system, const char *title, const char *inf
 	int16_t reason_w = single ? 0 : (inner_w / 3);
 	int16_t box_w = single ? inner_w : (inner_w - reason_w - DSW_MARGIN);
 
-	for (uint8_t i = 0; (i < system_get_dev_count(system)) &&
+	for (uint8_t i = 0; (items != NULL) && (i < item_count) &&
+			(listed_count < DSW_ROW_MAX); i++) {
+		add_row(NULL, items[i], NULL, single ? (i == default_item) : true,
+				box_w, reason_w, style);
+	}
+	for (uint8_t i = 0; (items == NULL) && (i < system_get_dev_count(system)) &&
 			(listed_count < DSW_ROW_MAX); i++) {
 		device_st *d = system_get_dev(system, i);
 		const char *reason = (reason_callb != NULL) ? reason_callb(d) : NULL;
@@ -287,7 +302,12 @@ static uint8_t devsel_exec(system_st *system, const char *title, const char *inf
 	if (accepted) {
 		for (uint8_t i = 0; (i < listed_count) && (ret < max_count); i++) {
 			if (selectable[i] && uv_uicheckbox_get_state(&dev_boxes[i])) {
-				targets[ret] = listed[i];
+				if (targets != NULL) {
+					targets[ret] = listed[i];
+				}
+				if (item_targets != NULL) {
+					item_targets[ret] = listed_item[i];
+				}
 				ret++;
 			}
 		}
@@ -299,8 +319,8 @@ static uint8_t devsel_exec(system_st *system, const char *title, const char *inf
 uint8_t devsel_win_exec(system_st *system, const char *title,
 		const char *accept_text, devsel_reason_t reason_callb,
 		device_st **targets, uint8_t max_count, const uv_uistyle_st *style) {
-	return devsel_exec(system, title, DSW_MULTI_INFO, accept_text, reason_callb,
-			NULL, targets, max_count, false, style);
+	return devsel_exec(system, NULL, 0, 0, title, DSW_MULTI_INFO, accept_text,
+			reason_callb, NULL, targets, NULL, max_count, false, style);
 }
 
 
@@ -308,8 +328,8 @@ bool devsel_win_exec_single(system_st *system, const char *title,
 		const char *info, const char *accept_text, devsel_reason_t reason_callb,
 		const char *extra_text, device_st **target, const uv_uistyle_st *style) {
 	device_st *picked[1] = { NULL };
-	uint8_t count = devsel_exec(system, title, info, accept_text, reason_callb,
-			extra_text, picked, 1, true, style);
+	uint8_t count = devsel_exec(system, NULL, 0, 0, title, info, accept_text,
+			reason_callb, extra_text, picked, NULL, 1, true, style);
 	if (count != 0) {
 		*target = picked[0];
 	}
@@ -317,6 +337,22 @@ bool devsel_win_exec_single(system_st *system, const char *title,
 		// cancelled: leave the caller's target untouched
 	}
 	return (count != 0);
+}
+
+
+bool devsel_win_exec_list(const char *title, const char *info,
+		const char *accept_text, const char *const *items, uint8_t count,
+		uint8_t *selected, const uv_uistyle_st *style) {
+	uint8_t picked[1] = { 0 };
+	uint8_t n = devsel_exec(NULL, items, count, *selected, title, info,
+			accept_text, NULL, NULL, NULL, picked, 1, true, style);
+	if (n != 0) {
+		*selected = picked[0];
+	}
+	else {
+		// cancelled: leave the caller's selection untouched
+	}
+	return (n != 0);
 }
 
 

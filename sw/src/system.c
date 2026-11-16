@@ -125,6 +125,30 @@ bool system_mktempdir(const char *prefix, char *dest, size_t dest_len) {
 }
 
 
+// Returns the NODEID of a system manifest's DEVS entry *obj*. It is stored as a
+// hexadecimal string ("0x7"), but a plain integer is accepted too. 0 when the
+// entry has none.
+static uint8_t sysfile_entry_nodeid(parser_node_st obj) {
+	uint8_t nodeid = 0;
+	parser_node_st nid = parser_find_child(obj, "NODEID");
+	if (!parser_node_is_valid(nid)) {
+		// no node id
+	}
+	else if (parser_get_type(nid) == PARSER_STRING) {
+		char buf[16];
+		parser_get_string(nid, buf, sizeof(buf));
+		nodeid = (uint8_t) strtoul(buf, NULL, 0);
+	}
+	else if (parser_get_type(nid) == PARSER_INT) {
+		nodeid = (uint8_t) parser_get_int(nid);
+	}
+	else {
+		// unknown form: leave nodeid at 0
+	}
+	return nodeid;
+}
+
+
 // Parses the DEVS array of an already-loaded system manifest (*manifest* is the
 // manifest root) and appends one device per entry, each from its UVDEV package
 // (extracted under *tmpdir*) and initialized with the entry's NODEID. The entry's
@@ -156,23 +180,8 @@ static bool system_parse_sysfile(system_st *this, parser_node_st manifest,
 				continue;
 			}
 
-			// node id: stored as a hexadecimal string ("0x7"), but also accept a
-			// plain integer. 0 means "read the default from the UVDEV package".
-			uint8_t nodeid = 0;
-			parser_node_st nid = parser_find_child(obj, "NODEID");
-			if (parser_node_is_valid(nid)) {
-				if (parser_get_type(nid) == PARSER_STRING) {
-					char buf[16];
-					parser_get_string(nid, buf, sizeof(buf));
-					nodeid = (uint8_t) strtoul(buf, NULL, 0);
-				}
-				else if (parser_get_type(nid) == PARSER_INT) {
-					nodeid = (uint8_t) parser_get_int(nid);
-				}
-				else {
-					// unknown form: leave nodeid at 0 (read from the package)
-				}
-			}
+			// 0 means "read the default from the UVDEV package"
+			uint8_t nodeid = sysfile_entry_nodeid(obj);
 
 			// UVDEV package file name, relative to the extracted system package
 			parser_node_st ud = parser_find_child(obj, "UVDEV");
@@ -295,6 +304,101 @@ bool system_set_file(system_st *this, const char *filepath) {
 	}
 
 	return ret;
+}
+
+
+// The directory system_read_sysfile_params() extracted into last. Each call
+// removes it and extracts into a fresh one, which takes over its slot in
+// sysfile_tmpdirs, so reading system files over and over neither piles up
+// directories nor runs out of slots, and nothing of an earlier package is left
+// behind to be mistaken for the new one's. Removed at exit with the rest.
+static char sysfile_params_dir[1024];
+
+
+// Replaces the directory of system_read_sysfile_params() with a fresh one.
+static bool sysfile_params_newdir(void) {
+	char newdir[1024];
+	bool ret = archive_mktempdir("uvcan_uvsys", newdir, sizeof(newdir));
+	if (!ret) {
+		// keep the old directory and its slot; the read fails
+	}
+	else if (strlen(sysfile_params_dir) == 0) {
+		sysfile_track_tmpdir(newdir);
+	}
+	else {
+		sysfile_rmdir(sysfile_params_dir);
+		for (uint8_t i = 0; i < sysfile_tmpdir_count; i++) {
+			if (strcmp(sysfile_tmpdirs[i], sysfile_params_dir) == 0) {
+				snprintf(sysfile_tmpdirs[i], sizeof(sysfile_tmpdirs[i]), "%s",
+						newdir);
+			}
+		}
+	}
+	if (ret) {
+		snprintf(sysfile_params_dir, sizeof(sysfile_params_dir), "%s", newdir);
+	}
+	return ret;
+}
+
+
+uint8_t system_read_sysfile_params(const char *filepath,
+		sysfile_param_st *dest, uint8_t max_count) {
+	uint8_t count = 0;
+	if (!sysfile_params_newdir()) {
+		PRINT("Failed to create a temporary directory for '%s'.\n", filepath);
+	}
+	else if (!archive_extract(filepath, sysfile_params_dir)) {
+		PRINT("Failed to extract '%s'. Is it a valid .uvsys package and is "
+				"the extraction tool (unzip / tar) available?\n", filepath);
+	}
+	else {
+		const char *tmpdir = sysfile_params_dir;
+		char manifest_path[1100];
+		if (!parser_find_file(tmpdir, "uvsys",
+				manifest_path, sizeof(manifest_path))) {
+			PRINT("Package '%s' does not contain a uvsys.json manifest.\n",
+					filepath);
+		}
+		else {
+			char *data = NULL;
+			parser_node_st manifest = parser_read_file(manifest_path, &data);
+			parser_node_st devs = parser_node_is_valid(manifest) ?
+					parser_find_child(manifest, "DEVS") : manifest;
+			if (!parser_node_is_valid(devs) ||
+					(parser_get_type(devs) != PARSER_ARRAY)) {
+				PRINT("Failed to read the device list of '%s'.\n", filepath);
+			}
+			else {
+				unsigned int size = parser_array_get_size(devs);
+				for (unsigned int i = 0; (i < size) && (count < max_count); i++) {
+					parser_node_st obj = parser_array_at(devs, i);
+					parser_node_st pf = parser_node_is_valid(obj) ?
+							parser_find_child(obj, "PARAM") : obj;
+					if (parser_node_is_valid(pf) &&
+							(parser_get_type(pf) == PARSER_STRING)) {
+						sysfile_param_st *e = &dest[count];
+						memset(e, 0, sizeof(*e));
+						e->nodeid = sysfile_entry_nodeid(obj);
+						parser_get_string(pf, e->param_name,
+								sizeof(e->param_name));
+						snprintf(e->param_file, sizeof(e->param_file), "%s/%s",
+								tmpdir, e->param_name);
+						parser_node_st ud = parser_find_child(obj, "UVDEV");
+						if (parser_node_is_valid(ud) &&
+								(parser_get_type(ud) == PARSER_STRING)) {
+							parser_get_string(ud, e->uvdev, sizeof(e->uvdev));
+						}
+						count++;
+					}
+					else {
+						// a device saved without parameters
+					}
+				}
+			}
+			free(data);
+		}
+	}
+	return count;
 }
 
 

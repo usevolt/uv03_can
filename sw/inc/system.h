@@ -319,6 +319,30 @@ void system_set_device_file(device_st *device, const char *filepath);
 /// flashed onto it. Returns 0 when the file cannot be read or defines no node id.
 uint8_t system_read_file_nodeid(const char *filepath);
 
+/// @brief: One device's saved parameters in a .uvsys system file, as listed by
+/// system_read_sysfile_params().
+typedef struct {
+	/// @brief: The device's .uvdev package file name inside the system file.
+	char uvdev[128];
+	/// @brief: The node id the device was given in the system file.
+	uint8_t nodeid;
+	/// @brief: The parameter file's name inside the system file.
+	char param_name[128];
+	/// @brief: The extracted parameter file, ready to be loaded.
+	char param_file[1024];
+} sysfile_param_st;
+
+/// @brief: Lists the parameter files bundled in the .uvsys system file at
+/// *filepath*, without loading the system: the package is extracted into a
+/// temporary directory of its own and an entry is written into *dest* for each
+/// of its devices which was saved with parameters, at most *max_count* of them.
+///
+/// The extracted files stay until the next call (which removes them) or until
+/// uvcan exits. Returns the number of entries; 0 when the file cannot be
+/// read (the reason is printed) or holds no parameters.
+uint8_t system_read_sysfile_params(const char *filepath,
+		sysfile_param_st *dest, uint8_t max_count);
+
 /// @brief: Loads the database of *device*'s .uvdev package into dev.db, the
 /// way the device's identification is read when it is added. Returns false when
 /// the device has no package or its database could not be read. On success the

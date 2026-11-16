@@ -58,6 +58,123 @@ static const uv_uifileedit_filter_st PARAM_FILE_FILTERS[] = {
 };
 
 
+// Selectable file types for the parameter load dialog: the parameter files, plus
+// the .uvsys system files, which bundle the saved parameters of their devices.
+static const uv_uifileedit_filter_st PARAM_LOAD_FILE_FILTERS[] = {
+	{ "Parameter and system files", "*.json *.yaml *.yml *.uvsys" },
+	{ "Parameter files", "*.json *.yaml *.yml" },
+	{ "System files", "*.uvsys" },
+	{ "All files", "*" },
+};
+
+
+// Resolves a .uvsys file chosen in the "Load parameters" dialog into the one of
+// its parameter files to load onto *device*: the user picks it from a list of
+// the system file's parameter files, the one saved with *device*'s node id
+// selected at first. A system file with a single parameter file needs no
+// picking. Writes the extracted file's path into *path* and returns true;
+// returns false, telling the user why, when nothing is to be loaded.
+static bool pick_sysfile_param(const device_st *device, char *path,
+		size_t path_len) {
+	bool ret = false;
+	static sysfile_param_st params[DEVSEL_LIST_MAX];
+	char sysfile[1024];
+	snprintf(sysfile, sizeof(sysfile), "%s", path);
+	uint8_t count = system_read_sysfile_params(sysfile, params,
+			DEVSEL_LIST_MAX);
+	if (count == 0) {
+		uv_uiacceptdialog_st dialog = { };
+		uv_uiacceptdialog_exec(&dialog,
+				"The system file holds no saved parameters, or it could not be "
+				"read. See the log for details.", "OK", "OK", &uv_uistyles[0]);
+	}
+	else {
+		uint8_t sel = 0;
+		for (uint8_t i = 0; i < count; i++) {
+			if (params[i].nodeid == device->nodeid) {
+				sel = i;
+				break;
+			}
+		}
+		if (count == 1) {
+			ret = true;
+		}
+		else {
+			static char item_strs[DEVSEL_LIST_MAX][192];
+			const char *items[DEVSEL_LIST_MAX];
+			for (uint8_t i = 0; i < count; i++) {
+				snprintf(item_strs[i], sizeof(item_strs[i]), "%s  (node 0x%x)%s",
+						params[i].param_name, (unsigned int) params[i].nodeid,
+						(params[i].nodeid == device->nodeid) ?
+								"  - this device's node id" : "");
+				items[i] = item_strs[i];
+			}
+			char info[256];
+			snprintf(info, sizeof(info), "The system file holds the parameters "
+					"of %u devices. Pick the one to load onto node 0x%x.",
+					(unsigned int) count, (unsigned int) device->nodeid);
+			ret = devsel_win_exec_list("Load parameters from system file", info,
+					"Load", items, count, &sel, &uv_uistyles[0]);
+		}
+		if (ret) {
+			printf("Loading the parameters '%s' (node 0x%x) of the system file "
+					"'%s'.\n", params[sel].param_name,
+					(unsigned int) params[sel].nodeid, sysfile);
+			fflush(stdout);
+			snprintf(path, path_len, "%s", params[sel].param_file);
+		}
+	}
+	return ret;
+}
+
+
+// Lets the user pick which device of a parameter file holding several devices
+// is loaded onto *device*, the one with *device*'s node id selected at first,
+// and appends the --loadparam ':<nodeid>' postfix naming it to *path*: the load
+// then writes that device of the file, and only it, to *device*. A file of a
+// single device is left as it is. Returns false when the user cancelled.
+static bool pick_file_device(const device_st *device, char *path,
+		size_t path_len) {
+	bool ret = true;
+	static loadparam_file_dev_st devs[DEVSEL_LIST_MAX];
+	uint8_t count = loadparam_list_file_devs(path, devs, DEVSEL_LIST_MAX);
+	if (count > 1) {
+		static char item_strs[DEVSEL_LIST_MAX][192];
+		const char *items[DEVSEL_LIST_MAX];
+		uint8_t sel = 0;
+		bool matched = false;
+		for (uint8_t i = 0; i < count; i++) {
+			bool own = (devs[i].nodeid == device->nodeid);
+			if (own && !matched) {
+				sel = i;
+				matched = true;
+			}
+			snprintf(item_strs[i], sizeof(item_strs[i]), "%s  (node 0x%x)%s",
+					(strlen(devs[i].devname) != 0) ?
+							devs[i].devname : "Unnamed device",
+					(unsigned int) devs[i].nodeid,
+					own ? "  - this device's node id" : "");
+			items[i] = item_strs[i];
+		}
+		char info[256];
+		snprintf(info, sizeof(info), "The parameter file holds the parameters "
+				"of %u devices. Pick the one to load onto node 0x%x.",
+				(unsigned int) count, (unsigned int) device->nodeid);
+		ret = devsel_win_exec_list("Load parameters", info, "Load", items,
+				count, &sel, &uv_uistyles[0]);
+		if (ret) {
+			size_t len = strlen(path);
+			snprintf(path + len, path_len - len, ":0x%x",
+					(unsigned int) devs[sel].nodeid);
+		}
+	}
+	else {
+		// one device (or none listable): load the file as it is
+	}
+	return ret;
+}
+
+
 // Ensures the save dialog's result has a file type: when the user typed a name
 // without any extension, the parameters are saved in the default format, so
 // name the file accordingly.
@@ -2101,9 +2218,17 @@ bool devicetab_step(void) {
 		// its own task so the UI stays live.
 		else if (uv_uibutton_clicked(&content.load_btn)) {
 			char path[1024] = "";
-			if (uv_uifiledialog_exec("Load parameters from", PARAM_FILE_FILTERS,
-					sizeof(PARAM_FILE_FILTERS) / sizeof(PARAM_FILE_FILTERS[0]),
-					false, path, sizeof(path))) {
+			// a .uvsys system file is resolved into the parameter file of one
+			// of its devices, and a parameter file of several devices into the
+			// one device of it, which the user picks
+			if (uv_uifiledialog_exec("Load parameters from",
+					PARAM_LOAD_FILE_FILTERS,
+					sizeof(PARAM_LOAD_FILE_FILTERS) /
+					sizeof(PARAM_LOAD_FILE_FILTERS[0]),
+					false, path, sizeof(path)) &&
+					(!path_is_uvsys(path) ||
+					pick_sysfile_param(current_device, path, sizeof(path))) &&
+					pick_file_device(current_device, path, sizeof(path))) {
 				char title[160];
 				const char *dname = (strlen(current_device->devname) > 0) ?
 						current_device->devname : current_device->name;

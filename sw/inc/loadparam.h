@@ -66,6 +66,12 @@ typedef struct {
 	// true once a device of the current file matched its node id filter
 	bool nodeid_filter_matched;
 
+	// Set by loadparam_load_device() to the node id of the device it loads:
+	// a device a ':<nodeid>' filter picks out of a multi-device file is then
+	// written to this node instead of to its own node id in the file, the way a
+	// single-device file is. 0 for the other loads.
+	uint8_t device_target;
+
 	// The --loadparam option's attached argument (empty when none was given).
 	// Captured by cmd_loadparam; the dispatch task resolves it (against the
 	// non-option arguments and the loaded system) into a .uvsys / prior-system
@@ -160,7 +166,30 @@ bool cmd_loadparam(const char *arg);
 /// target (like the --loadparam command but for a single device chosen in the
 /// UI). Blocks while the parameters are written over SDO. Returns true on
 /// success.
+///
+/// *file* takes the --loadparam ':<nodeid>' postfix ('params.json:0xd'). On a
+/// file holding several devices it picks the device of the file to load, which
+/// is then written to *device* rather than to the node id it has in the file.
 bool loadparam_load_device(device_st *device, const char *file);
+
+
+/// @brief: One device of a parameter file, as listed by
+/// loadparam_list_file_devs().
+typedef struct {
+	/// @brief: The device's NODEID in the file.
+	uint8_t nodeid;
+	/// @brief: The device's DEVNAME in the file, empty when it has none.
+	char devname[64];
+} loadparam_file_dev_st;
+
+
+/// @brief: Lists the devices of the parameter file at *path* (the entries of
+/// its DEVS array), at most *max_count* of them, into *dest*. A device whose
+/// NODEID depends on a query answer cannot be told before the load and is left
+/// out. Returns the number of devices listed; 0 when the file cannot be read or
+/// is in the old single-device form.
+uint8_t loadparam_list_file_devs(const char *path, loadparam_file_dev_st *dest,
+		uint8_t max_count);
 
 
 /// @brief: Starts loadparam_load_device() on its own task so the caller (the UI)

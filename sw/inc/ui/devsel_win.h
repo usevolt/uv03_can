@@ -72,4 +72,22 @@ bool devsel_win_exec_single(system_st *system, const char *title,
 		const char *extra_text, device_st **target, const uv_uistyle_st *style);
 
 
+/// @brief: The most text items devsel_win_exec_list() lists.
+#define DEVSEL_LIST_MAX		SYSTEM_DEV_MAX_COUNT
+
+
+/// @brief: Opens the modal selection window in single-selection mode over a
+/// list of text items instead of the system's devices: exactly one of the
+/// *count* items (at most DEVSEL_LIST_MAX) is picked, the rows behaving like
+/// radio buttons. Blocks until the user accepts or cancels.
+///
+/// @param selected: In: the index of the item selected at first. Out: the
+/// index of the item picked. Left untouched when the user cancels.
+///
+/// @return: true when the user accepted a selection, false when they cancelled.
+bool devsel_win_exec_list(const char *title, const char *info,
+		const char *accept_text, const char *const *items, uint8_t count,
+		uint8_t *selected, const uv_uistyle_st *style);
+
+
 #endif /* DEVSEL_WIN_H_ */

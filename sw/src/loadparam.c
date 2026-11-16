@@ -751,24 +751,29 @@ static bool loadparam_load_device_ex(device_st *device, const char *file,
 				"file before loading parameters.\n");
 	}
 	else {
-		// prepare the loadparam state for a single file
+		// prepare the loadparam state for a single file. The file may carry a
+		// ':<nodeid>' list picking the devices of a multi-device file.
 		this->current_file = 0;
 		this->dev_count = 0;
 		this->sys_load_mode = sys_mode;
 		loadparam_clear_files();
 		loadparam_queries_reset();
-		strcpy(this->files[0], file);
 
-		bool db_loaded = load_device_db(device);
-		if (!db_loaded) {
+		bool db_loaded = false;
+		if (!loadparam_set_file(0, file)) {
+			// already reported
+		}
+		else if (!(db_loaded = load_device_db(device))) {
 			ERROR("Failed to load the database of '%s'.\n", device->filepath);
 		}
 		else {
+			this->device_target = device->nodeid;
 			uv_can_set_up(false);
 			loadparam_step(NULL);
 			db_deinit();
 			ret = this->success;
 		}
+		this->device_target = 0;
 		this->sys_load_mode = false;
 	}
 	return ret;
@@ -777,6 +782,51 @@ static bool loadparam_load_device_ex(device_st *device, const char *file,
 
 bool loadparam_load_device(device_st *device, const char *file) {
 	return loadparam_load_device_ex(device, file, false);
+}
+
+
+uint8_t loadparam_list_file_devs(const char *path, loadparam_file_dev_st *dest,
+		uint8_t max_count) {
+	uint8_t count = 0;
+	char *buffer = NULL;
+	parser_node_st root = parser_read_file(path, &buffer);
+	parser_node_st devs = parser_node_is_valid(root) ?
+			parser_find_child(root, "DEVS") : root;
+	if (parser_node_is_valid(devs) && (parser_get_type(devs) == PARSER_ARRAY)) {
+		unsigned int size = parser_array_get_size(devs);
+		for (unsigned int i = 0; (i < size) && (count < max_count); i++) {
+			parser_node_st d = parser_array_at(devs, i);
+			parser_node_st nid = parser_node_is_valid(d) ?
+					parser_find_child(d, "NODEID") : d;
+			unsigned long nodeid = 0;
+			if (!parser_node_is_valid(nid)) {
+				// no node id
+			}
+			else if (parser_get_type(nid) == PARSER_STRING) {
+				char buf[16];
+				parser_get_string(nid, buf, sizeof(buf));
+				nodeid = strtoul(buf, NULL, 0);
+			}
+			else if (parser_get_type(nid) == PARSER_INT) {
+				nodeid = (unsigned long) parser_get_int(nid);
+			}
+			else {
+				// set by a query: not known before the load
+			}
+			if ((nodeid >= 1) && (nodeid <= 127)) {
+				loadparam_file_dev_st *e = &dest[count++];
+				memset(e, 0, sizeof(*e));
+				e->nodeid = (uint8_t) nodeid;
+				parser_node_st dn = parser_find_child(d, "DEVNAME");
+				if (parser_node_is_valid(dn) &&
+						(parser_get_type(dn) == PARSER_STRING)) {
+					parser_get_string(dn, e->devname, sizeof(e->devname));
+				}
+			}
+		}
+	}
+	free(buffer);
+	return count;
 }
 
 
@@ -1568,6 +1618,15 @@ static uv_errors_e parse_dev(parser_node_st devnode) {
 				return ERR_SKIPPED;
 			}
 			this->nodeid_filter_matched = true;
+			// a load onto a single device (the UI's device tab) picks the
+			// device out of the file and writes it to that device
+			if ((this->device_target != 0) && (this->device_target != nodeid)) {
+				target_nodeid = this->device_target;
+				printf("Loading the parameters of node 0x%x to node 0x%x, without "
+						"changing its node id.\n", (unsigned int) nodeid,
+						(unsigned int) target_nodeid);
+				fflush(stdout);
+			}
 		}
 		else if (forced_set &&
 				(this->file_dev_count == 1) &&
