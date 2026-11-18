@@ -185,7 +185,8 @@ commands_st commands[] = {
 		{
 				.cmd_long = "can",
 				.cmd_short = 'c',
-				.str = "Selects the CAN-USB hardware for communication. Defaults to can0.",
+				.str = "Selects the CAN-USB hardware for communication. Defaults to can0, or when "
+						"that does not exist, to vcan0 or uvremote0, whichever exists first.",
 				.args = ARG_REQUIRE,
 				.callback = &cmd_can
 		},
@@ -691,6 +692,10 @@ unsigned int commands_count(void) {
 // Set once --can / -c is given on the command line, so the UI start-up skips the
 // CAN-device configuration window (the user already chose the device explicitly).
 static bool can_given;
+
+bool commands_can_given(void) {
+	return can_given;
+}
 
 bool cmd_can(const char *arg) {
 	can_given = true;

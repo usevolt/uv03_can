@@ -52,6 +52,9 @@ extern commands_st commands[];
 /// @brief: Returns the command count.
 unsigned int commands_count(void);
 
+/// @brief: True once --can / -c has been given on the command line
+bool commands_can_given(void);
+
 
 /// @brief: Selects *nodeid* as the CANopen node which the following commands
 /// operate on, exactly as the *nodeid* (force == false) and *forcenodeid*

@@ -501,7 +501,7 @@ cannot be packaged and is reported as an error.
 
 ### Configuration
 
-`inc/uv_hal_config.h` contains all HAL feature flags and the `PRINT()` macro (stderr output, suppressed with `--silent`). CAN defaults: channel `can0`, baudrate 250000.
+`inc/uv_hal_config.h` contains all HAL feature flags and the `PRINT()` macro (stderr output, suppressed with `--silent`). CAN defaults: channel `can0`, or `vcan0` / `uvremote0` (the first which exists) when there is no `can0`, with a warning unless `--can` / `-c` is given; baudrate 250000.
 
 ### Conventions
 

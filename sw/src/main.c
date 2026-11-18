@@ -52,10 +52,75 @@ unsigned int obj_dict_len(void) {
 }
 
 
+#if CONFIG_TARGET_LINUX && !CONFIG_TARGET_WEB
+/// @brief: The CAN interfaces tried, in order, when --can / -c is not given
+static const char *default_can_channels[] = { "can0", "vcan0", "uvremote0" };
+
+/// @brief: Set by init() when the default CAN interface was not can0: either
+/// can0 did not exist and another one was taken, or none of them existed.
+/// Reported by default_can_warn() once the command line shows whether the user
+/// chose the interface themselves.
+static bool default_can_fallback = false;
+
+
+/// @brief: Picks the first of default_can_channels[] which exists, can0 when
+/// none of them does.
+static void default_can_select(void) {
+	bool found = false;
+	for (unsigned int i = 0;
+			i < sizeof(default_can_channels) / sizeof(default_can_channels[0]);
+			i++) {
+		char path[128];
+		snprintf(path, sizeof(path), "/sys/class/net/%s",
+				default_can_channels[i]);
+		if (access(path, F_OK) == 0) {
+			strcpy(this->can_channel, default_can_channels[i]);
+			found = true;
+			break;
+		}
+		else {
+		}
+	}
+	if (!found) {
+		strcpy(this->can_channel, default_can_channels[0]);
+	}
+	else {
+	}
+	default_can_fallback = !found ||
+			(strcmp(this->can_channel, default_can_channels[0]) != 0);
+}
+
+
+/// @brief: Warns about the default CAN interface not being can0, unless the
+/// user selected the interface with --can / -c. Printed even without
+/// --silent's verbose output, as uvcan would otherwise talk to an unexpected bus.
+static void default_can_warn(void) {
+	if (default_can_fallback && !commands_can_given()) {
+		if (strcmp(this->can_channel, default_can_channels[0]) != 0) {
+			fprintf(stderr, PRINT_BOLDYELLOW "Warning: CAN interface '%s' does not exist, "
+					"using '%s' instead. Select the interface with --can / -c.\n"
+					PRINT_RESET, default_can_channels[0], this->can_channel);
+		}
+		else {
+			fprintf(stderr, PRINT_BOLDYELLOW "Warning: none of the CAN interfaces "
+					"can0, vcan0 or uvremote0 exists. Select the interface "
+					"with --can / -c.\n" PRINT_RESET);
+		}
+	}
+	else {
+	}
+}
+#endif
+
+
 void init(void *me) {
 	// initialize the default settings
 
 	strcpy(this->can_channel, "can0");
+#if CONFIG_TARGET_LINUX && !CONFIG_TARGET_WEB
+	// can0 if it exists, else vcan0, else uvremote0
+	default_can_select();
+#endif
 	char cmd[256];
 #if CONFIG_TARGET_LINUX && !CONFIG_TARGET_WEB
 	// get the net dev baudrate. If dev was not available, baudrate will be 0.
@@ -274,6 +339,10 @@ int main(int argc, char *argv[]) {
 			break;
 		}
 	}
+#if CONFIG_TARGET_LINUX && !CONFIG_TARGET_WEB
+	default_can_warn();
+#endif
+
 	if (optind < argc) {
 		this->argv_count = argc - optind;
 		this->nonopt_argv = &(argv[optind]);
