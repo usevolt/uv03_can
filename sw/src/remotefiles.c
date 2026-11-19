@@ -31,6 +31,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <strings.h>
+#include <ctype.h>
 #include <uv_rtos.h>
 #include "parser.h"
 #include "http.h"
@@ -556,11 +557,68 @@ static int rf_cmp_name(const char *a, const char *b) {
 }
 
 
-/// @brief: qsort predicate ordering a product's versions by file name.
+/// @brief: Alphabetical order of two names in which a run of digits counts as
+/// the number it is, so "uv0d_1000-g1a2b" comes after "uv0d_999-g3c4d" as its
+/// build number says rather than before it as its first digit would.
+/// Otherwise as rf_cmp_name(), whose order also breaks a tie.
+static int rf_cmp_natural(const char *a, const char *b) {
+	const char *pa = a;
+	const char *pb = b;
+	int ret = 0;
+	while ((ret == 0) && (*pa != '\0') && (*pb != '\0')) {
+		if (isdigit((unsigned char) *pa) && isdigit((unsigned char) *pb)) {
+			while (*pa == '0') {
+				pa++;
+			}
+			while (*pb == '0') {
+				pb++;
+			}
+			const char *ea = pa;
+			const char *eb = pb;
+			while (isdigit((unsigned char) *ea)) {
+				ea++;
+			}
+			while (isdigit((unsigned char) *eb)) {
+				eb++;
+			}
+			// the longer run without its leading zeros is the bigger number,
+			// and runs of a length compare digit by digit
+			if ((ea - pa) != (eb - pb)) {
+				ret = ((ea - pa) < (eb - pb)) ? -1 : 1;
+			}
+			else {
+				ret = strncmp(pa, pb, (size_t) (ea - pa));
+			}
+			pa = ea;
+			pb = eb;
+		}
+		else {
+			ret = tolower((unsigned char) *pa) - tolower((unsigned char) *pb);
+			pa++;
+			pb++;
+		}
+	}
+	if (ret == 0) {
+		ret = (unsigned char) *pa - (unsigned char) *pb;
+	}
+	else {
+	}
+	if (ret == 0) {
+		ret = rf_cmp_name(a, b);
+	}
+	else {
+	}
+	return ret;
+}
+
+
+/// @brief: qsort predicate ordering a product's versions by file name, the
+/// newest first: the files of a product differ by the build number in their
+/// names, so the highest one is the latest build and the one usually wanted.
 static int rf_cmp_version(const void *a, const void *b) {
 	const remotefiles_version_st *va = a;
 	const remotefiles_version_st *vb = b;
-	return rf_cmp_name(va->version, vb->version);
+	return rf_cmp_natural(vb->version, va->version);
 }
 
 
@@ -583,8 +641,8 @@ static int rf_cmp_product(const void *a, const void *b) {
 }
 
 
-/// @brief: Puts the whole listing in the order it is shown in: alphabetical,
-/// both the files inside a product and the products themselves.
+/// @brief: Puts the whole listing in the order it is shown in: the products
+/// alphabetical, the files inside a product newest (highest build) first.
 ///
 /// Done once here rather than in the panel, so that every reader of the listing
 /// sees the same order and the indices the panel hands back (which product,
