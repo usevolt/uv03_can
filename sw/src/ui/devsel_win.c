@@ -207,7 +207,7 @@ static uint8_t devsel_exec(system_st *system, const char *const *items,
 	listed_count = 0;
 	single_mode = single;
 
-	uv_uidialog_init(&dialog, dialog_buf, style);
+	uv_uidialog_init(&dialog, dialog_buf, UV_UIWINDOW_BUFFER_LEN(dialog_buf), style);
 	uv_uidialog_set_stepcallback(&dialog, &dsw_step, NULL);
 	int16_t w = uv_uibb(&dialog)->width;
 	int16_t h = uv_uibb(&dialog)->height;
@@ -229,7 +229,7 @@ static uint8_t devsel_exec(system_st *system, const char *const *items,
 	int16_t list_y = info_y + DSW_INFO_H + DSW_MARGIN;
 	int16_t list_h = h - list_y - (DSW_BTN_H + 2 * DSW_MARGIN);
 	int16_t list_w = w - 2 * DSW_MARGIN;
-	uv_uiwindow_init(&list_win, list_buf, style);
+	uv_uiwindow_init(&list_win, list_buf, UV_UIWINDOW_BUFFER_LEN(list_buf), style);
 	uv_uiwindow_set_transparent(&list_win, true);
 	uv_uidialog_addxy(&dialog, &list_win, DSW_MARGIN, list_y, list_w, list_h);
 

@@ -267,7 +267,7 @@ static int16_t vnw_build_rows(int16_t inner_w, const uv_uistyle_st *style) {
 void versionnotes_win_exec(const uv_uistyle_st *style) {
 	list_shown = false;
 
-	uv_uidialog_init(&dialog, dialog_buf, style);
+	uv_uidialog_init(&dialog, dialog_buf, UV_UIWINDOW_BUFFER_LEN(dialog_buf), style);
 	uv_uidialog_set_stepcallback(&dialog, &vnw_step, NULL);
 	int16_t w = uv_uibb(&dialog)->width;
 	int16_t h = uv_uibb(&dialog)->height;
@@ -319,7 +319,7 @@ void versionnotes_win_exec(const uv_uistyle_st *style) {
 	// the window is initialised only once its child array exists: it is handed
 	// over by pointer and kept for as long as the window lives
 	if ((count != 0) && vnw_alloc(count)) {
-		uv_uiwindow_init(&list_win, list_buf, style);
+		uv_uiwindow_init(&list_win, list_buf, (uint16_t) (2 * (count + 1)), style);
 		uv_uiwindow_set_transparent(&list_win, true);
 		uv_uidialog_addxy(&dialog, &list_win,
 				VNW_MARGIN, list_y, list_w, list_h);

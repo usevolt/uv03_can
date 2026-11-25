@@ -340,7 +340,7 @@ void uvui_exec(void) {
 	uv_ui_init();
 
 	this->terminate = false;
-	uv_uidisplay_init(&this->display, this->display_buffer, &uv_uistyles[0]);
+	uv_uidisplay_init(&this->display, this->display_buffer, UV_UIWINDOW_BUFFER_LEN(this->display_buffer), &uv_uistyles[0]);
 	uv_uidisplay_set_touch_indicator(&this->display, true);
 
 	// the top-level tab window fills the whole display; keep it transparent so the
@@ -348,7 +348,7 @@ void uvui_exec(void) {
 	// (near-black) fill. Its tabs get the plain HAL header (no status dots); the
 	// nested device tab window built into the "System" tab draws its own.
 	uv_uitabwindow_init(&this->maintabs, MAINTAB_END - MAINTAB_FIRST,
-			&uv_uistyles[0], this->maintabs_buf, &maintab_names[MAINTAB_FIRST]);
+			&uv_uistyles[0], this->maintabs_buf, UV_UIWINDOW_BUFFER_LEN(this->maintabs_buf), &maintab_names[MAINTAB_FIRST]);
 	uv_uiwindow_set_transparent(&this->maintabs, true);
 	int16_t disp_w = uv_uibb(&this->display)->w;
 	int16_t disp_h = uv_uibb(&this->display)->h;
@@ -376,7 +376,7 @@ void uvui_exec(void) {
 	// log view: an opaque window pinned to the bottom of the screen, always
 	// visible. It is added last so it draws on top of the tab window. Minimized it
 	// occupies log_collapsed_h at the bottom; expanded it animates up to the top.
-	uv_uiwindow_init(&this->log_window, this->log_window_buf, &uv_uistyles[0]);
+	uv_uiwindow_init(&this->log_window, this->log_window_buf, UV_UIWINDOW_BUFFER_LEN(this->log_window_buf), &uv_uistyles[0]);
 	uv_uiwindow_set_transparent(&this->log_window, false);
 	uv_uiobject_set_touch_callb(&this->log_window, &log_window_touch);
 	uv_uidisplay_addxy(&this->display, &this->log_window,
@@ -386,7 +386,7 @@ void uvui_exec(void) {
 	// describe ongoing activity, e.g. system saving progress. Its height is kept in
 	// sync with the window as it animates (see the loop below).
 	strcpy(this->log_title_str, "Log");
-	uv_uiframewindow_init(&this->log_frame, this->log_frame_buf, &uv_uistyles[0]);
+	uv_uiframewindow_init(&this->log_frame, this->log_frame_buf, UV_UIWINDOW_BUFFER_LEN(this->log_frame_buf), &uv_uistyles[0]);
 	uv_uiframewindow_set_title(&this->log_frame, this->log_title_str);
 	uv_uiwindow_addxy(&this->log_window, &this->log_frame,
 			MARGIN_X, MARGIN_X, disp_w - 2 * MARGIN_X,
@@ -761,7 +761,7 @@ static uv_uiobject_ret_e maintab_step(void *me, const uint16_t step_ms) {
 static void build_device_tabs(void) {
 	populate_tab_names();
 	uv_uitabwindow_init(&this->tabwindow, this->tab_count, &uv_uistyles[0],
-			this->tabwindow_buffer, this->tab_names);
+			this->tabwindow_buffer, UV_UIWINDOW_BUFFER_LEN(this->tabwindow_buffer), this->tab_names);
 	// keep it transparent so the display background colour shows through instead
 	// of the window's opaque (near-black) fill
 	uv_uiwindow_set_transparent(&this->tabwindow, true);

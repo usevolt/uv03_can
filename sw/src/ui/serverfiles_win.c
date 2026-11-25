@@ -154,6 +154,8 @@ typedef struct {
 	// plus 2 widgets per version (label + Download button), as uv_uiwindow
 	// requires the array to outlive the window
 	uv_uiobject_st **child_buf;
+	// the length of *child_buf*
+	uint16_t child_len;
 	uv_uilabel_st *ver_labels;
 	uv_uibutton_st *dl_btns;
 	// version_count * SFW_VSTR_LEN, one row's text per version. Contiguous
@@ -415,8 +417,8 @@ static bool sfw_alloc_ui(uint8_t f) {
 					(own != NULL) ? own : "?");
 		}
 
-		n->child_buf = calloc((size_t) (2 * n->versions) + n->children + 2,
-				sizeof(*n->child_buf));
+		n->child_len = (uint16_t) ((2 * n->versions) + n->children + 2);
+		n->child_buf = calloc(n->child_len, sizeof(*n->child_buf));
 		if (n->child_buf == NULL) {
 			sfw_free_ui();
 			return false;
@@ -743,7 +745,7 @@ static void sfw_build_node(void *container, uint16_t i, uint8_t depth) {
 		else {
 		}
 	}
-	uv_uitreeobject_init(&n->obj, n->child_buf, n->name, NULL, win_style);
+	uv_uitreeobject_init(&n->obj, n->child_buf, n->child_len, n->name, NULL, win_style);
 	uv_uitreeobject_set_font(&n->obj, SFW_FONT);
 	// A node starts closed unless the filter opened it: a tab opens on the
 	// list of what the fleet holds, which is what the user picks from, rather
@@ -850,7 +852,7 @@ static void sfw_show_fleet(uint8_t f, bool retry) {
 				0, 0, cbb.width, cbb.height);
 	}
 	else {
-		uv_uitreeview_init(&tree, tree_buf, win_style);
+		uv_uitreeview_init(&tree, tree_buf, node_cap, win_style);
 		uv_uitabwindow_addxy(&fleet_tabs, &tree, 0, 0, cbb.width, cbb.height);
 		// the directories at the top of this fleet; each of them brings the
 		// whole branch below it. They are what the filter's first segment
@@ -1004,7 +1006,7 @@ bool serverfiles_win_exec(const uv_uistyle_st *style) {
 	}
 
 	// 2. build the modal window
-	uv_uidialog_init(&dialog, dialog_buf, style);
+	uv_uidialog_init(&dialog, dialog_buf, UV_UIWINDOW_BUFFER_LEN(dialog_buf), style);
 	uv_uidialog_set_stepcallback(&dialog, &sfw_step, NULL);
 	int16_t w = uv_uibb(&dialog)->width;
 	int16_t h = uv_uibb(&dialog)->height;
@@ -1047,7 +1049,7 @@ bool serverfiles_win_exec(const uv_uistyle_st *style) {
 	}
 	else {
 		uv_uitabwindow_init(&fleet_tabs, fleet_count, style,
-				fleet_tabs_buf, fleet_names);
+				fleet_tabs_buf, UV_UIWINDOW_BUFFER_LEN(fleet_tabs_buf), fleet_names);
 		uv_uidialog_addxy(&dialog, &fleet_tabs,
 				SFW_MARGIN, tabs_y, w - 2 * SFW_MARGIN, tabs_h);
 		sfw_show_fleet(fleet_of_tab[0], true);

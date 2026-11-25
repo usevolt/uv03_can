@@ -260,7 +260,7 @@ static int32_t pick_exec(jw_dev_st *d, uint8_t slot) {
 	pick_filter_buf[0] = '\0';
 	pick_filter_applied[0] = '\0';
 
-	uv_uidialog_init(&pick_dialog, pick_dialog_buf, win_style);
+	uv_uidialog_init(&pick_dialog, pick_dialog_buf, UV_UIWINDOW_BUFFER_LEN(pick_dialog_buf), win_style);
 	uv_uidialog_set_stepcallback(&pick_dialog, &pick_step, NULL);
 	int16_t w = uv_uibb(&pick_dialog)->width;
 	int16_t h = uv_uibb(&pick_dialog)->height;
@@ -292,7 +292,7 @@ static int32_t pick_exec(jw_dev_st *d, uint8_t slot) {
 	y += JW_BTN_H + JW_MARGIN;
 
 	int16_t btn_y = h - JW_BTN_H - JW_MARGIN;
-	uv_uiwindow_init(&pick_win, pick_buf, win_style);
+	uv_uiwindow_init(&pick_win, pick_buf, UV_UIWINDOW_BUFFER_LEN(pick_buf), win_style);
 	uv_uiwindow_set_transparent(&pick_win, true);
 	uv_uidialog_addxy(&pick_dialog, &pick_win, JW_MARGIN, y,
 			w - 2 * JW_MARGIN, btn_y - JW_MARGIN - y);
@@ -578,7 +578,7 @@ bool joystick_win_exec(system_st *system, const uv_uistyle_st *style) {
 	edit = *joystick_get_conf();
 	build_dev_list();
 
-	uv_uidialog_init(&dialog, dialog_buf, style);
+	uv_uidialog_init(&dialog, dialog_buf, UV_UIWINDOW_BUFFER_LEN(dialog_buf), style);
 	uv_uidialog_set_stepcallback(&dialog, &jw_step, NULL);
 	int16_t w = uv_uibb(&dialog)->width;
 	int16_t h = uv_uibb(&dialog)->height;
@@ -610,7 +610,7 @@ bool joystick_win_exec(system_st *system, const uv_uistyle_st *style) {
 
 	int16_t btn_y = h - JW_BTN_H - JW_MARGIN;
 	int16_t list_w = w - 2 * JW_MARGIN;
-	uv_uiwindow_init(&list_win, list_buf, style);
+	uv_uiwindow_init(&list_win, list_buf, UV_UIWINDOW_BUFFER_LEN(list_buf), style);
 	uv_uiwindow_set_transparent(&list_win, true);
 	uv_uidialog_addxy(&dialog, &list_win, JW_MARGIN, y, list_w,
 			btn_y - JW_MARGIN - y);

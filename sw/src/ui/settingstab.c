@@ -866,7 +866,7 @@ void settingstab_show(uv_uitabwindow_st *tabwin) {
 		account_seeded = true;
 	}
 
-	uv_uiframewindow_init(&content.account_frame, content.account_frame_buf, style);
+	uv_uiframewindow_init(&content.account_frame, content.account_frame_buf, UV_UIWINDOW_BUFFER_LEN(content.account_frame_buf), style);
 	uv_uiframewindow_set_title(&content.account_frame, "Account");
 	uv_uitabwindow_addxy(tabwin, &content.account_frame, frame_x, MARGIN,
 			frame_w, account_frame_h);
@@ -954,7 +954,7 @@ void settingstab_show(uv_uitabwindow_st *tabwin) {
 	int16_t sw_row_h = 2 * uv_ui_get_font_height(style->font) + MARGIN / 2;
 	int16_t software_y = MARGIN + account_frame_h + MARGIN;
 	int16_t software_frame_h = sw_row_h + MARGIN + TITLE_H;
-	uv_uiframewindow_init(&content.software_frame, content.software_frame_buf,
+	uv_uiframewindow_init(&content.software_frame, content.software_frame_buf, UV_UIWINDOW_BUFFER_LEN(content.software_frame_buf),
 			style);
 	uv_uiframewindow_set_title(&content.software_frame, "Software");
 	uv_uitabwindow_addxy(tabwin, &content.software_frame, frame_x, software_y,
@@ -1001,7 +1001,7 @@ void settingstab_show(uv_uitabwindow_st *tabwin) {
 			2 * (4 + CONFIG_UI_LISTBUTTON_BAR_HEIGHT) + MARGIN / 2;
 	int16_t canbus_y = software_y + software_frame_h + MARGIN;
 	int16_t canbus_frame_h = canbus_row_h + MARGIN + TITLE_H;
-	uv_uiframewindow_init(&content.canbus_frame, content.canbus_frame_buf,
+	uv_uiframewindow_init(&content.canbus_frame, content.canbus_frame_buf, UV_UIWINDOW_BUFFER_LEN(content.canbus_frame_buf),
 			style);
 	uv_uiframewindow_set_title(&content.canbus_frame, "CAN-bus");
 #if !CONFIG_TARGET_WEB
@@ -1042,7 +1042,7 @@ void settingstab_show(uv_uitabwindow_st *tabwin) {
 	// The "Load parameters" panel fills the rest of the tab: the file list on the
 	// left, and on the right the buttons, as wide as the "Connect" button above
 	int16_t params_y = canbus_y + canbus_frame_h + MARGIN;
-	uv_uiframewindow_init(&content.params_frame, content.params_frame_buf, style);
+	uv_uiframewindow_init(&content.params_frame, content.params_frame_buf, UV_UIWINDOW_BUFFER_LEN(content.params_frame_buf), style);
 	uv_uiframewindow_set_title(&content.params_frame, "Load parameters");
 #if CONFIG_TARGET_WEB
 	// not added to the tab (see the updates checkbox above), but laid out as
@@ -1059,7 +1059,7 @@ void settingstab_show(uv_uitabwindow_st *tabwin) {
 	int16_t params_btn_w = acc_conn_w;
 	int16_t params_list_w = pc.w - params_btn_w - MARGIN;
 
-	uv_uiwindow_init(&content.params_list, content.params_list_buf, style);
+	uv_uiwindow_init(&content.params_list, content.params_list_buf, UV_UIWINDOW_BUFFER_LEN(content.params_list_buf), style);
 	uv_uiframewindow_addxy(&content.params_frame, &content.params_list,
 			0, 0, params_list_w, pc.h);
 

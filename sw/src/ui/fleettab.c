@@ -268,7 +268,7 @@ static void build_fleet_tabs(uv_uitabwindow_st *tabwin, int16_t y, int16_t h) {
 	fleet_tabs_built = true;
 
 	uv_uitabwindow_init(&fleet_tabs, fleet_tab_count, &uv_uistyles[0],
-			fleet_tabs_buf, fleet_names);
+			fleet_tabs_buf, UV_UIWINDOW_BUFFER_LEN(fleet_tabs_buf), fleet_names);
 	uv_uiwindow_set_transparent(&fleet_tabs, true);
 	uv_uitabwindow_addxy(tabwin, &fleet_tabs, MARGIN, y,
 			cbb.w - 2 * MARGIN, h);
@@ -330,7 +330,7 @@ static void show_active_dev_tab(void) {
 			dev_names[i] = dev_name_buf[i];
 		}
 
-		uv_uitabwindow_init(&dev_tabs, dev_tab_count, style, dev_tabs_buf,
+		uv_uitabwindow_init(&dev_tabs, dev_tab_count, style, dev_tabs_buf, UV_UIWINDOW_BUFFER_LEN(dev_tabs_buf),
 				dev_names);
 		uv_uiwindow_set_transparent(&dev_tabs, true);
 		uv_uitabwindow_addxy(&fleet_tabs, &dev_tabs, 0, 0, fc.w, fc.h);

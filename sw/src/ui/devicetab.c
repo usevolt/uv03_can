@@ -678,7 +678,7 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 #endif
 
 	// --- "System configuration" panel: open / joystick / save / load-to-devices ---
-	uv_uiframewindow_init(&content.sys_frame, content.sys_frame_buf, style);
+	uv_uiframewindow_init(&content.sys_frame, content.sys_frame_buf, UV_UIWINDOW_BUFFER_LEN(content.sys_frame_buf), style);
 	uv_uiframewindow_set_title(&content.sys_frame, "System configuration");
 	uv_uitabwindow_addxy(tabwin, &content.sys_frame, frame_x, MARGIN,
 			frame_w, sys_frame_h);
@@ -791,7 +791,7 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 #if !CONFIG_TARGET_WIN
 	// --- "Simulator" panel (Linux only): run-simulator button + running list ---
 	int16_t sim_frame_y = MARGIN + sys_frame_h + MARGIN;
-	uv_uiframewindow_init(&content.sim_frame, content.sim_frame_buf, style);
+	uv_uiframewindow_init(&content.sim_frame, content.sim_frame_buf, UV_UIWINDOW_BUFFER_LEN(content.sim_frame_buf), style);
 	uv_uiframewindow_set_title(&content.sim_frame, "Simulator");
 	uv_uitabwindow_addxy(tabwin, &content.sim_frame, frame_x, sim_frame_y,
 			frame_w, sim_frame_h);
@@ -859,7 +859,7 @@ void devicetab_show_system(uv_uitabwindow_st *tabwin, system_st *system) {
 		// more simulators than fit, the window's content overflows and it becomes
 		// scrollable (content_autogrow grows the content box, and the window draws a
 		// scroll bar and accepts drag / wheel) instead of squeezing the rows.
-		uv_uiwindow_init(&content.sim_window, content.sim_window_buf, style);
+		uv_uiwindow_init(&content.sim_window, content.sim_window_buf, UV_UIWINDOW_BUFFER_LEN(content.sim_window_buf), style);
 		uv_uiwindow_set_content_autogrow(&content.sim_window, true);
 		uv_uiframewindow_addxy(&content.sim_frame, &content.sim_window,
 				right_x, 0, right_w, mc.h);
@@ -988,7 +988,7 @@ static void build_device_view(uv_uitabwindow_st *tabwin, device_st *device) {
 		color_t rev_color = mismatch ? WARNING_COLOR : style->text_color;
 
 		// --- left panel: CAN-bus device identity ---
-		uv_uiframewindow_init(&content.left_frame, content.left_buf, style);
+		uv_uiframewindow_init(&content.left_frame, content.left_buf, UV_UIWINDOW_BUFFER_LEN(content.left_buf), style);
 		uv_uiframewindow_set_title(&content.left_frame, "CAN-bus device");
 		uv_uitabwindow_addxy(tabwin, &content.left_frame,
 				MARGIN, frame_y, left_w, frame_h);
@@ -1117,7 +1117,7 @@ static void build_device_view(uv_uitabwindow_st *tabwin, device_st *device) {
 
 		// --- right panel: device configuration (Usevolt devices only) ---
 		if (!thirdparty) {
-		uv_uiframewindow_init(&content.right_frame, content.right_buf, style);
+		uv_uiframewindow_init(&content.right_frame, content.right_buf, UV_UIWINDOW_BUFFER_LEN(content.right_buf), style);
 		uv_uiframewindow_set_title(&content.right_frame, "Device configuration");
 		uv_uitabwindow_addxy(tabwin, &content.right_frame,
 				MARGIN + half_w + MARGIN, frame_y, half_w, frame_h);
@@ -1341,7 +1341,7 @@ void devicetab_show_device(uv_uitabwindow_st *tabwin, device_st *device) {
 		// wrap the device view and the terminal in a nested tab window filling the
 		// device tab's content area
 		uv_uitabwindow_init(&content.subtabs, SUBTAB_COUNT, style,
-				content.subtabs_buf, subtab_names);
+				content.subtabs_buf, UV_UIWINDOW_BUFFER_LEN(content.subtabs_buf), subtab_names);
 		uv_uiwindow_set_transparent(&content.subtabs, true);
 		uv_bounding_box_st cbb = uv_uitabwindow_get_contentbb(tabwin);
 		uv_uitabwindow_addxy(tabwin, &content.subtabs, 0, 0, cbb.w, cbb.h);
