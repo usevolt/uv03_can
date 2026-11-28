@@ -547,10 +547,33 @@ void load_step(void *ptr) {
 		}
 		// new CiA 302 compatible protocol download
 		else {
-			if (this->wfr) {
+			// Read the whole image before resetting the node: after the reset the
+			// bootloader waits only a short time (tens of ms) for the download to
+			// start before it boots the application.
+			uint8_t *data = malloc(size);
+			bool read_ok = (data != NULL) && (fread(data, size, 1, fptr) == 1);
+
+			if (!read_ok) {
+				printf("ERROR: Reading file failed. "
+						"Firmware download cancelled.\n");
+				fflush(stdout);
+			}
+			else {
 				this->response = false;
 				// set canopen callback function
 				uv_canopen_set_can_callback(&can_callb);
+				if (!this->wfr) {
+					// Reset the node first, so that the download always starts
+					// in a freshly started bootloader. Otherwise a bootloader left
+					// running by an interrupted download would continue writing
+					// where that download stopped. If the bootloader misses the
+					// download request and boots the application, the
+					// application forwards the request to the bootloader.
+					printf("Resetting node 0x%x\n", this->nodeid);
+					fflush(stdout);
+					uv_canopen_nmt_master_send_cmd(this->nodeid,
+							CANOPEN_NMT_CMD_RESET_NODE);
+				}
 				// wait for the device to send its boot-up message. With
 				// wait_forever set (the UI's offline flash) this waits until the
 				// device is powered on or the flash is cancelled.
@@ -583,85 +606,43 @@ void load_step(void *ptr) {
 				uv_canopen_set_can_callback(NULL);
 			}
 
-			if (this->response && !this->cancel) {
-
-				printf("Now downloading...\n");
+			if (read_ok && this->response && !this->cancel) {
+				printf("Now downloading as SDO %s transfer...\n",
+						this->block_transfer ? "block" : "segmented");
 				fflush(stdout);
+				// prime the SDO client's progress counters for this transfer before
+				// starting the monitor task. The monitor runs at a higher priority
+				// than this task, so otherwise it can poll the counters before the
+				// sdo write below initializes them and read the previous transfer's
+				// finished state (e.g. a 4-byte parameter write left data_index ==
+				// data_count == 4), print a bogus "downloaded 4 / 4 bytes (100%)"
+				// and exit before any real download progress is shown.
+				_canopen.sdo.client.data_index = 0;
+				_canopen.sdo.client.data_count = size;
+				// create task which will update the screen with the loading process
+				uv_rtos_task_create(&update, "segload update", UV_RTOS_MIN_STACK_SIZE,
+						NULL, UV_RTOS_IDLE_PRIORITY + 100, NULL);
 
-				// download with block transfer
+				uv_errors_e e;
 				if (this->block_transfer) {
-					printf("Downloading the firmware as SDO block transfer.\n");
-					uint8_t *data = malloc(size);
-					size_t ret = fread(data, size, 1, fptr);
-
-					if (!ret) {
-						printf("ERROR: Reading file failed. "
-								"Firmware download cancelled.\n");
-						fflush(stdout);
-					}
-					else {
-						// prime the SDO client's progress counters for this transfer before
-						// starting the monitor task. The monitor runs at a higher priority
-						// than this task, so otherwise it can poll the counters before the
-						// sdo write below initializes them and read the previous transfer's
-						// finished state (e.g. a 4-byte parameter write left data_index ==
-						// data_count == 4), print a bogus "downloaded 4 / 4 bytes (100%)"
-						// and exit before any real download progress is shown.
-						_canopen.sdo.client.data_index = 0;
-						_canopen.sdo.client.data_count = size;
-						// create task which will update the screen with the loading process
-						uv_rtos_task_create(&update, "segload update", UV_RTOS_MIN_STACK_SIZE,
-								NULL, UV_RTOS_IDLE_PRIORITY + 100, NULL);
-
-						uv_errors_e e = uv_canopen_sdo_block_write(this->nodeid,
-								BOOTLOADER_INDEX, BOOTLOADER_SUBINDEX, size, data);
-						if (e != ERR_NONE) {
-							printf("Downloading the binary failed. Error code: %u\n", e);
-							success = false;
-						}
-						else {
-							success = true;
-						}
-					}
-					free(data);
+					// download with block transfer
+					e = uv_canopen_sdo_block_write(this->nodeid,
+							BOOTLOADER_INDEX, BOOTLOADER_SUBINDEX, size, data);
 				}
-				// download with segmented transfer
 				else {
-					printf("Downloading the firmware as SDO segmented transfer\n");
-					uint8_t data[size];
-					size_t ret = fread(data, size, 1, fptr);
-
-					if (!ret) {
-						printf("ERROR: Reading file failed. "
-								"Firmware download cancelled.\n");
-						fflush(stdout);
-					}
-					else {
-						// prime the SDO client's progress counters for this transfer before
-						// starting the monitor task. The monitor runs at a higher priority
-						// than this task, so otherwise it can poll the counters before the
-						// sdo write below initializes them and read the previous transfer's
-						// finished state (e.g. a 4-byte parameter write left data_index ==
-						// data_count == 4), print a bogus "downloaded 4 / 4 bytes (100%)"
-						// and exit before any real download progress is shown.
-						_canopen.sdo.client.data_index = 0;
-						_canopen.sdo.client.data_count = size;
-						// create task which will update the screen with the loading process
-						uv_rtos_task_create(&update, "segload update", UV_RTOS_MIN_STACK_SIZE,
-								NULL, UV_RTOS_IDLE_PRIORITY + 100, NULL);
-
-						uv_errors_e e = uv_canopen_sdo_write(this->nodeid,
-								BOOTLOADER_INDEX, BOOTLOADER_SUBINDEX, size, data);
-						if (e != ERR_NONE) {
-							printf("Downloading the binary failed. Error code: %u\n", e);
-							success = false;
-						}
-						else {
-							success = true;
-						}
-					}
+					// download with segmented transfer
+					e = uv_canopen_sdo_write(this->nodeid,
+							BOOTLOADER_INDEX, BOOTLOADER_SUBINDEX, size, data);
+				}
+				if (e != ERR_NONE) {
+					printf("Downloading the binary failed. Error code: %u\n", e);
+					success = false;
+				}
+				else {
+					success = true;
 				}
 			}
+			free(data);
 		}
 
 		fclose(fptr);
